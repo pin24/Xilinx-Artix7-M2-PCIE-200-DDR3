@@ -1,0 +1,195 @@
+// ============================================================================
+// tf40_alu.sv - ???????????????????????????? ???????? TFloat40 (add/sub/mul/div)
+// ============================================================================
+// value = M * 3^(E-60-13), M - 15 ???????????? (??????????, ????????. [3^13,3^14)),
+// E - 5 ???????????? (bias 60).
+// OP: 0=add 1=sub 2=mul 3=div. ???????????? Python-?????????????????? arith.py.
+// ============================================================================
+
+module tf40_alu (
+    input  logic [1:0] op,
+    input  logic [39:0] a,
+    input  logic [39:0] b,
+    output logic [39:0] result,
+    output logic        err_out
+);
+    import tfloat_pkg::*;
+
+    // --- ???????????????????? ---
+    logic [M_TRITS*2-1:0] a_m, b_m;
+    logic [E_TRITS*2-1:0] a_e, b_e;
+    assign a_m = a[TOTAL_BITS-1 : E_BITS];
+    assign b_m = b[TOTAL_BITS-1 : E_BITS];
+    assign a_e = a[E_BITS-1 : 0];
+    assign b_e = b[E_BITS-1 : 0];
+
+    // --- M (???????????????? ?????????? ???? ????????????) ---
+    logic signed [63:0] Ma, Mb, Mabs_a, Mabs_b;
+    always_comb begin
+        Ma = 64'sd0;
+        for (int i = M_TRITS-1; i >= 0; i--)
+            Ma = Ma * 3 + $signed(trit_val(a_m[i*2 +: 2]));
+    end
+    always_comb begin
+        Mb = 64'sd0;
+        for (int i = M_TRITS-1; i >= 0; i--)
+            Mb = Mb * 3 + $signed(trit_val(b_m[i*2 +: 2]));
+    end
+    assign Mabs_a = (Ma < 0) ? -Ma : Ma;
+    assign Mabs_b = (Mb < 0) ? -Mb : Mb;
+
+    // --- e ---
+    logic signed [15:0] ea, eb;
+    always_comb begin
+        ea = 16'sd0;
+        for (int i = E_TRITS-1; i >= 0; i--)
+            ea = ea * 3 + $signed(trit_val(a_e[i*2 +: 2]));
+        ea = ea - E_BIAS;
+    end
+    always_comb begin
+        eb = 16'sd0;
+        for (int i = E_TRITS-1; i >= 0; i--)
+            eb = eb * 3 + $signed(trit_val(b_e[i*2 +: 2]));
+        eb = eb - E_BIAS;
+    end
+
+    logic a_err, b_err, zero_a, zero_b;
+    assign a_err = (a[0 +: 2] == TRIT_ERR) || (a[2 +: 2] == TRIT_ERR);
+    assign b_err = (b[0 +: 2] == TRIT_ERR) || (b[2 +: 2] == TRIT_ERR);
+    assign zero_a = (Ma == 0);
+    assign zero_b = (Mb == 0);
+
+    // --- ???????????????????????? ?????????????????? ?????? add/sub ---
+    // ?????????? M ???? 3^k ???????????? (?????????????? ???? 3^k) ?? ?????????????????????? ?? ????????????????????
+    logic signed [63:0] Ma_sh, Mb_sh;
+    logic signed [63:0] t_shift;   // ??????????????????????????
+    logic signed [15:0] e_sum;
+    logic [7:0] k_shift;
+
+    // k = |ea-eb|, ?????????????????? ???? 32 (??????????)
+    assign k_shift = (ea > eb) ? ((ea-eb) > 32 ? 32 : (ea-eb)) :
+                     ((eb-ea) > 32 ? 32 : (eb-ea));
+
+    // ?????????????? ?????????????? ???? 3^k ?? ?????????????????????? (???????????? ?????????? ????????)
+    logic signed [63:0] sh_work;
+    always_comb begin
+        // ???????????? ?????????????? Ma ?????? Mb ?? ?????????????????????? ???? ??????????????????
+        t_shift = (ea > eb) ? Mb : Ma;
+        sh_work = t_shift;
+        // ?????????? ???? 3, k_shift ??????, ?? ?????????????????????? (half-up ???? abs)
+        for (int i = 0; i < 32; i++) begin
+            if (i < k_shift) begin
+                // ?????????????????????????? ?????????????? ?? ??????????????????????: q = round(x/3)
+                // ?????? x>=0: (x + 1)/3 ; ?????? x<0: -(((-x)+1)/3)
+                if (sh_work >= 0)
+                    sh_work = (sh_work + 1) / 3;
+                else
+                    sh_work = -(((-sh_work) + 1) / 3);
+            end
+        end
+        Ma_sh = (ea > eb) ? Ma : sh_work;
+        Mb_sh = (ea > eb) ? sh_work : Mb;
+        e_sum = (ea > eb) ? ea : eb;
+    end
+
+    // --- add/sub ?????????????????? ---
+    logic signed [63:0] M_sum;
+    always_comb begin
+        if (op == 2'b01)
+            M_sum = Ma_sh - Mb_sh;   // sub
+        else
+            M_sum = Ma_sh + Mb_sh;   // add
+    end
+
+    // --- mul: M = floor(Ma*Mb / 3^13), e = ea+eb (как Python: trunc) ---
+    logic signed [127:0] M_mul;
+    logic signed [31:0]  e_mul;
+    always_comb begin
+        M_mul = (Ma * Mb) / 128'sd1594323;   // trunc (Python // для abs)
+        e_mul = ea + eb;   // M уже поделён на 3^13 -> value = M*3^(e-13)
+    end
+
+    // --- div ---
+    logic signed [127:0] M_div;
+    logic signed [31:0]  e_div;
+    logic div_zero;
+    logic signed [127:0] div_num;
+    logic signed [127:0] div_q, div_r;
+    always_comb begin
+        div_zero = (Mb == 0);
+        div_num = Mabs_a * 128'd1594323;   // Ma * 3^13
+        div_q = div_num / Mabs_b;
+        div_r = div_num % Mabs_b;
+        if (2*div_r >= Mabs_b) div_q = div_q + 1;   // round-half-up
+        if ((Ma < 0) != (Mb < 0)) div_q = -div_q;
+        M_div = div_q;
+        e_div = ea - eb;
+    end
+
+    // --- ?????????? ???? OP ---
+    logic signed [127:0] M_sel;
+    logic signed [31:0]  e_sel;
+    logic err_base;
+    always_comb begin
+        err_base = a_err || b_err || (op == 2'b11 && div_zero);
+        case (op)
+            2'b00: begin M_sel = M_sum;     e_sel = e_sum; end
+            2'b01: begin M_sel = M_sum;     e_sel = e_sum; end
+            2'b10: begin M_sel = M_mul;     e_sel = e_mul; end
+            2'b11: begin M_sel = M_div;     e_sel = e_div; end
+            default: begin M_sel = 0;       e_sel = 0; end
+        endcase
+    end
+
+    // --- ???????????????????????? M ?? [3^13, 3^14) ---
+    logic signed [127:0] Mn;
+    logic signed [31:0]  en;
+    logic [M_TRITS*2-1:0] m_out;
+    logic [E_TRITS*2-1:0] e_out;
+    logic underflow, ovf;
+
+    localparam signed [127:0] P3_13 = 128'sd1594323;
+    localparam signed [127:0] P3_14 = 128'sd4782969;
+
+    always_comb begin
+        Mn = M_sel;
+        en = e_sel;
+        underflow = 0;
+        ovf = 0;
+        if (Mn != 0) begin
+            // работаем с |Mn| (Python: av=abs(m), trunc //)
+            // |Mn| >= 3^14 -> /3, en++
+            for (int i = 0; i < 32; i++) begin
+                if (Mn >= P3_14 || Mn <= -P3_14) begin
+                    if (Mn >= 0) Mn = Mn / 3;
+                    else Mn = -((-Mn) / 3);   // trunc к нулю (как // для |Mn|)
+                    en = en + 1;
+                end
+            end
+            // |Mn| < 3^13 и en > -60 -> *3, en--
+            for (int i = 0; i < 32; i++) begin
+                if (Mn < P3_13 && Mn > -P3_13 && en > -E_BIAS) begin
+                    Mn = Mn * 3;
+                    en = en - 1;
+                end
+            end
+            if (en > E_BIAS + 121) ovf = 1;
+            if (en < -E_BIAS) begin Mn = 0; en = 0; underflow = 1; end
+        end
+    end
+
+    logic err_sel;
+    assign err_sel = err_base || ovf;
+
+    int_to_trits #(.N(M_TRITS), .W(128)) u_m (.value(Mn[127:0]), .trits(m_out));
+    int_to_trits #(.N(E_TRITS), .W(32))  u_e (.value(en[31:0] + E_BIAS), .trits(e_out));
+
+    always_comb begin
+        if (err_sel)           result = {TOTAL_TRITS{2'b11}};
+        else if (Mn == 0)      result = {TOTAL_TRITS{2'b00}};
+        else                   result = {m_out, e_out};
+    end
+
+    assign err_out = err_sel;
+
+endmodule

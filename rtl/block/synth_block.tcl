@@ -1,0 +1,33 @@
+# ============================================================================
+# synth_compute_core.tcl - синтез блочного compute_core_dot_block (N=16)
+# ============================================================================
+set proj_dir C:/A7_M2/EXAMPLES/XDMA_DDR3/rtl/block/synth_check
+set rtl_dir   C:/A7_M2/EXAMPLES/XDMA_DDR3/rtl/block
+
+file mkdir ${proj_dir}
+create_project -force block_synth ${proj_dir} -part xc7a200tfbg484-2
+set_property top compute_core_dot_block [current_fileset]
+
+add_files -norecurse \
+    ${rtl_dir}/tbyte_add.sv \
+    ${rtl_dir}/tbyte_mul.sv \
+    ${rtl_dir}/tfmac.sv \
+    ${rtl_dir}/compute_core_dot_block.sv
+
+update_compile_order -fileset sources_1
+set_property generic N=16 [current_fileset]
+
+launch_runs synth_1 -jobs 19
+wait_on_run synth_1
+set st [get_property STATUS [get_runs synth_1]]
+puts "=== SYNTH STATUS: $st ==="
+if {[string first "complete" [string tolower $st]] == -1} {
+    puts "=== SYNTHESIS FAILED ==="
+} else {
+    puts "=== SYNTHESIS OK ==="
+    open_run synth_1
+    report_utilization -file ${proj_dir}/util_block.rpt
+    report_timing_summary -file ${proj_dir}/timing_block.rpt
+    close_design
+}
+close_project

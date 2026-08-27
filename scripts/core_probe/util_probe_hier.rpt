@@ -1,0 +1,62 @@
+Copyright 1986-2021 Xilinx, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2021.2 (win64) Build 3367213 Tue Oct 19 02:48:09 MDT 2021
+| Date         : Tue Aug 25 10:51:29 2026
+| Host         : DESKTOP-27KRDOC running 64-bit major release  (build 9200)
+| Command      : report_utilization -hierarchical -file C:/A7_M2/EXAMPLES/XDMA_DDR3/scripts/core_probe/util_probe_hier.rpt
+| Design       : compute_dot_par_raw
+| Device       : xc7a200tfbg484-2
+| Speed File   : -2
+| Design State : Synthesized
+---------------------------------------------------------------------------------------------------------------------------
+
+Utilization Design Information
+
+Table of Contents
+-----------------
+1. Utilization by Hierarchy
+
+1. Utilization by Hierarchy
+---------------------------
+
++-------------------------+--------------+------------+------------+---------+------+-------+--------+--------+------------+
+|         Instance        |    Module    | Total LUTs | Logic LUTs | LUTRAMs | SRLs |  FFs  | RAMB36 | RAMB18 | DSP Blocks |
++-------------------------+--------------+------------+------------+---------+------+-------+--------+--------+------------+
+| compute_dot_par_raw     |        (top) |      60511 |      60511 |       0 |    0 | 15577 |      0 |      0 |          0 |
+|   (compute_dot_par_raw) |        (top) |       8543 |       8543 |       0 |    0 |  6235 |      0 |      0 |          0 |
+|   gen_mac[0].u_mul      |    tfmul_raw |       1562 |       1562 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[10].u_mul     |  tfmul_raw_0 |       1562 |       1562 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[11].u_mul     |  tfmul_raw_1 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[12].u_mul     |  tfmul_raw_2 |       1564 |       1564 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[13].u_mul     |  tfmul_raw_3 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[14].u_mul     |  tfmul_raw_4 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[15].u_mul     |  tfmul_raw_5 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[16].u_mul     |  tfmul_raw_6 |       1562 |       1562 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[17].u_mul     |  tfmul_raw_7 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[18].u_mul     |  tfmul_raw_8 |       1563 |       1563 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[19].u_mul     |  tfmul_raw_9 |       1586 |       1586 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[1].u_mul      | tfmul_raw_10 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[20].u_mul     | tfmul_raw_11 |       1563 |       1563 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[21].u_mul     | tfmul_raw_12 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[22].u_mul     | tfmul_raw_13 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[23].u_mul     | tfmul_raw_14 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[24].u_mul     | tfmul_raw_15 |       1567 |       1567 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[25].u_mul     | tfmul_raw_16 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[26].u_mul     | tfmul_raw_17 |       1565 |       1565 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[27].u_mul     | tfmul_raw_18 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[28].u_mul     | tfmul_raw_19 |       1563 |       1563 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[29].u_mul     | tfmul_raw_20 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[2].u_mul      | tfmul_raw_21 |       1564 |       1564 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[30].u_mul     | tfmul_raw_22 |       1562 |       1562 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[31].u_mul     | tfmul_raw_23 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[3].u_mul      | tfmul_raw_24 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[4].u_mul      | tfmul_raw_25 |       1562 |       1562 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[5].u_mul      | tfmul_raw_26 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[6].u_mul      | tfmul_raw_27 |       1562 |       1562 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[7].u_mul      | tfmul_raw_28 |       1562 |       1562 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[8].u_mul      | tfmul_raw_29 |       1563 |       1563 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   gen_mac[9].u_mul      | tfmul_raw_30 |       1561 |       1561 |       0 |    0 |   282 |      0 |      0 |          0 |
+|   u_add                 |    tfadd_raw |       1963 |       1963 |       0 |    0 |   318 |      0 |      0 |          0 |
++-------------------------+--------------+------------+------------+---------+------+-------+--------+--------+------------+
+
+

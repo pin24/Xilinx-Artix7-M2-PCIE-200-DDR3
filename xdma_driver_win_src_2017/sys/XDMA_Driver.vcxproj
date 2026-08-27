@@ -1,0 +1,55 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Win10_Release|x64">
+      <Configuration>Win10_Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{0000A7DD-0000-0000-0000-000000000000}</ProjectGuid>
+    <RootNamespace>XDMA</RootNamespace>
+    <Keyword>MakeFileProj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Makefile</ConfigurationType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win10_Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Win10_Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win10_Release|x64'">
+    <NMakeBuildCommandLine>$(ProjectDir)..\build.cmd</NMakeBuildCommandLine>
+    <NMakeCleanCommandLine>$(ProjectDir)..\clean.cmd</NMakeCleanCommandLine>
+    <NMakeReBuildCommandLine>$(ProjectDir)..\build.cmd</NMakeReBuildCommandLine>
+    <NMakeOutput>$(ProjectDir)..\build\sys\XDMA.sys</NMakeOutput>
+    <NMakePreprocessorDefinitions>_WIN64;_AMD64_;AMD64;WINNT=1;_WIN32_WINNT=0x0A00;NTDDI_VERSION=0x0A000002;_UNICODE;UNICODE</NMakePreprocessorDefinitions>
+    <NMakeIncludeSearchPath>C:\Program Files (x86)\Windows Kits\10\Include\10.0.14393.0\km;C:\Program Files (x86)\Windows Kits\10\Include\10.0.14393.0\shared;C:\Program Files (x86)\Windows Kits\10\Include\10.0.14393.0\um;C:\Program Files (x86)\Windows Kits\10\Include\10.0.14393.0\ucrt;C:\Program Files (x86)\Windows Kits\10\Include\wdf\kmdf\1.15</NMakeIncludeSearchPath>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win10_Release|x64'">
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <None Include="..\build.cmd" />
+    <None Include="..\clean.cmd" />
+    <None Include="XDMA.inx" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="driver.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

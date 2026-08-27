@@ -1,0 +1,47 @@
+;
+; XDMA Lite Driver INF
+;
+[Version]
+Signature="$WINDOWS NT$"
+Class=Sample
+ClassGuid={78A1C341-0E3A-4c4b-A6C3-97E255E7A1B1}
+Provider=%ManufacturerName%
+DriverVer=08/26/2026,1.0.0.0
+CatalogFile=xdma_lite.cat
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceDesc%=XDMA_Lite_Inst, PCI\VEN_10ee&DEV_7024
+
+[XDMA_Lite_Inst.NT]
+CopyFiles=DriverFiles
+
+[XDMA_Lite_Inst.NT.Services]
+AddService=xdma_lite, %SPSVCINST_ASSOCSERVICE%, DriverService_Install
+
+[DriverService_Install]
+DisplayName=%ServiceName%
+ServiceType=%SERVICE_KERNEL_DRIVER%
+StartType=%SERVICE_DEMAND_START%
+ErrorControl=%SERVICE_ERROR_NORMAL%
+ServiceBinary=%12%\XDMA.sys
+
+[DriverFiles]
+XDMA.sys
+
+[XDMA_Lite_Inst.NT.Wdf]
+KmdfService=DriverService, DriverService_Install_Wdf
+
+[DriverService_Install_Wdf]
+KmdfLibraryVersion=1.15
+
+[Strings]
+ManufacturerName="MultiTool"
+DeviceDesc="XDMA Lite BAR Access"
+ServiceName="xdma_lite"
+SPSVCINST_ASSOCSERVICE=0x00000002
+SERVICE_KERNEL_DRIVER=0x00000001
+SERVICE_DEMAND_START=0x00000003
+SERVICE_ERROR_NORMAL=0x00000001

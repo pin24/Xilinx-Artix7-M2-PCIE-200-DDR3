@@ -1,0 +1,185 @@
+"""Арифметические операции TFloat48 - эталон для блочной аппаратной реализации.
+
+Единая конвенция представления:
+    value = M * 3^(e - 19)
+где
+    M  - целая мантисса (20 тритов, balanced), диапазон норм. [3^19, 3^20)
+    E  - 4 трита, хранит e (bias 40);  e = decode(E)
+    M_TRITS = 20, масштаб мантиссы 3^19
+
+Операции:
+  add/sub : выравнивание экспонент сдвигом M на 3^k, сложение мантисс
+  mul     : произведение целых мантисс + норм.
+  div     : поразрядное деление мантисс
+После операции результат нормализуется: M in [3^19, 3^20) и округляется.
+"""
+from __future__ import annotations
+from typing import Tuple
+
+from . import trits as T
+from .tfloat48 import (
+    TFloat, TFloatError, M_TRITS, E_TRITS, E_BIAS,
+    _trits_value, _decode_exp, _encode_exp,
+    M_NORM_MIN, M_NORM_MAX,
+)
+
+# масштаб мантиссы: норм. целая мантисса M in [3^19, 3^20)
+# value = M * 3^(e-18)
+M_SCALE = M_NORM_MIN          # 3^19
+
+
+def _m_trits(a: TFloat) -> Tuple[int, ...]:
+    return T.unpack(a.m_int, M_TRITS)
+
+
+def _e_raw(a: TFloat) -> int:
+    return _decode_exp(T.unpack(a.e_int, E_TRITS))
+
+
+def _neg_tf(a: TFloat) -> TFloat:
+    if a.err:
+        return a
+    m = tuple(-t for t in _m_trits(a))
+    return TFloat(T.pack(m), a.e_int)
+
+
+def _shift_right_int(m: int, k: int) -> int:
+    """m / 3^k (цело) с округлением к ближайшему целому."""
+    if k <= 0:
+        return m
+    q = abs(m) // (3 ** k)
+    r = abs(m) % (3 ** k)
+    if r * 2 >= 3 ** k:
+        q += 1
+    return q if m >= 0 else -q
+
+
+def _round_int_to_trits(m: int) -> Tuple[int, ...]:
+    """Округлить целое m к 20 тритам (balanced)."""
+    out = [0] * M_TRITS
+    v = m
+    for i in range(M_TRITS - 1, -1, -1):
+        r = v % 3
+        v //= 3
+        if r == 2:
+            r = -1
+            v += 1
+        out[i] = r
+    return tuple(out)
+
+
+def _norm_raw(m: int, e: int, err: bool = False) -> TFloat:
+    """Нормализовать (m, e): value = m * 3^(e-18). M норм. в [3^19, 3^20)."""
+    if err:
+        return TFloat(0, 0, err=True)
+    if m == 0:
+        return TFloat(0, 0)
+    av = abs(m)
+    # нормализация
+    while av >= M_NORM_MAX:
+        av //= 3
+        e += 1
+        if e > E_BIAS:
+            raise TFloatError("overflow")
+    while av < M_NORM_MIN:
+        av *= 3
+        e -= 1
+        if e < -E_BIAS:
+            return TFloat(0, 0)  # underflow
+    av = _round_int_to_trits(av)
+    m_trits = tuple(-t for t in av) if m < 0 else av
+    if e < -E_BIAS:
+        return TFloat(0, 0)
+    if e > E_BIAS:
+        raise TFloatError("overflow")
+    return TFloat(T.pack(m_trits), T.pack(_encode_exp(e)))
+
+
+def _add_m_int(a: int, b: int) -> int:
+    return a + b
+
+
+def _mul_m_int(a: int, b: int) -> int:
+    return a * b
+
+
+def _add_tf(a: TFloat, b: TFloat) -> TFloat:
+    if a.err or b.err:
+        return TFloat(0, 0, err=True)
+    if a.is_zero():
+        return b
+    if b.is_zero():
+        return a
+    ea = _e_raw(a)
+    eb = _e_raw(b)
+    ma = _trits_value(_m_trits(a))
+    mb = _trits_value(_m_trits(b))
+    if ea > eb:
+        e = ea
+        mb = _shift_right_int(int(mb), ea - eb)
+    elif eb > ea:
+        e = eb
+        ma = _shift_right_int(int(ma), eb - ea)
+    else:
+        e = ea
+    ms = _add_m_int(int(ma), int(mb))
+    return _norm_raw(ms, e)
+
+
+def _mul_tf(a: TFloat, b: TFloat) -> TFloat:
+    if a.err or b.err:
+        return TFloat(0, 0, err=True)
+    if a.is_zero() or b.is_zero():
+        return TFloat(0, 0)
+    ea = _e_raw(a)
+    eb = _e_raw(b)
+    ma = _trits_value(_m_trits(a))
+    mb = _trits_value(_m_trits(b))
+    # value = (ma*3^-19)*(mb*3^-19)*3^(ea+eb) = ma*mb*3^(ea+eb-38)
+    # нормализация: value = M*3^(e-18) => M=ma*mb/3^19, e=ea+eb-19
+    mp = _mul_m_int(int(ma), int(mb))
+    return _norm_raw(mp, ea + eb - (M_TRITS - 2))
+
+
+def _div_tf(a: TFloat, b: TFloat) -> TFloat:
+    if a.err or b.err:
+        return TFloat(0, 0, err=True)
+    if b.is_zero():
+        raise TFloatError("деление на ноль")
+    if a.is_zero():
+        return TFloat(0, 0)
+    ea = _e_raw(a)
+    eb = _e_raw(b)
+    ma = _trits_value(_m_trits(a))
+    mb = _trits_value(_m_trits(b))
+    sign = -1 if (ma < 0) != (mb < 0) else 1
+    av = abs(int(ma))
+    bv = abs(int(mb))
+    num = av * M_SCALE
+    q = num // bv
+    r = num % bv
+    if r * 2 >= bv:
+        q += 1
+    q = q if sign >= 0 else -q
+    return _norm_raw(q, ea - eb)
+
+
+# --- публичный API ---
+def add(a: TFloat, b: TFloat) -> TFloat:
+    return _add_tf(a, b)
+
+
+def sub(a: TFloat, b: TFloat) -> TFloat:
+    return _add_tf(a, _neg_tf(b))
+
+
+def mul(a: TFloat, b: TFloat) -> TFloat:
+    return _mul_tf(a, b)
+
+
+def div(a: TFloat, b: TFloat) -> TFloat:
+    return _div_tf(a, b)
+
+
+def neg(a: TFloat) -> TFloat:
+    return _neg_tf(a)
