@@ -1,16 +1,37 @@
 // ============================================================================
-// icap_ctrl.sv — простой ICAP-контроллер: хост пишет слова напрямую в DATA
-// Регистры (32-бит, байтовый адрес):
-//   [0x00] CTRL   bit0 GO, bit1 STOP
-//   [0x04] STATUS bit0 READY, bit1 BUSY
+// icap_ctrl.sv — ICAP-контроллер: хост пишет слова напрямую в DATA
+// ============================================================================
+// Регистры (32-бит, байтовый адрес, декод [3:2]):
+//   [0x00] CTRL   bit0 GO (самосброс), bit1 STOP
+//   [0x04] STATUS bit0 READY (mailbox свободен - можно писать следующее слово),
+//                 bit1 BUSY (сессия: от GO до STOP)
 //   [0x08] DATA   write-only, 32-бит слово для ICAP
-// Порядок работы:
-//   1. Хост пишет CTRL.GO=1 → BUSY=1, CSB=0, RDWRB=0
-//   2. Хост ждёт STATUS.READY=1
-//   3. Хост пишет первое слово 0xAA995566 в DATA
-//   4. Контроллер отправляет слово в ICAP, READY=0 на 1-2 такта
-//   5. Повторять 2-4 для каждого слова битстрима
-//   6. Хост пишет CTRL.STOP=1 после DESYNC
+//
+// Протокол работы:
+//   1. Хост пишет CTRL.GO=1 -> BUSY=1.
+//   2. Хост ждёт STATUS.READY=1 (READY=1 и до GO).
+//   3. Хост пишет слова битстрима по одному в DATA; после каждой записи
+//      контроллер делает ОДНО окно выборки (CSIB=0 ровно на 1 такт icap_clk),
+//      затем READY=1 снова. Каждое слово доставляется в ICAP ровно один раз.
+//   4. Битстрим заканчивается словами DESYNC (уже в файле .bin).
+//   5. Хост пишет CTRL.STOP=1 -> BUSY=0, CSIB принудительно поднимается.
+//
+// ПОРЯДОК БАЙТОВ: ICAPE2 в режиме X32 потребляет байты слова от I[7:0] вверх
+// (первый байт битстрима должен оказаться на I[7:0]). Поэтому ХОСТ преобразует
+// каждое 32-битное big-endian слово битстрима в little-endian (bswap32) перед
+// записью в DATA (см. pytorch_layer/icap_load.py: чтение .bin как "<I").
+// RTL передаёт слова на I БЕЗ преобразований.
+//
+// Тактирование: S_AXI_ACLK = 125 МГц (AXI-домен) превышает максимум ICAPE2
+// (100 МГц), поэтому ICAPE2 тактируется делёным клоком: BUFGCE_DIV /2 ->
+// icap_clk = 62.5 МГц (Vivado создаёт generated clock автоматически).
+// Между доменами - toggle-handshake (req/ack, go/stop) с 2FF-синхронизаторами
+// (* ASYNC_REG *). Слово DATA стабильно весь цикл передачи: fast-домен не
+// меняет word_q до возврата ack. Записи DATA во время занятого mailbox не
+// теряются: AXI-коммит в DATA задерживается (AW/W защёлки держатся, шина
+// получает backpressure) до освобождения mailbox.
+//
+// Ссылки: UG470 (7 Series Configuration, ICAP), UG472 (Clocking, BUFGCE_DIV).
 // ============================================================================
 module icap_ctrl #(
     parameter int C_S_AXI_DATA_WIDTH = 32,
@@ -39,164 +60,231 @@ module icap_ctrl #(
     input  logic                                  S_AXI_RREADY
 );
 
-    logic clk, rst_n;
-    assign clk = S_AXI_ACLK;
-    assign rst_n = S_AXI_ARESETN;
-
     localparam int ADDR_LSB = 2;
 
+    // ==================== mailbox (fast-домен) ==================================
+    logic [C_S_AXI_DATA_WIDTH-1:0] word_q;  // активное слово (стабильно на цикл передачи)
+    logic in_flight;                        // слово в slow-домене, ack не вернулся
+    logic req_toggle;                       // fast -> slow: новое слово
+    logic ack_toggle;                       // slow -> fast: слово доставлено
+    logic ack_toggle_prev;
+    logic ack_sync_ff1, ack_sync_ff2;
+    logic busy_sync_ff1, busy_sync_ff2;     // BUSY (slow -> fast, для STATUS)
+
+    wire mbox_busy = in_flight;             // занят mailbox (гейт commit в DATA)
+
+    // ==================== AXI-Lite slave (fast-домен 125 МГц) ===================
+    // Независимый приём AW и W (защёлки глубиной 1): фазы могут приходить в
+    // разных тактах - запись коммитится, когда собраны обе и bvalid свободен.
     logic awready, wready, bvalid;
+    logic aw_latched, w_latched;
     logic [C_S_AXI_ADDR_WIDTH-1:0] awaddr_q;
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            awready <= 0; wready <= 0; bvalid <= 0; awaddr_q <= 0;
+    logic [C_S_AXI_DATA_WIDTH-1:0] wdata_q;
+
+    wire aw_hs = S_AXI_AWVALID && awready;
+    wire w_hs  = S_AXI_WVALID  && wready;
+
+    // коммит в DATA разрешён только при свободном mailbox; при занятом -
+    // защёлки AW/W держатся, шина получает backpressure
+    wire wr_commit_en = (awaddr_q[ADDR_LSB+:2] != 2'd2) || !mbox_busy;
+    wire wr_commit = aw_latched && w_latched && !bvalid && wr_commit_en;
+
+    wire aw_latched_n = aw_hs ? 1'b1 : (wr_commit ? 1'b0 : aw_latched);
+    wire w_latched_n  = w_hs  ? 1'b1 : (wr_commit ? 1'b0 : w_latched);
+    wire bvalid_n     = wr_commit ? 1'b1 :
+                        (bvalid && S_AXI_BREADY) ? 1'b0 : bvalid;
+    wire wr_commit_n  = aw_latched_n && w_latched_n && !bvalid_n;
+
+    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
+        if (!S_AXI_ARESETN) begin
+            awready <= 0; wready <= 0; bvalid <= 0;
+            aw_latched <= 0; w_latched <= 0;
+            awaddr_q <= 0; wdata_q <= 0;
         end else begin
-            awready <= 0; wready <= 0;
-            if (S_AXI_AWVALID && !awready) begin
-                awaddr_q <= S_AXI_AWADDR;
-                awready <= 1;
-            end
-            if (S_AXI_WVALID && !wready) begin
-                wready <= 1;
-            end
-            bvalid <= 0;
-            if (S_AXI_AWVALID && S_AXI_WVALID && !bvalid) begin
-                bvalid <= 1;
-            end
-            if (bvalid && S_AXI_BREADY) bvalid <= 0;
+            if (aw_hs) awaddr_q <= S_AXI_AWADDR;
+            if (w_hs)  wdata_q  <= S_AXI_WDATA;
+            aw_latched <= aw_latched_n;
+            w_latched  <= w_latched_n;
+            bvalid     <= bvalid_n;
+            awready <= !aw_latched_n || wr_commit_n;
+            wready  <= !w_latched_n  || wr_commit_n;
         end
     end
 
+    // ==================== read channel ==========================================
     logic arready, rvalid;
     logic [C_S_AXI_ADDR_WIDTH-1:0] araddr_q;
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    wire ar_hs = S_AXI_ARVALID && arready;
+    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
+        if (!S_AXI_ARESETN) begin
             arready <= 0; rvalid <= 0; araddr_q <= 0;
         end else begin
-            arready <= 0;
-            if (S_AXI_ARVALID && !arready) begin
-                araddr_q <= S_AXI_ARADDR;
+            if (S_AXI_ARVALID && !arready && !rvalid) begin
                 arready <= 1;
+            end else begin
+                arready <= 0;
             end
-            if (arready && !rvalid) begin
-                rvalid <= 1;
+            if (ar_hs) begin
+                araddr_q <= S_AXI_ARADDR;
+                rvalid   <= 1;
+            end else if (rvalid && S_AXI_RREADY) begin
+                rvalid <= 0;
             end
-            if (rvalid && S_AXI_RREADY) rvalid <= 0;
         end
     end
 
-    logic [C_S_AXI_DATA_WIDTH-1:0] rdata;
+    // ==================== CTRL/STATUS (fast-домен) ==============================
     logic go_reg, stop_reg;
-    logic ready_q, busy_q;
+    logic go_toggle, stop_toggle;       // toggle-флаги для CDC в slow-домен
 
-    always_comb begin
-        case (araddr_q[ADDR_LSB+:2])
-            2'd0: rdata = {30'b0, stop_reg, go_reg};
-            2'd1: rdata = {30'b0, busy_q, ready_q};
-            default: rdata = 32'h0;
-        endcase
+    wire wr_commit_ctrl = wr_commit && (awaddr_q[ADDR_LSB+:2] == 2'd0);
+    wire wr_commit_data = wr_commit && (awaddr_q[ADDR_LSB+:2] == 2'd2);
+
+    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
+        if (!S_AXI_ARESETN) begin
+            go_reg <= 0; stop_reg <= 0;
+            go_toggle <= 0; stop_toggle <= 0;
+        end else begin
+            if (wr_commit_ctrl) begin
+                go_reg   <= wdata_q[0];
+                stop_reg <= wdata_q[1];
+            end else begin
+                go_reg   <= 0;   // самосброс
+                stop_reg <= 0;
+            end
+            if (wr_commit_ctrl && wdata_q[0]) go_toggle   <= ~go_toggle;
+            if (wr_commit_ctrl && wdata_q[1]) stop_toggle <= ~stop_toggle;
+        end
+    end
+
+    // ==================== mailbox: приём слов (fast-домен) ======================
+    wire ack_edge = (ack_sync_ff2 != ack_toggle_prev); // вернулся ack
+
+    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
+        if (!S_AXI_ARESETN) begin
+            word_q <= 0; in_flight <= 0;
+            req_toggle <= 0; ack_toggle <= 0;
+            ack_toggle_prev <= 0;
+            ack_sync_ff1 <= 0; ack_sync_ff2 <= 0;
+        end else begin
+            // 2FF синхронизатор ack (slow -> fast)
+            ack_sync_ff1    <= ack_toggle;
+            ack_sync_ff2    <= ack_sync_ff1;
+            ack_toggle_prev <= ack_sync_ff2;
+
+            // in_flight: новая запись имеет приоритет над возвратом ack
+            if (wr_commit_data) in_flight <= 1;
+            else if (ack_edge)  in_flight <= 0;
+
+            // загрузка активного слота (только при свободном mailbox)
+            if (wr_commit_data) begin
+                word_q     <= wdata_q;
+                req_toggle <= ~req_toggle;
+            end
+        end
     end
 
     assign S_AXI_AWREADY = awready;
-    assign S_AXI_WREADY = wready;
-    assign S_AXI_BRESP = 2'b00;
-    assign S_AXI_BVALID = bvalid;
+    assign S_AXI_WREADY  = wready;
+    assign S_AXI_BRESP   = 2'b00;
+    assign S_AXI_BVALID  = bvalid;
     assign S_AXI_ARREADY = arready;
-    assign S_AXI_RRESP = 2'b00;
-    assign S_AXI_RVALID = rvalid;
+    assign S_AXI_RRESP   = 2'b00;
+    assign S_AXI_RVALID  = rvalid;
+
+    logic [C_S_AXI_DATA_WIDTH-1:0] rdata;
+    always_comb begin
+        case (araddr_q[ADDR_LSB+:2])
+            2'd0: rdata = {30'b0, stop_reg, go_reg};
+            2'd1: rdata = {30'b0, busy_sync_ff2, !mbox_busy}; // {BUSY, READY}
+            default: rdata = 32'h0;
+        endcase
+    end
     assign S_AXI_RDATA = rdata;
 
-    logic [31:0] data_reg;
-    logic data_wr;
-    assign data_wr = S_AXI_AWVALID && S_AXI_WVALID && (S_AXI_AWADDR[ADDR_LSB+:2] == 2'd2);
+    // ==================== slow-домен (icap_clk = 62.5 МГц) ======================
+    logic icap_clk;
+    BUFGCE_DIV #(
+        .BUFGCE_DIVIDE(2)
+    ) u_clkdiv (
+        .I(S_AXI_ACLK),
+        .CE(1'b1),
+        .CLR(1'b0),
+        .O(icap_clk)
+    );
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            go_reg <= 0; stop_reg <= 0; data_reg <= 0;
+    // сброс slow-домена (async assert, sync deassert к icap_clk)
+    logic icap_rst_n;
+    always_ff @(posedge icap_clk or negedge S_AXI_ARESETN) begin
+        if (!S_AXI_ARESETN) icap_rst_n <= 0;
+        else               icap_rst_n <= 1;
+    end
+
+    (* ASYNC_REG = "TRUE" *) logic req_sync_ff1, req_sync_ff2, req_prev;
+    (* ASYNC_REG = "TRUE" *) logic go_sync_ff1, go_sync_ff2, go_prev;
+    (* ASYNC_REG = "TRUE" *) logic stop_sync_ff1, stop_sync_ff2, stop_prev;
+    logic busy_q;
+    logic icap_cs, icap_rw;
+    logic [C_S_AXI_DATA_WIDTH-1:0] icap_data;
+
+    always_ff @(posedge icap_clk or negedge icap_rst_n) begin
+        if (!icap_rst_n) begin
+            req_sync_ff1 <= 0; req_sync_ff2 <= 0; req_prev <= 0;
+            go_sync_ff1 <= 0; go_sync_ff2 <= 0; go_prev <= 0;
+            stop_sync_ff1 <= 0; stop_sync_ff2 <= 0; stop_prev <= 0;
+            busy_q <= 0;
+            icap_cs <= 1; icap_rw <= 1; icap_data <= 0;
         end else begin
-            if (S_AXI_AWVALID && S_AXI_WVALID) begin
-                if (S_AXI_AWADDR[ADDR_LSB+:2] == 2'd0) begin
-                    go_reg <= S_AXI_WDATA[0];
-                    stop_reg <= S_AXI_WDATA[1];
-                end
-                if (S_AXI_AWADDR[ADDR_LSB+:2] == 2'd2) begin
-                    data_reg <= S_AXI_WDATA;
-                end
+            // 2FF синхронизаторы toggle-флагов (fast -> slow)
+            req_sync_ff1  <= req_toggle;  req_sync_ff2  <= req_sync_ff1;
+            go_sync_ff1   <= go_toggle;   go_sync_ff2   <= go_sync_ff1;
+            stop_sync_ff1 <= stop_toggle; stop_sync_ff2 <= stop_sync_ff1;
+
+            // окно выборки: на req-edge открываем CSIB на РОВНО 1 такт
+            if (req_sync_ff2 != req_prev) begin
+                req_prev   <= req_sync_ff2;
+                icap_data  <= word_q;    // слово стабильно весь цикл (handshake)
+                icap_cs    <= 0;
+                icap_rw    <= 0;
+                ack_toggle <= ~ack_toggle;
             end else begin
-                if (go_reg) go_reg <= 0;
-                if (stop_reg) stop_reg <= 0;
+                icap_cs <= 1;
+                icap_rw <= 1;
+            end
+
+            // STOP перекрывает окно: принудительно закрываем
+            if (stop_sync_ff2 != stop_prev) begin
+                stop_prev <= stop_sync_ff2;
+                busy_q    <= 0;
+                icap_cs   <= 1;
+                icap_rw   <= 1;
+            end else if (go_sync_ff2 != go_prev) begin
+                go_prev <= go_sync_ff2;
+                busy_q  <= 1;            // сессия начата
             end
         end
     end
 
-    logic icap_cs, icap_rw;
-    logic [31:0] icap_data;
+    // STATUS.BUSY: slow -> fast (2FF)
+    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
+        if (!S_AXI_ARESETN) begin
+            busy_sync_ff1 <= 0; busy_sync_ff2 <= 0;
+        end else begin
+            busy_sync_ff1 <= busy_q;
+            busy_sync_ff2 <= busy_sync_ff1;
+        end
+    end
 
+    // ==================== ICAPE2 ================================================
     ICAPE2 #(
         .ICAP_WIDTH("X32"),
         .SIM_CFG_FILE_NAME("NONE")
     ) u_icap (
-        .O(),
-        .CLK(clk),
+        .O(),                // статусная шина не используется
+        .CLK(icap_clk),      // 62.5 МГц (лимит ICAPE2 для Artix-7: 100 МГц)
         .CSIB(icap_cs),
         .I(icap_data),
         .RDWRB(icap_rw)
     );
-
-    logic [1:0] clk_en_cnt;
-    logic clk_en;
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) clk_en_cnt <= 0;
-        else clk_en_cnt <= clk_en_cnt + 1;
-    end
-    assign clk_en = (clk_en_cnt == 0);
-
-    localparam ST_IDLE = 0;
-    localparam ST_SEND = 1;
-    localparam ST_WAIT = 2;
-    logic [1:0] state;
-
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            state <= ST_IDLE;
-            ready_q <= 1; busy_q <= 0;
-            icap_cs <= 1; icap_rw <= 1; icap_data <= 0;
-        end else begin
-            case (state)
-                ST_IDLE: begin
-                    icap_cs <= 1; icap_rw <= 1;
-                    ready_q <= 1;
-                    if (go_reg) begin
-                        busy_q <= 1; ready_q <= 0;
-                        icap_cs <= 0; icap_rw <= 0;
-                        state <= ST_SEND;
-                    end
-                    if (stop_reg) begin
-                        busy_q <= 0;
-                    end
-                end
-                ST_SEND: begin
-                    if (!clk_en) begin
-                    end else if (data_wr) begin
-                        icap_data <= S_AXI_WDATA;
-                        ready_q <= 0;
-                        state <= ST_WAIT;
-                    end else if (stop_reg) begin
-                        icap_cs <= 1; icap_rw <= 1;
-                        busy_q <= 0;
-                        state <= ST_IDLE;
-                    end
-                end
-                ST_WAIT: begin
-                    ready_q <= 0;
-                    if (clk_en) begin
-                        ready_q <= 1;
-                        state <= ST_SEND;
-                    end
-                end
-                default: state <= ST_IDLE;
-            endcase
-        end
-    end
 
 endmodule

@@ -161,8 +161,9 @@ module tb_tdot_axi4;
     end
 
     // ---------------- хост: AXI-Lite access ----------------
-    // Детерминированный протокол: держим VALID 3 такта, ждём BVALID.
-    // DUT: awready/wready - импульсы на 1 такт, bvalid - на 1 такт.
+    // Детерминированный протокол: держим VALID минимум такт, ждём AWREADY/WREADY,
+    // снимаем VALID через такт после handshake, ждём BVALID (1 такт).
+    // DUT: awready/wready держатся до заполнения защёлок, bvalid - импульс на 1 такт.
     integer k;
 
     task axi_lite_write(input [7:0] addr, input [31:0] data);
@@ -171,7 +172,21 @@ module tb_tdot_axi4;
             S_AXI_AWADDR = addr; S_AXI_AWVALID = 1;
             S_AXI_WDATA = data; S_AXI_WSTRB = 4'hF; S_AXI_WVALID = 1;
             S_AXI_BREADY = 1;
-            repeat (3) @(posedge clk);
+            // Держим VALID минимум один полный такт, затем ждём handshake
+            // (AWREADY && WREADY) и снимаем VALID через такт ПОСЛЕ него:
+            // удержание VALID после завершённого handshake - это уже НОВАЯ
+            // запись с точки зрения AXI (DUT корректно применит её повторно).
+            @(posedge clk);
+            k = 0;
+            while (!(S_AXI_AWREADY && S_AXI_WREADY)) begin
+                @(posedge clk);
+                k = k + 1;
+                if (k > 50) begin
+                    $display("W TIMEOUT (handshake) addr=%02h", addr);
+                    $finish;
+                end
+            end
+            @(posedge clk);
             S_AXI_AWVALID = 0; S_AXI_WVALID = 0;
             k = 0;
             while (!S_AXI_BVALID) begin
@@ -190,10 +205,10 @@ module tb_tdot_axi4;
 
     task axi_lite_read(input [7:0] addr, output [31:0] data);
         begin
+            // Без race: RREADY держим 0, пока не увидим RVALID (DUT держит
+            // RVALID до handshake). Слово принимаем только после выборки data.
             @(posedge clk);
-            S_AXI_ARADDR = addr; S_AXI_ARVALID = 1; S_AXI_RREADY = 1;
-            repeat (3) @(posedge clk);
-            S_AXI_ARVALID = 0;
+            S_AXI_ARADDR = addr; S_AXI_ARVALID = 1; S_AXI_RREADY = 0;
             k = 0;
             while (!S_AXI_RVALID) begin
                 @(posedge clk);
@@ -204,8 +219,9 @@ module tb_tdot_axi4;
                 end
             end
             data = S_AXI_RDATA;
+            S_AXI_RREADY = 1;            // принимаем слово
             @(posedge clk);
-            S_AXI_RREADY = 0;
+            S_AXI_ARVALID = 0; S_AXI_RREADY = 0;
             $display("R %02h => %08h", addr, data);
         end
     endtask

@@ -66,19 +66,23 @@ validate_bd_design
 save_bd_design
 puts "=== BD: GPIO 0x40000000, TDOT 0x40001000, ICAP 0x40002000 ==="
 
-puts "=== 6. REGENERATE WRAPPER (preserve IP cores) ==="
+puts "=== 6. EXPORT CLOCK FROM BD (axi_aclk_out / axi_aresetn_out / axi_aclk_in) ==="
+# идемпотентно: создаёт/подключает порты, если их ещё нет; BD уже открыт и сохранён
+source ${proj_dir}/scripts/fix_bd_clock_export.tcl
+
+puts "=== 7. REGENERATE WRAPPER (preserve IP cores) ==="
 make_wrapper -files [get_files xdma_ddr3.bd] -top -force
 update_compile_order -fileset sources_1
 update_compile_order -fileset constrs_1
 
-puts "=== 7. RESET RUNS (delete stale placement) ==="
+puts "=== 8. RESET RUNS ==="
+# NOTE: каталоги runs/synth_1 и runs/impl_1 руками НЕ удалять — после
+# file delete -force Vivado падал с "Run synth_1 needs to be reset before
+# launching" (см. build/vivado_build.log:121). Достаточно reset_run.
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
-set rdir [get_property DIRECTORY [current_project]]
-file delete -force "${rdir}/${proj_name}.runs/synth_1"
-file delete -force "${rdir}/${proj_name}.runs/impl_1"
 
-puts "=== 8. SYNTHESIS ==="
+puts "=== 9. SYNTHESIS ==="
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
 launch_runs synth_1 -jobs 19
 wait_on_run synth_1
@@ -89,7 +93,7 @@ if {[string first "complete" [string tolower $st]] == -1} {
     close_project; exit 1
 }
 
-puts "=== 9. IMPLEMENTATION + BITSTREAM ==="
+puts "=== 10. IMPLEMENTATION + BITSTREAM ==="
 launch_runs impl_1 -to_step write_bitstream -jobs 19
 wait_on_run impl_1
 set st2 [get_property STATUS [get_runs impl_1]]
@@ -99,7 +103,7 @@ if {[string first "complete" [string tolower $st2]] == -1} {
     close_project; exit 1
 }
 
-puts "=== 10. WRITE BITSTREAMS ==="
+puts "=== 11. WRITE BITSTREAMS ==="
 open_run impl_1
 set bit_path "${proj_dir}/${proj_name}/${proj_name}.runs/impl_1/${top_name}.bit"
 set bin_path "${proj_dir}/${proj_name}/${proj_name}.runs/impl_1/${top_name}.bin"

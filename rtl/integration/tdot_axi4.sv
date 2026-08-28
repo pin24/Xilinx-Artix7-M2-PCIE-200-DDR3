@@ -18,15 +18,16 @@
 //   [0x00] CTRL    бит0 GO (самосброс через такт)
 //   [0x04] STATUS  бит0 BUSY, бит1 DONE
 //   [0x08] N_IN    число пар (1..NUM_MAC)
-//   [0x0C] RES0    результат [15:0]            (DONE)
-//   [0x10] RES1    результат [47:32]           (DONE)
+//   [0x0C] RES0    результат [31:0]            (DONE)
+//   [0x10] RES1    {16'h0, результат[47:32]}   (DONE)
 //   [0x14] DATA_ADDR_LO    data_start[31:0]
 //   [0x18] DATA_ADDR_HI    data_start[63:32]
 //   [0x1C] WEIGHTS_ADDR_LO weights_start[31:0]
 //   [0x20] WEIGHTS_ADDR_HI weights_start[63:32]
 //   [0x24] RESULT_ADDR_LO  result_addr[31:0]
 //   [0x28] RESULT_ADDR_HI  result_addr[63:32]
-//   [0x2C] CORE_RES0, [0x30] CORE_RES1 - зеркала результата ядра (read-only)
+//   [0x2C] CORE_RES0 результат [31:0], [0x30] CORE_RES1 {16'h0, результат[47:32]}
+//                  - read-only зеркала результата ядра
 //
 // Протокол работы (GO=1):
 //   (1) burst-чтение N_IN слов data    (по BURST_RD_LEN слов/транзакция)
@@ -144,82 +145,109 @@ module tdot_axi4 #(
     logic [31:0] res0_reg, res1_reg;
     logic busy_q, done_q;
 
-    // AXI-Lite write channel
+    // AXI-Lite write channel: приём AW и W НЕЗАВИСИМЫЙ, с защёлками глубиной 1.
+    // Запись применяется (commit), когда защёлкнуты ОБА (адрес и данные),
+    // а bvalid свободен. Это устраняет тупик/потерю записи, когда AWVALID
+    // и WVALID не совпадают в одном такте.
     logic awready, wready, bvalid;
-    logic [C_S_AXI_ADDR_WIDTH-1:0] awaddr;
+    logic aw_latched, w_latched;    // занятость защёлок адреса/данных
+    logic [C_S_AXI_ADDR_WIDTH-1:0] awaddr_q;
+    logic [C_S_AXI_DATA_WIDTH-1:0] wdata_q;
+
+    wire aw_hs     = S_AXI_AWVALID && awready;            // handshake AW
+    wire w_hs      = S_AXI_WVALID  && wready;             // handshake W
+    wire wr_commit = aw_latched && w_latched && !bvalid;  // commit: оба защёлкнуты, B свободен
+
+    // состояние на следующий такт (для формирования готовностей без тупиков)
+    wire aw_latched_n = aw_hs ? 1'b1 : (wr_commit ? 1'b0 : aw_latched);
+    wire w_latched_n  = w_hs  ? 1'b1 : (wr_commit ? 1'b0 : w_latched);
+    wire bvalid_n     = wr_commit ? 1'b1 :
+                        (bvalid && S_AXI_BREADY) ? 1'b0 : bvalid;
+    wire wr_commit_n  = aw_latched_n && w_latched_n && !bvalid_n;
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            awready <= 0; wready <= 0; bvalid <= 0; awaddr <= 0;
+            awready <= 0; wready <= 0; bvalid <= 0;
+            aw_latched <= 0; w_latched <= 0;
+            awaddr_q <= 0; wdata_q <= 0;
             go_reg <= 0; n_in_reg <= NUM_MAC;
             data_start_reg <= 0; weights_start_reg <= 0; result_addr_reg <= 0;
         end else begin
-            if (S_AXI_AWVALID && !awready) begin
-                awaddr <= S_AXI_AWADDR;
-                awready <= 1;
-            end else begin
-                awready <= 0;
-            end
-            if (S_AXI_WVALID && !wready) begin
-                wready <= 1;
-            end else begin
-                wready <= 0;
-            end
-            if (S_AXI_WVALID && S_AXI_AWVALID && !bvalid) begin
-                case (S_AXI_AWADDR[5:2])
+            // приём AW/W в защёлки по handshake каждого канала независимо
+            if (aw_hs) awaddr_q <= S_AXI_AWADDR;
+            if (w_hs)  wdata_q  <= S_AXI_WDATA;
+            aw_latched <= aw_latched_n;   // handshake заполняет, commit освобождает
+            w_latched  <= w_latched_n;
+            bvalid     <= bvalid_n;       // ответ: выставляется по commit, сброс по BREADY
+            // готовности: защёлка свободна ИЛИ освободится этим тактом (commit).
+            // Если обе защёлки заняты и bvalid висит - готовности сняты,
+            // пока не освободится место.
+            awready <= !aw_latched_n || wr_commit_n;
+            wready  <= !w_latched_n  || wr_commit_n;
+            // применение записи из защёлок
+            if (wr_commit) begin
+                case (awaddr_q[5:2])
                     4'd0: begin
-                        go_reg <= S_AXI_WDATA[0];
+                        go_reg <= wdata_q[0];
                     end
-                    4'd2: n_in_reg <= S_AXI_WDATA;
-                    4'd5: data_start_reg[31:0]    <= S_AXI_WDATA;
-                    4'd6: data_start_reg[63:32]   <= S_AXI_WDATA;
-                    4'd7: weights_start_reg[31:0] <= S_AXI_WDATA;
-                    4'd8: weights_start_reg[63:32]<= S_AXI_WDATA;
-                    4'd9: result_addr_reg[31:0]   <= S_AXI_WDATA;
-                    4'd10: result_addr_reg[63:32] <= S_AXI_WDATA;
+                    4'd2: n_in_reg <= wdata_q;
+                    4'd5: data_start_reg[31:0]    <= wdata_q;
+                    4'd6: data_start_reg[63:32]   <= wdata_q;
+                    4'd7: weights_start_reg[31:0] <= wdata_q;
+                    4'd8: weights_start_reg[63:32]<= wdata_q;
+                    4'd9: result_addr_reg[31:0]   <= wdata_q;
+                    4'd10: result_addr_reg[63:32] <= wdata_q;
                     default: ;
                 endcase
-                bvalid <= 1;
             end else if (go_reg) begin
                 go_reg <= 0;   // самосброс GO
             end
-            if (bvalid && S_AXI_BREADY) bvalid <= 0;
         end
     end
 
-    // AXI-Lite read channel
+    // AXI-Lite read channel: независимый приём AR (защёлка адреса), ответ
+    // (rvalid + rdata) выставляется в следующем такте, сброс по rvalid && RREADY.
+    // Новый AR не принимается, пока висит непрочитанный ответ.
     logic arready, rvalid;
-    logic [C_S_AXI_ADDR_WIDTH-1:0] araddr;
+    logic [C_S_AXI_ADDR_WIDTH-1:0] araddr_q;
+    wire ar_hs = S_AXI_ARVALID && arready;   // handshake AR
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            arready <= 0; rvalid <= 0; araddr <= 0;
+            arready <= 0; rvalid <= 0; araddr_q <= 0;
         end else begin
-            if (S_AXI_ARVALID && !arready) begin
-                araddr <= S_AXI_ARADDR;
+            // готовность к приёму AR: через такт после ARVALID и только
+            // при отсутствии висящего ответа
+            if (S_AXI_ARVALID && !arready && !rvalid) begin
                 arready <= 1;
             end else begin
                 arready <= 0;
             end
-            if (arready) rvalid <= 1;
-            if (rvalid && S_AXI_RREADY) rvalid <= 0;
+            // приём AR: фиксируем адрес, rvalid - в следующем такте
+            if (ar_hs) begin
+                araddr_q <= S_AXI_ARADDR;
+                rvalid   <= 1;
+            end else if (rvalid && S_AXI_RREADY) begin
+                rvalid <= 0;
+            end
         end
     end
 
     logic [C_S_AXI_DATA_WIDTH-1:0] rdata;
     always_comb begin
-        case (araddr[5:2])
+        case (araddr_q[5:2])
             4'd0: rdata = {31'b0, go_reg};
             4'd1: rdata = {30'b0, done_q, busy_q};
             4'd2: rdata = n_in_reg;
-            4'd3: rdata = {16'h0, res0_reg[15:0]};
-            4'd4: rdata = {16'h0, res1_reg[15:0]};
+            4'd3: rdata = res0_reg;                      // результат [31:0]
+            4'd4: rdata = res1_reg;                      // {16'h0, результат [47:32]}
             4'd5: rdata = data_start_reg[31:0];
             4'd6: rdata = data_start_reg[63:32];
             4'd7: rdata = weights_start_reg[31:0];
             4'd8: rdata = weights_start_reg[63:32];
             4'd9: rdata = result_addr_reg[31:0];
             4'd10: rdata = result_addr_reg[63:32];
-            4'd11: rdata = {16'h0, core_result[15:0]};
-            4'd12: rdata = {16'h0, core_result[47:32]};
+            4'd11: rdata = core_result[31:0];            // CORE_RES0: результат [31:0]
+            4'd12: rdata = {16'h0, core_result[47:32]};  // CORE_RES1: результат [47:32]
             default: rdata = 32'h0;
         endcase
     end
@@ -238,14 +266,17 @@ module tdot_axi4 #(
     logic [FIFO_PTRW:0] fifo_wr, fifo_rd;
     logic fifo_push, fifo_pop;
     logic [47:0] fifo_q;
+    logic fifo_clr;   // принудительный сброс указателей при новом запуске (из контроллера)
     wire fifo_full  = (fifo_wr - fifo_rd) >= FIFO_DEPTH;
     wire fifo_empty = (fifo_wr == fifo_rd);
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) fifo_wr <= 0;
+        else if (fifo_clr) fifo_wr <= 0;      // новый запуск: сброс указателя записи
         else if (fifo_push) fifo_wr <= fifo_wr + 1;
     end
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) fifo_rd <= 0;
+        else if (fifo_clr) fifo_rd <= 0;      // новый запуск: сброс указателя чтения
         else if (fifo_pop) fifo_rd <= fifo_rd + 1;
     end
     always_ff @(posedge clk) begin
@@ -405,7 +436,11 @@ module tdot_axi4 #(
 
     logic [2:0] cstate;
     logic go_q;
-    wire go_pulse = go_reg && !go_q;
+    wire go_pulse  = go_reg && !go_q;
+    // GO принимается только когда ядро свободно (busy_q=0): повторный GO во
+    // время выполнения перезапускал бы FSM и портил содержимое FIFO.
+    wire go_accept = go_pulse && !busy_q;
+    assign fifo_clr = go_accept;   // на новом запуске сбрасываем указатели FIFO
     logic [$clog2(2*NUM_MAC):0] load_idx;
     logic load_active;
     logic [31:0] n_in_eff;
@@ -435,7 +470,7 @@ module tdot_axi4 #(
             go_q <= go_reg;
             core_valid_in <= 0;
             rd_start <= 0; wr_start <= 0;
-            if (go_pulse) begin
+            if (go_accept) begin
                 busy_q <= 1; done_q <= 0;
                 cstate <= CS_RD_DATA;
                 rd_addr <= data_start_reg[AW-1:0];
@@ -485,8 +520,8 @@ module tdot_axi4 #(
                 CS_WAIT: begin
                     if (core_valid_out) begin
                         res_cap <= core_result;
-                        res0_reg <= {16'h0, core_result[15:0]};
-                        res1_reg <= {16'h0, core_result[47:32]};
+                        res0_reg <= core_result[31:0];              // результат [31:0]
+                        res1_reg <= {16'h0, core_result[47:32]};    // результат [47:32]
                         cstate <= CS_WR;
                         wr_addr <= result_addr_reg[AW-1:0];
                         wr_data <= {16'h0, core_result};

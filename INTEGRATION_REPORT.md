@@ -1,5 +1,19 @@
 # Интеграция троичного FP-ядра (compute_dot_par_raw, NUM_MAC=32) в XDMA+DDR3
 
+> **Обновление 28.08.2026 (исправления по ANALYSIS_AND_SPEC_FIX.md):**
+> - AXI-Lite slave `tdot_axi4`/`tdot_axi_lite` переписан: независимый приём AW/W
+>   (устранена потеря записей/зависание), RES0 = результат[31:0], RES1 = [47:32],
+>   GO при BUSY игнорируется, FIFO сбрасывается на новом запуске.
+> - `icap_ctrl` переписан: CSIB=0 ровно на 1 такт icap_clk (62.5 МГц через
+>   BUFGCE_DIV), CDC toggle-handshake, backpressure на DATA при занятом mailbox.
+>   Формат данных: хост шлёт LE-слова битстрима (sync 0xAA995566 -> DATA 0x665599AA).
+> - Такт PCIe-домена экспортирован из BD (`axi_aclk_out/axi_aresetn_out/axi_aclk_in`,
+>   `scripts/fix_bd_clock_export.tcl`) — устранены неявные провода в top и DRC
+>   SmartConnect о clock domain S01.
+> - Констрейны: добавлен `diff_clock_rtl_0_clk_n` = E10 (MGTREFCLK1N_216, UG482).
+> - Карта адресов синхронизирована с `build_all.tcl` (см. ниже).
+
+
 ## Результат синтеза (XC7A200T, Vivado 2021.2, jobs 19)
 
 Полный AXI4-мастер `tdot_axi4` + ядро + ICAP + XDMA/DDR3:
@@ -29,14 +43,15 @@
   │  XDMA M_AXI_LITE  (xdma_control, 32-бит)
   ▼
 axi_periph ─ M00 → axi_gpio            (0x4000_0000, LED)
-          ├─ M01 → S_AXI_TDOT_REGS     (0x4400_0000, tdot_axi4 регистры)
-          ├─ M02 → S_AXI_ICAP_REGS     (0x4600_0000, ICAP)
-          └─ M03 → S_AXI_DEBUG_REGS    (0x4700_0000, debug_mon)
+          ├─ M01 → S_AXI_TDOT_REGS     (0x4000_1000, tdot_axi4 регистры)
+          ├─ M02 → S_AXI_ICAP_REGS     (0x4000_2000, ICAP)
+          └─ M03 → S_AXI_XADC_REGS     (0x4500_0000, XADC; на top не подключён)
 
   хост ─ XDMA M_AXI (xdma_user) ─→ DDR3 0x8000_0000
           ↑                           ↑
-  tdot_axi4.M_AXI ─ M_AXI_TDOT ─┐ axi_smc/S01
-  debug_mon.M_AXI ─ M_AXI_DEBUG─┘ axi_smc/S02
+  tdot_axi4.M_AXI ─ M_AXI_TDOT ─┐ axi_smc/S01 (такт 125 МГц привязан через
+  (legacy-порт M_AXI_ICAP) ────┘  BD-порты axi_aclk_out/axi_aclk_in —
+                                   см. scripts/fix_bd_clock_export.tcl)
                                     │ M00 → BRAM
                                     │ M01 → MIG DDR3
                                     └ M02 → BRAM (debug буфер)

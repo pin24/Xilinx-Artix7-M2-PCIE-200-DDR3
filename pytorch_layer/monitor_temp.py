@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 
 from xdma_driver import XdmaLinux, XdmaWindows, XdmaError
 
-XADC_BASE = 0x4000_3000
+XADC_BASE = 0x4500_0000   # S_AXI_XADC_REGS: назначение из scripts/add_icap_xadc_bd.tcl;
+                          # порт есть в BD, на top-level подключается отдельным шагом
 REG_TEMP = 0x00
 REG_VCCINT = 0x04
 REG_STATUS = 0x08

@@ -46,6 +46,15 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   output [3:0]pcie_7x_mgt_rtl_0_txp;
   input reset_rtl_0;
 
+  // ---- Такт/сброс PCIe-домена: экспортируются из BD (fix_bd_clock_export.tcl) ----
+  // BD выводит axi_aclk_out (xdma_0/axi_aclk, 125 МГц) и axi_aresetn_out
+  // (xdma_0/axi_aresetn); top замыкает axi_aclk_out обратно на axi_aclk_in
+  // (loopback, одна цепь), чтобы BD мог привязать внешний slave-интерфейс
+  // M_AXI_TDOT к домену 125 МГц (CONFIG.ASSOCIATED_BUSIF) — иначе SmartConnect
+  // даёт DRC "S01_AXI do not share a common clock domain".
+  logic axi_aclk;
+  logic axi_aresetn;
+
   // ---- AXI-Lite от BD S_AXI_TDOT_REGS (хост через XDMA -> tdot_axi4) ----
   logic [31:0] s_axil_awaddr, s_axil_araddr;
   logic        s_axil_awvalid, s_axil_awready;
@@ -152,6 +161,9 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .DDR3_0_ras_n(DDR3_0_ras_n),
       .DDR3_0_reset_n(DDR3_0_reset_n),
       .DDR3_0_we_n(DDR3_0_we_n),
+      .axi_aclk_out(axi_aclk),      // экспорт xdma_0/axi_aclk из BD
+      .axi_aresetn_out(axi_aresetn),// экспорт xdma_0/axi_aresetn из BD
+      .axi_aclk_in(axi_aclk),       // loopback: та же цепь, что axi_aclk_out
       .diff_clock_rtl_0_clk_n(diff_clock_rtl_0_clk_n),
       .diff_clock_rtl_0_clk_p(diff_clock_rtl_0_clk_p),
       .gpio_rtl_0_tri_o(gpio_rtl_0_tri_o),

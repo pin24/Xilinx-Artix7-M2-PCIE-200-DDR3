@@ -1,5 +1,17 @@
 # Changelog — XDMA DDR3 Driver
 
+## [1.0.1] — 2026-08-27
+### Fixed
+- **RTL: icap_ctrl.sv — stale address bug**: write-decode использовал `awaddr_q` (зарегистрированный, non-blocking) вместо `S_AXI_AWADDR` → DATA не записывалась. Заменены все `awaddr_q` на `S_AXI_AWADDR` в write-decode.
+- **RTL: xdma_ddr3_core_top.sv — width mismatch**: `s_axil_awaddr`/`araddr` 8 бит (несовместимо с BD 32 бит) → исправлено на `[31:0]`.
+- **RTL: xdma_ddr3_core_top.sv — missing drivers**: не объявлены `s_axil_bresp`, `s_axil_rresp`, `icap_rresp` → добавлены `logic [1:0]`.
+- **RTL: icap_ctrl.sv — implicit declaration**: `icap_cs`, `icap_rw`, `icap_data` использовались в instantiation ICAPE2 до объявления → перенесены выше.
+- **build_all.tcl — GTP placement conflict**: stale checkpoint из предыдущего impl конфликтовал с новым LOC XDC. Удаление `runs/synth_1` и `runs/impl_1` диска перед сборкой.
+- **build_all.tcl — IP core destruction**: `reset_target` + `generate_target` уничтожал XDMA IP subcore (pcie2_ip). Убраны — только `make_wrapper`.
+
+### Known Issue
+- **XDMA IP subcore (pcie2_ip) повреждён**: `reset_target` + `generate_target` в предыдущей версии скрипта уничтожил лицензионный компонент. Восстановление: открыть проект в Vivado GUI, удалить XDMA IP из BD, пересоздать из IP Catalog с BAR0=128MB.
+
 ## [1.0.0] — 2026-08-26
 
 ### Fixed

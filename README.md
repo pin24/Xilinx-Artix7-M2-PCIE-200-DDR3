@@ -21,14 +21,16 @@
 | `ternary_sw/` | Python-эталон арифметики TFloat48 (arith48) и тесты |
 | `driver/`, `xdma_driver_win_src_2017/` | Windows KMDF-драйвер XDMA + test_xdma.exe (собран и подписан тестовым сертификатом WDK) |
 
-## Карта адресов (PCIe BAR / AXI)
+## Карта адресов (PCIe BAR0 128 МБ / AXI M_AXI_LITE, согласована с `scripts/build_all.tcl`)
 | Модуль | Адрес |
 |---|---|
 | AXI GPIO (LED) | 0x4000_0000 |
-| TDOT registers (акселератор) | 0x4400_0000 |
-| ICAP | 0x4600_0000 |
-| Debug monitor | 0x4700_0000 |
-| DDR3 | 0x8000_0000 |
+| TDOT registers (акселератор) | 0x4000_1000 |
+| ICAP | 0x4000_2000 |
+| XADC (S_AXI_XADC_REGS; порт заведён в BD, на top-level не подключён) | 0x4500_0000 |
+| DDR3 (через XDMA M_AXI) | 0x8000_0000 |
+
+Debug monitor (0x4700_0000 в старой документации) в текущем BD отсутствует.
 
 Данные в DDR3: `data[i]`, `weights[i]` — TFloat48 в младших 48 битах 64-битного слова; результат dot — по `result_addr`.
 
@@ -50,17 +52,24 @@ C:\Python39\python.exe rtl\integration\verify_tdot_axi4.py 32
 # Полная сборка (BD → synth → impl → bitstream)
 C:\AMDDesignTools\Vivado\2021.2\bin\vivado.bat -mode batch -source scripts\build_all.tcl
 ```
-Примечание: в `build_all.tcl` есть известная ошибка — `write_bitstream` вызывается
-с выходным файлом `.bin` (Vivado требует `.bit`), поэтому битстрим последней сборки не сгенерирован.
-(Vivado требует `.bit`) — битстрим последней сборки не был сгенерирован.
+Примечание: ошибка `write_bitstream` (вызов с `.bin` вместо `.bit`) исправлена —
+`build_all.tcl` пишет `.bit` + `-bin_file` + `.mcs`; битстрим собран 25.08 (см.
+`scripts/gen_bin_mcs.log`).
+
+Сборка также экспортирует такт PCIe-домена из BD: `scripts/fix_bd_clock_export.tcl`
+(шаг 6 в `build_all.tcl`, идемпотентно) создаёт порты `axi_aclk_out` /
+`axi_aresetn_out` / `axi_aclk_in`; в `xdma_ddr3_core_top.sv` выход замкнут на вход
+(loopback), тактируя ускоритель и ICAP реальным `xdma_0/axi_aclk`.
 
 ## Драйвер Windows
 `driver/build.cmd` (WDK) → `XDMA.sys`; тест: `test_xdma.exe`.
 Известные исправленные проблемы — см. `xdma_driver_win_src_2017/DRIVER_DEVLOG.md`.
 
 ## Открытые задачи
-- [ ] Исправить `write_bitstream` в `build_all.tcl` и собрать .bit/.bin
-- [ ] RTL-баг: GO затирает N_IN через биты [16:8] CTRL
+- [x] Исправить `write_bitstream` в `build_all.tcl` и собрать .bit/.bin — исправлено (`write_bitstream` + `-bin_file` + `.mcs`), битстрим собран 25.08
+- [x] RTL-баг: GO затирает N_IN через биты [16:8] CTRL — исправлено (`rtl/integration/tdot_axi4.sv`: запись в CTRL меняет только бит0 GO, N_IN — отдельный регистр 0x08)
+- [x] Экспорт такта из BD: порты `axi_aclk_out`/`axi_aresetn_out`/`axi_aclk_in` (`scripts/fix_bd_clock_export.tcl`, шаг 6 в `build_all.tcl`; в top — loopback на `axi_aclk`)
 - [ ] DMA-тест DDR3 (ReadBlock/WriteBlock)
 - [ ] Интеграционное тестирование на плате, загрузка через ICAP
 - [ ] Инсталлятор драйвера
+- [ ] Конфликты LOC GT-ланок PCIe (нужна схема платы; см. комментарий в конце `constraints/xdma_ddr3_pins.xdc` и `vivado_9916.backup.log:1138-1144`)
