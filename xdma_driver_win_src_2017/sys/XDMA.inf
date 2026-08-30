@@ -1,3 +1,22 @@
+; ==========================================================================
+; DEPRECATED — DO NOT USE. Retained only as a historical reference for the
+; [XDMA_Lite_Inst.NT.Wdf] / KmdfService template that informed FIX F1 in
+; driver/XDMA.inx. The canonical INF is now generated from:
+;     repo/main/driver/XDMA.inx
+; (run through stampinf by repo/main/driver/build.cmd).
+;
+; Why this file is an orphan (DRV-5 INF audit):
+;   * Class=Sample + ClassGuid={78A1C341-...} — wrong device class for a
+;     DMA/PCIe bridge. The live INF uses Class=System.
+;   * CatalogFile=xdma_lite.cat — does not match XDMA.cat produced by the
+;     active build.cmd / inf2cat pipeline.
+;   * AddService=xdma_lite — wrong service name. The live driver registers
+;     as "XDMA" (matches sc create XDMA / DriverEntry).
+;   * Not referenced by any active build.cmd — xdma_driver_win_src_2017/
+;     build.cmd copies XDMA.inx (not this .inf) to its build output.
+;
+; Marked deprecated by Task ID: FIX-4 (2026-08-29).
+; ==========================================================================
 ;
 ; XDMA Lite Driver INF
 ;

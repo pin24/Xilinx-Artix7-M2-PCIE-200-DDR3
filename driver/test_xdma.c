@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdint.h>
 #include <windows.h>
 #include <winioctl.h>
 
@@ -16,8 +17,8 @@
 #define TDOT_CTRL       (TDOT_BASE + 0x00)   /* W: [0]=GO (self-clearing) */
 #define TDOT_STATUS     (TDOT_BASE + 0x04)   /* R: [0]=BUSY, [1]=DONE */
 #define TDOT_N_IN       (TDOT_BASE + 0x08)   /* R/W: number of pairs */
-#define TDOT_RES0       (TDOT_BASE + 0x0C)   /* R: result [15:0] */
-#define TDOT_RES1       (TDOT_BASE + 0x10)   /* R: result [47:32] */
+#define TDOT_RES0       (TDOT_BASE + 0x0C)   /* R: result [31:0]            (RTL: tdot_axi4.sv:241) */
+#define TDOT_RES1       (TDOT_BASE + 0x10)   /* R: {16'h0, result [47:32]}  (RTL: tdot_axi4.sv:242) */
 #define TDOT_DATA_ADDR_LO   (TDOT_BASE + 0x14)
 #define TDOT_DATA_ADDR_HI   (TDOT_BASE + 0x18)
 #define TDOT_WEIGHTS_ADDR_LO (TDOT_BASE + 0x1C)
@@ -27,10 +28,17 @@
 #define TDOT_CORE_RES0  (TDOT_BASE + 0x2C)
 #define TDOT_CORE_RES1  (TDOT_BASE + 0x30)
 
-/* ICAP */
+/* ICAP -- CTRL/STATUS/DATA (source: icap_ctrl.sv:1-15, ADDRESS_MAP.md sec 4).
+ *   [0x00] CTRL   W: [0]=GO (self-clear), [1]=STOP (self-clear)
+ *   [0x04] STATUS R: [0]=READY (mailbox free), [1]=BUSY (session active)
+ *   [0x08] DATA   W: 32-bit ICAP word (LE bswap of BE .bin word)            */
 #define ICAP_BASE       0x40002000UL
-#define ICAP_GO         (ICAP_BASE + 0x00)
-#define ICAP_READY      (ICAP_BASE + 0x04)
+#define ICAP_CTRL       (ICAP_BASE + 0x00)
+#define ICAP_STATUS     (ICAP_BASE + 0x04)
+#define ICAP_DATA       (ICAP_BASE + 0x08)
+/* Backward-compat aliases (deprecated -- prefer ICAP_CTRL / ICAP_STATUS): */
+#define ICAP_GO         ICAP_CTRL
+#define ICAP_READY      ICAP_STATUS
 
 /* XADC — BD: axi_periph M02 @ 0x4600_0000 */
 #define XADC_BASE       0x46000000UL
@@ -55,12 +63,17 @@
 ULONG  ReadReg(HANDLE hDev, ULONG addr);
 void   WriteReg(HANDLE hDev, ULONG addr, ULONG value);
 
+/* DMA block I/O (BAR2/DDR3) -- CancelIo-safe, see FIX T2. */
+BOOL   XdmaRead(HANDLE hDev, uint64_t offset, void* buf, size_t len, DWORD timeout_ms);
+BOOL   XdmaWrite(HANDLE hDev, uint64_t offset, const void* buf, size_t len, DWORD timeout_ms);
+
 /* Test cases */
 BOOL   TestGpio(HANDLE hDev);
 BOOL   TestTdotRegs(HANDLE hDev);
 BOOL   TestXadc(HANDLE hDev);
 BOOL   TestTdotProtocol(HANDLE hDev);
 BOOL   TestIcap(HANDLE hDev);
+BOOL   TestDdr3(HANDLE hDev);
 
 /* Utils */
 static const char* PassFail(BOOL ok);
@@ -87,10 +100,18 @@ ULONG ReadReg(HANDLE hDev, ULONG addr)
     if (!ReadFile(hDev, &val, sizeof(val), &br, &ov)) {
         if (GetLastError() == ERROR_IO_PENDING) {
             DWORD waitResult = WaitForSingleObject(ov.hEvent, POLL_TIMEOUT_MS);
-            if (waitResult == WAIT_OBJECT_0)
+            if (waitResult == WAIT_OBJECT_0) {
                 GetOverlappedResult(hDev, &ov, &br, FALSE);
-            else
+            } else {
+                /* FIX T2 (DRIVER_DEVLOG bug #9 -- fix was incomplete):
+                 * CancelIo is ASYNC -- the driver may still touch OVERLAPPED
+                 * after CancelIo returns. Must wait for ov.hEvent to be
+                 * signalled (cancellation complete) BEFORE CloseHandle and
+                 * stack unwind, otherwise use-after-free. */
                 CancelIo(hDev);
+                WaitForSingleObject(ov.hEvent, INFINITE);
+                GetOverlappedResult(hDev, &ov, &br, FALSE);
+            }
         }
     }
     CloseHandle(ov.hEvent);
@@ -114,13 +135,95 @@ void WriteReg(HANDLE hDev, ULONG addr, ULONG value)
     if (!WriteFile(hDev, &value, sizeof(value), &bw, &ov)) {
         if (GetLastError() == ERROR_IO_PENDING) {
             DWORD waitResult = WaitForSingleObject(ov.hEvent, POLL_TIMEOUT_MS);
-            if (waitResult == WAIT_OBJECT_0)
+            if (waitResult == WAIT_OBJECT_0) {
                 GetOverlappedResult(hDev, &ov, &bw, FALSE);
-            else
+            } else {
+                /* FIX T2 (DRIVER_DEVLOG bug #9 -- fix was incomplete):
+                 * See ReadReg -- CancelIo is async; must wait for the overlapped
+                 * to be signalled before unwinding the stack frame holding it. */
                 CancelIo(hDev);
+                WaitForSingleObject(ov.hEvent, INFINITE);
+                GetOverlappedResult(hDev, &ov, &bw, FALSE);
+            }
         }
     }
     CloseHandle(ov.hEvent);
+}
+
+/* ========================================================================== */
+/*  DMA block I/O (BAR2 / DDR3) -- CancelIo-safe, 64-bit offsets              */
+/* ========================================================================== */
+/* Used by TestDdr3 (and any future DDR3-based test). Pattern follows FIX T2: */
+/* after CancelIo we MUST WaitForSingleObject(..., INFINITE) before           */
+/* CloseHandle, otherwise the driver may still be touching OVERLAPPED.        */
+
+BOOL XdmaRead(HANDLE hDev, uint64_t offset, void* buf, size_t len, DWORD timeout_ms)
+{
+    OVERLAPPED ov;
+    DWORD bytes = 0;
+
+    ZeroMemory(&ov, sizeof(ov));
+    ov.Offset     = (DWORD)(offset & 0xFFFFFFFFULL);
+    ov.OffsetHigh = (DWORD)(offset >> 32);
+    ov.hEvent     = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!ov.hEvent) return FALSE;
+
+    BOOL ok = ReadFile(hDev, buf, (DWORD)len, NULL, &ov);
+    if (!ok && GetLastError() != ERROR_IO_PENDING) {
+        CloseHandle(ov.hEvent);
+        return FALSE;
+    }
+
+    ok = GetOverlappedResult(hDev, &ov, &bytes, FALSE);   /* non-blocking */
+    if (!ok) {
+        DWORD wr = WaitForSingleObject(ov.hEvent, timeout_ms);
+        if (wr == WAIT_TIMEOUT) {
+            CancelIo(hDev);
+            /* Drain the cancellation: driver signals ov.hEvent when the
+             * IRP is finally cancelled/completed. Without this wait, the
+             * stack-allocated OVERLAPPED would be freed underneath the driver. */
+            WaitForSingleObject(ov.hEvent, INFINITE);
+            CloseHandle(ov.hEvent);
+            return FALSE;
+        }
+        GetOverlappedResult(hDev, &ov, &bytes, FALSE);
+    }
+
+    CloseHandle(ov.hEvent);
+    return TRUE;
+}
+
+BOOL XdmaWrite(HANDLE hDev, uint64_t offset, const void* buf, size_t len, DWORD timeout_ms)
+{
+    OVERLAPPED ov;
+    DWORD bytes = 0;
+
+    ZeroMemory(&ov, sizeof(ov));
+    ov.Offset     = (DWORD)(offset & 0xFFFFFFFFULL);
+    ov.OffsetHigh = (DWORD)(offset >> 32);
+    ov.hEvent     = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!ov.hEvent) return FALSE;
+
+    BOOL ok = WriteFile(hDev, buf, (DWORD)len, NULL, &ov);
+    if (!ok && GetLastError() != ERROR_IO_PENDING) {
+        CloseHandle(ov.hEvent);
+        return FALSE;
+    }
+
+    ok = GetOverlappedResult(hDev, &ov, &bytes, FALSE);
+    if (!ok) {
+        DWORD wr = WaitForSingleObject(ov.hEvent, timeout_ms);
+        if (wr == WAIT_TIMEOUT) {
+            CancelIo(hDev);
+            WaitForSingleObject(ov.hEvent, INFINITE);
+            CloseHandle(ov.hEvent);
+            return FALSE;
+        }
+        GetOverlappedResult(hDev, &ov, &bytes, FALSE);
+    }
+
+    CloseHandle(ov.hEvent);
+    return TRUE;
 }
 
 /* ========================================================================== */
@@ -304,8 +407,11 @@ BOOL TestTdotProtocol(HANDLE hDev)
     ULONG cres0  = ReadReg(hDev, TDOT_CORE_RES0);
     ULONG cres1  = ReadReg(hDev, TDOT_CORE_RES1);
 
-    /* Combine into 48-bit result: RES0[15:0] + RES1[47:32] left-justified */
-    ULONG64 result = ((ULONG64)(res1 & 0xFFFF) << 32) | (res0 & 0xFFFF);
+    /* Combine into 48-bit result.
+     * FIX T1 (B-DRV3-2): RES0 = result[31:0] (NOT [15:0]),
+     *                    RES1 = {16'h0, result[47:32]}.
+     * Source: tdot_axi4.sv:241-242, 523-524; ADDRESS_MAP.md sec 3.1. */
+    ULONG64 result = ((ULONG64)(res1 & 0xFFFF) << 32) | (res0 & 0xFFFFFFFF);
 
     printf("  RES0=0x%08lX  RES1=0x%08lX  -> combined=0x%012llX\n",
            res0, res1, result);
@@ -315,23 +421,113 @@ BOOL TestTdotProtocol(HANDLE hDev)
 }
 
 /* ========================================================================== */
-/*  Test: ICAP — fire GO, check READY flag                                    */
+/*  Test: ICAP — full GO→READY→DATA→READY→STOP→BUSY=0 protocol (FIX T3)       */
 /* ========================================================================== */
 
 BOOL TestIcap(HANDLE hDev)
 {
     printf("\n--- ICAP Test ---\n");
 
-    /* Fire GO — triggers a partial reconfiguration or idle check */
-    WriteReg(hDev, ICAP_GO, 1);
-    Sleep(50);
+    /* FIX T3: real ICAP protocol test (was a stub returning TRUE).
+     * Source: icap_ctrl.sv:1-34, ADDRESS_MAP.md §4.1.
+     * Sequence: GO -> poll READY -> DATA(sync word) -> poll READY -> STOP -> verify BUSY=0. */
 
-    ULONG ready = ReadReg(hDev, ICAP_READY);
-    printf("  ICAP_READY=0x%08lX (bit0=", ready);
-    printf((ready & 0x01) ? "1" : "0");
-    printf(")\n");
+    /* 1. CTRL.GO=1 — open session (BUSY=1, mailbox enters single-word-window mode). */
+    WriteReg(hDev, ICAP_CTRL, 0x1);
+    printf("  GO sent\n");
 
-    /* ICAP busy/ready is allowed to be 0 after a GO; just verify no bus error */
+    /* 2. Poll STATUS.READY (bit0) — mailbox must be free for the first DATA write. */
+    ULONG status = 0;
+    int retries = 100;
+    do {
+        Sleep(1);
+        status = ReadReg(hDev, ICAP_STATUS);
+        if (status == 0xFFFFFFFFUL) {
+            printf("  FAIL: bus error reading STATUS after GO\n");
+            return FALSE;
+        }
+        if (--retries == 0) {
+            printf("  FAIL: READY timeout after GO (STATUS=0x%08lX)\n", status);
+            return FALSE;
+        }
+    } while (!(status & 0x1));   /* bit0 = READY */
+
+    /* 3. Write the FPGA sync word 0xAA995566 (BE .bin) = 0x665599AA (LE in DATA).
+     *    This is the standard first word of any 7-series bitstream. */
+    WriteReg(hDev, ICAP_DATA, 0x665599AAUL);
+    printf("  sync word 0x665599AA written\n");
+
+    /* 4. Poll READY again — controller pulses CSIB=0 for one icap_clk (62.5 MHz)
+     *    per DATA write, then READY returns. */
+    retries = 100;
+    do {
+        Sleep(1);
+        status = ReadReg(hDev, ICAP_STATUS);
+        if (status == 0xFFFFFFFFUL) {
+            printf("  FAIL: bus error reading STATUS after DATA\n");
+            return FALSE;
+        }
+        if (--retries == 0) {
+            printf("  FAIL: READY timeout after DATA (STATUS=0x%08lX)\n", status);
+            return FALSE;
+        }
+    } while (!(status & 0x1));
+
+    /* 5. CTRL.STOP=1 — close session (CSIB forced high, BUSY clears). */
+    WriteReg(hDev, ICAP_CTRL, 0x2);
+    printf("  STOP sent\n");
+
+    /* 6. Verify BUSY (bit1) is cleared after STOP. */
+    Sleep(10);
+    status = ReadReg(hDev, ICAP_STATUS);
+    if (status & 0x2) {
+        printf("  FAIL: BUSY still set after STOP (STATUS=0x%08lX)\n", status);
+        return FALSE;
+    }
+
+    printf("  PASS\n");
+    return TRUE;
+}
+
+/* ========================================================================== */
+/*  Test: DDR3 roundtrip via BAR2 (DMA) — FIX T4                               */
+/* ========================================================================== */
+
+BOOL TestDdr3(HANDLE hDev)
+{
+    printf("\n--- DDR3 Test ---\n");
+
+    /* Write a 4-word test pattern at DDR3 base (0x80000000). */
+    uint64_t pattern[4] = {
+        0xDEADBEEFCAFE1234ULL,
+        0x0123456789ABCDEFULL,
+        0xFEDCBA9876543210ULL,
+        0x5555AAAA5555AAAAULL,
+    };
+    for (int i = 0; i < 4; i++) {
+        if (!XdmaWrite(hDev, DDR3_BASE + (uint64_t)i * 8,
+                       &pattern[i], sizeof(uint64_t), POLL_TIMEOUT_MS)) {
+            printf("  FAIL: DMA write at offset %d\n", i);
+            return FALSE;
+        }
+    }
+
+    /* Read back and verify each word. */
+    uint64_t readback[4] = {0};
+    for (int i = 0; i < 4; i++) {
+        if (!XdmaRead(hDev, DDR3_BASE + (uint64_t)i * 8,
+                      &readback[i], sizeof(uint64_t), POLL_TIMEOUT_MS)) {
+            printf("  FAIL: DMA read at offset %d\n", i);
+            return FALSE;
+        }
+        if (readback[i] != pattern[i]) {
+            printf("  FAIL: mismatch at %d -- wrote 0x%016llX, read 0x%016llX\n",
+                   i, (unsigned long long)pattern[i], (unsigned long long)readback[i]);
+            return FALSE;
+        }
+    }
+
+    printf("  PASS (4 64-bit words roundtrip OK)\n");
     return TRUE;
 }
 
@@ -417,6 +613,14 @@ int main(void)
     /* ------------------------------------------------------------------ */
     printf("[ICAP]      ");
     ok = TestIcap(hDev);
+    printf("  -> %s\n", PassFail(ok));
+    if (ok) pass++; else fail++;
+
+    /* ------------------------------------------------------------------ */
+    /*  DDR3 test (FIX T4)                                                */
+    /* ------------------------------------------------------------------ */
+    printf("[DDR3]      ");
+    ok = TestDdr3(hDev);
     printf("  -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
 

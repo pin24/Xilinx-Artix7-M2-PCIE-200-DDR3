@@ -287,7 +287,9 @@ def test_tdot_protocol(drv):
 
     res0 = drv.read_reg(TDOT_RES0)
     res1 = drv.read_reg(TDOT_RES1)
-    result = ((res1 & 0xFFFF) << 32) | (res0 & 0xFFFF)
+    # FIX T5 (B-DRV3-2): RES0 = result[31:0] (NOT [15:0]).
+    # Source: tdot_axi4.sv:241-242, 523-524; ADDRESS_MAP.md §3.1.
+    result = ((res1 & 0xFFFF) << 32) | (res0 & 0xFFFFFFFF)
     print(f"  RES0=0x{res0:08X} RES1=0x{res1:08X} -> combined=0x{result:012X}")
     return True
 

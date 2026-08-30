@@ -14,7 +14,7 @@
 |---|---|
 | `rtl/block/` | Блочное ядро: `tbyte_add/mul.sv`, `tfmul_raw.sv`, `tfadd_raw.sv`, `compute_dot_par_raw.sv` (параллельный dot, параметр NUM_MAC) + тестбенчи и Python-верификация |
 | `rtl/rtl/` | Ранняя версия ядра (tf40_*, конвертеры f32↔tf) |
-| `rtl/integration/` | `tdot_axi4.sv` (AXI4-мастер + AXI-Lite регистры ускорителя), `icap_ctrl.sv`, `debug_mon`, `xdma_ddr3_core_top.sv` |
+| `rtl/integration/` | `tdot_axi4.sv` (AXI4-мастер + AXI-Lite регистры ускорителя), `icap_ctrl.sv`, `xadc_temp.sv`, `xdma_ddr3_core_top.sv` |
 | `constraints/` | XDC-файлы платы |
 | `scripts/` | TCL-скрипты сборки BD (XDMA + MIG DDR3 + interconnect) и битстрима |
 | `pytorch_layer/` | Хост-софт: `fpga_backend.py`, `xdma_driver.py`, `icap_load.py`, `ternary_dot_layer.py` |
@@ -27,10 +27,10 @@
 | AXI GPIO (LED) | 0x4000_0000 |
 | TDOT registers (акселератор) | 0x4000_1000 |
 | ICAP | 0x4000_2000 |
-| XADC (S_AXI_XADC_REGS; порт заведён в BD, на top-level не подключён) | 0x4500_0000 |
+| XADC (S_AXI_XADC_REGS; FIX-5: подключён к `u_xadc` в top-level) | 0x4600_0000 |
 | DDR3 (через XDMA M_AXI) | 0x8000_0000 |
 
-Debug monitor (0x4700_0000 в старой документации) в текущем BD отсутствует.
+Debug monitor (`debug_mon.sv`) **не реализован** — файл отсутствует в `rtl/integration/`, в BD нет ни порта `S_AXI_DEBUG_REGS`, ни скрипта `add_debug_bd.tcl`. Адрес 0x4700_0000 остаётся зарезервированным (см. `docs/ADDRESS_MAP.md` §2 и `ANALYSIS_AND_SPEC_FIX.md` B-5).
 
 Данные в DDR3: `data[i]`, `weights[i]` — TFloat48 в младших 48 битах 64-битного слова; результат dot — по `result_addr`.
 
@@ -69,6 +69,7 @@ C:\AMDDesignTools\Vivado\2021.2\bin\vivado.bat -mode batch -source scripts\build
 - [x] Исправить `write_bitstream` в `build_all.tcl` и собрать .bit/.bin — исправлено (`write_bitstream` + `-bin_file` + `.mcs`), битстрим собран 25.08
 - [x] RTL-баг: GO затирает N_IN через биты [16:8] CTRL — исправлено (`rtl/integration/tdot_axi4.sv`: запись в CTRL меняет только бит0 GO, N_IN — отдельный регистр 0x08)
 - [x] Экспорт такта из BD: порты `axi_aclk_out`/`axi_aresetn_out`/`axi_aclk_in` (`scripts/fix_bd_clock_export.tcl`, шаг 6 в `build_all.tcl`; в top — loopback на `axi_aclk`)
+- [x] FIX-5: инстанцирован `xadc_temp.sv` в `xdma_ddr3_core_top.sv`; S_AXI_XADC_REGS подключён к `u_xadc` (база 0x46000000). `add_icap_xadc_bd.tcl` синхронизирован с `build_all.tcl`/`resize_bar0.tcl` (M02=ICAP@0x40002000, M03=XADC@0x46000000)
 - [ ] DMA-тест DDR3 (ReadBlock/WriteBlock)
 - [ ] Интеграционное тестирование на плате, загрузка через ICAP
 - [ ] Инсталлятор драйвера

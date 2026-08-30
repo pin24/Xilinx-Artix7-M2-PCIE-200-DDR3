@@ -1,6 +1,6 @@
 """Мониторинг температуры и напряжения чипа через XADC.
 
-Опрос регистров XADC (0x4500_0000) с заданным интервалом,
+Опрос регистров XADC (0x4600_0000) с заданным интервалом,
 вывод timestamp + температура + VCCINT, CSV-лог опционально.
 
 Usage:
@@ -16,8 +16,12 @@ from datetime import datetime, timezone
 
 from xdma_driver import XdmaLinux, XdmaWindows, XdmaError
 
-XADC_BASE = 0x4500_0000   # S_AXI_XADC_REGS: назначение из scripts/add_icap_xadc_bd.tcl;
-                          # порт есть в BD, на top-level подключается отдельным шагом
+XADC_BASE = 0x4600_0000   # S_AXI_XADC_REGS: канонический адрес (resize_bar0.tcl:52,
+                          # test_xdma.c:36, ADDRESS_MAP.md §2). Совпадает с
+                          # driver/driver.c FIX-1 (BAR0 = 0x4000_0000..0x7FFF_FFFF).
+                          # ВНИМАНИЕ: модуль xadc_temp.sv НЕ инстанцирован в
+                          # xdma_ddr3_core_top.sv — обращения возвращают DECERR
+                          # (0xFFFFFFFF) до интеграции XADC в top-level.
 REG_TEMP = 0x00
 REG_VCCINT = 0x04
 REG_STATUS = 0x08

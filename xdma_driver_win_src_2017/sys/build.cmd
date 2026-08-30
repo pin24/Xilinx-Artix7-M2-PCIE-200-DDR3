@@ -1,4 +1,28 @@
 @echo off
+REM ==========================================================================
+REM DEPRECATED — DO NOT USE. Retained only as a historical example of the
+REM bugs found in DRV-5 audit (see /home/z/my-project/worklog.md, section
+REM DRV-5 section 4). The canonical build script is now:
+REM     repo/main/driver/build.cmd
+REM
+REM Known issues in this file (all reasons it was retired):
+REM   * Line  3: hard-coded absolute path SYS=C:\A7_M2\EXAMPLES\XDMA\...
+REM   * Line 14: compiles sys/driver.c which has the EvtIoRead/EvtIoWrite
+REM              asymmetry (D4 / DRV-5 B-3) — Read subtracts AXI_LITE_BASE,
+REM              Write does not.
+REM   * Line 18: links WITHOUT wdfldr.lib + wdfdriverentry.lib — WdfDriverCreate
+REM              and friends will be unresolved.
+REM   * Line 18: no WDF include path (/I"...\wdf\kmdf\1.15") — #include <wdf.h>
+REM              in driver.c will fail to compile.
+REM   * Line 28: `sc create XDMA type=kernel binpath="..." start=demand` — NO
+REM              space after `=`. sc.exe silently treats the args as literals
+REM              (DRV-5 / DEVLOG #11). The service is created with default
+REM              (wrong) type=own, start=disabled.
+REM   * No stampinf / inf2cat / .cat creation — driver cannot be PnP-installed.
+REM   * No cert export, no certutil -addstore, no bcdedit /set testsigning on.
+REM
+REM Marked deprecated by Task ID: FIX-4 (2026-08-29).
+REM ==========================================================================
 setlocal
 set SYS=C:\A7_M2\EXAMPLES\XDMA\XDMA_Driver_App\xdma_driver_win_src_2017\sys
 set BUILD=%SYS%\..\build\x64\XDMA_Driver\Win10_Release

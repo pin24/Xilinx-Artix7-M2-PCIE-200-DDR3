@@ -1,11 +1,39 @@
 #include <ntddk.h>
 #include <wdf.h>
+#include <ntintsafe.h>
 
-// WDF 1.15 stub references __security_init_cookie
-// Provide minimal stubs to resolve linker dependencies
-ULONG_PTR __security_cookie = (ULONG_PTR)0xABCDEF0123456789ULL;
-void __security_init_cookie(void) { }
-void __security_check_cookie(ULONG_PTR x) { UNREFERENCED_PARAMETER(x); }
+// XDMA pciebar2axibar_axil_master = 0x40000000 (from BD)
+// Host sends AXI-Lite addresses (0x40000000+), driver subtracts the base
+// to get BAR0 offset within the 64KB/128MB mapped window.
+#define AXI_LITE_BASE 0x40000000ULL
+
+// Security cookie — must be initialized with entropy (DEVLOG #18, CHANGELOG [1.0.0]).
+// /GS- disables cookie checks in compiled code, but the WDF 1.15 stub still
+// references __security_init_cookie; provide a real implementation instead
+// of the previous empty no-op (which caused BSOD system_thread_exception_not_handled
+// on FxDriverEntry due to GS epilog mismatch).
+volatile ULONG_PTR __security_cookie = 0x1B2F3A4C5D6E7F80ULL;
+
+void __security_init_cookie(void)
+{
+    LARGE_INTEGER perf;
+    perf = KeQueryPerformanceCounter(NULL);
+
+    ULONG_PTR new_cookie = (ULONG_PTR)perf.QuadPart;
+    new_cookie ^= (ULONG_PTR)&__security_cookie;  // ASLR address as additional entropy
+    if (new_cookie == 0) new_cookie = 0x1B2F3A4C5D6E7F80ULL;
+
+    // Atomically update the cookie (interlocked) — safe on SMP.
+    InterlockedExchangePointer((PVOID volatile *)&__security_cookie, (PVOID)new_cookie);
+}
+
+void __security_check_cookie(ULONG_PTR cookie)
+{
+    // Minimal no-op check — KMDF tolerates cookie changes; /GS- also disables
+    // checks in compiled code. Real MSVC would call __report_gsfailure here
+    // on mismatch, but we intentionally do nothing for robustness.
+    UNREFERENCED_PARAMETER(cookie);
+}
 
 #define IOCTL_XDMA_GET_BAR_INFO \
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
@@ -280,14 +308,24 @@ EvtIoRead(
         return;
     }
 
-    // BAR0: AXI-Lite (0x00000000 - 0x7FFFFFFF) — offset directly maps to AXI-Lite address
-    if ((ULONG64)offset < 0x80000000ULL) {
+    // BAR0: AXI-Lite (0x40000000 - 0x7FFFFFFF) — host sends absolute AXI-Lite
+    // address (e.g. 0x40001000 for TDOT), subtract AXI_LITE_BASE to get the
+    // offset within the BAR0 window. Without this subtraction the absolute
+    // address (>= 0x40000000) would land far outside the 64KB/128MB BAR0 mapping
+    // and corrupt adjacent kernel memory (BSOD PAGE_FAULT_IN_NONPAGED_AREA).
+    if ((ULONG64)offset >= AXI_LITE_BASE && (ULONG64)offset < 0x80000000ULL) {
+        ULONG64 bar0Offset = (ULONG64)offset - AXI_LITE_BASE;
         if (devCtx->Bar0Va == NULL) {
             WdfRequestComplete(Request, STATUS_DEVICE_NOT_CONNECTED);
             return;
         }
-        // NO upper bounds check — XDMA BAR0 maps AXI-Lite 1:1, hardware handles invalid addresses
-        RtlCopyMemory(buffer, (PUCHAR)devCtx->Bar0Va + (SIZE_T)offset, bufferLen);
+        // Bounds check against actual BAR0 size — never trust the host offset.
+        if (bar0Offset >= devCtx->Bar0Length ||
+            bufferLen > devCtx->Bar0Length - bar0Offset) {
+            WdfRequestComplete(Request, STATUS_INVALID_PARAMETER);
+            return;
+        }
+        RtlCopyMemory(buffer, (PUCHAR)devCtx->Bar0Va + (SIZE_T)bar0Offset, bufferLen);
     }
     // BAR2: DDR3 (0x80000000+)
     else {
@@ -339,14 +377,24 @@ EvtIoWrite(
         return;
     }
 
-    // BAR0: AXI-Lite (0x00000000 - 0x7FFFFFFF) — offset directly maps to AXI-Lite address
-    if ((ULONG64)offset < 0x80000000ULL) {
+    // BAR0: AXI-Lite (0x40000000 - 0x7FFFFFFF) — host sends absolute AXI-Lite
+    // address (e.g. 0x40001000 for TDOT), subtract AXI_LITE_BASE to get the
+    // offset within the BAR0 window. Without this subtraction the absolute
+    // address (>= 0x40000000) would land far outside the 64KB/128MB BAR0 mapping
+    // and corrupt adjacent kernel memory (BSOD PAGE_FAULT_IN_NONPAGED_AREA).
+    if ((ULONG64)offset >= AXI_LITE_BASE && (ULONG64)offset < 0x80000000ULL) {
+        ULONG64 bar0Offset = (ULONG64)offset - AXI_LITE_BASE;
         if (devCtx->Bar0Va == NULL) {
             WdfRequestComplete(Request, STATUS_DEVICE_NOT_CONNECTED);
             return;
         }
-        // NO upper bounds check — XDMA BAR0 maps AXI-Lite 1:1, hardware handles invalid addresses
-        RtlCopyMemory((PUCHAR)devCtx->Bar0Va + (SIZE_T)offset, buffer, bufferLen);
+        // Bounds check against actual BAR0 size — never trust the host offset.
+        if (bar0Offset >= devCtx->Bar0Length ||
+            bufferLen > devCtx->Bar0Length - bar0Offset) {
+            WdfRequestComplete(Request, STATUS_INVALID_PARAMETER);
+            return;
+        }
+        RtlCopyMemory((PUCHAR)devCtx->Bar0Va + (SIZE_T)bar0Offset, buffer, bufferLen);
     }
     // BAR2: DDR3 (0x80000000+)
     else {

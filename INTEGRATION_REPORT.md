@@ -33,9 +33,16 @@
     - 32x `gen_mac[i].u_mul` (tfmul_raw), 1x `u_add` (tfadd_raw)
   - AXI4-обвязка (burst read/write FSM, FIFO 48-bit, AXI-Lite): ~8 657 LUT
 - `u_icap` (icap_ctrl): **~200 LUT**
-- `u_debug` (debug_mon, если добавлен): **~1 500 LUT**
+- `u_xadc` (xadc_temp, FIX-5 RTL-1): **~50 LUT** (AXI-Lite slave, raw_temp/vccint=0 пока XADC Wizard не заведён)
 - `xdma_ddr3_i` (BD): **29 197 LUT**
   - xdma_0 (XDMA): ~22 389 LUT, mig_7series_0 (DDR3): ~6 455 LUT, axi_smc: ~4 184 LUT
+
+> **Примечание (FIX-5)**: модуль `debug_mon.sv` **не реализован** —
+> заявленный в ранних версиях отчета debug-монитор отсутствует в
+> `rtl/integration/` (см. `ANALYSIS_AND_SPEC_FIX.md` B-5, P1-6). Адрес
+> 0x47000000 остаётся зарезервированным в `docs/ADDRESS_MAP.md`, но
+> в текущей сборке недоступен. Если потребуется — создать модуль и
+> скрипт `add_debug_bd.tcl` (отдельная задача).
 
 ## Схема подключения (полная)
 ```
@@ -45,16 +52,19 @@
 axi_periph ─ M00 → axi_gpio            (0x4000_0000, LED)
           ├─ M01 → S_AXI_TDOT_REGS     (0x4000_1000, tdot_axi4 регистры)
           ├─ M02 → S_AXI_ICAP_REGS     (0x4000_2000, ICAP)
-          └─ M03 → S_AXI_XADC_REGS     (0x4500_0000, XADC; на top не подключён)
+          └─ M03 → S_AXI_XADC_REGS     (0x4600_0000, XADC; FIX-5: подключён к u_xadc)
 
   хост ─ XDMA M_AXI (xdma_user) ─→ DDR3 0x8000_0000
-          ↑                           ↑
+          ↑
   tdot_axi4.M_AXI ─ M_AXI_TDOT ─┐ axi_smc/S01 (такт 125 МГц привязан через
-  (legacy-порт M_AXI_ICAP) ────┘  BD-порты axi_aclk_out/axi_aclk_in —
-                                   см. scripts/fix_bd_clock_export.tcl)
-                                    │ M00 → BRAM
-                                    │ M01 → MIG DDR3
-                                    └ M02 → BRAM (debug буфер)
+                                 │  BD-порты axi_aclk_out/axi_aclk_in —
+                                 │  см. scripts/fix_bd_clock_export.tcl)
+                                 │   │ M00 → BRAM
+                                 │   │ M01 → MIG DDR3
+                                 │   └ M02 → BRAM (debug буфер, не используется)
+
+  Legacy M_AXI_ICAP (если остался в wrapper) — удалён скриптом
+  add_icap_xadc_bd.tcl (FIX-5 RTL-3); при пересборке wrapper пропадает.
 ```
 
 ## Модули
@@ -71,9 +81,12 @@ axi_periph ─ M00 → axi_gpio            (0x4000_0000, LED)
 - Регистры: CTRL(0x00,GO/STOP), STATUS(0x04,READY/BUSY), DATA(0x08,write-only)
 - Хост пишет слова напрямую в DATA, контроллер отправляет в ICAP
 
-### debug_mon — отладка без JTAG (опционально)
-- Кольцевой буфер снапшотов в BRAM (0x0000_1000) или DDR3 (0x8003_0000)
-- Каждый снапшот: 64 байта (cstate, адреса, core_result, fifo, AXI-трафик)
+### debug_mon — НЕ реализован (отложено)
+- Модуль `debug_mon.sv` отсутствует в `rtl/integration/` (см. `ANALYSIS_AND_SPEC_FIX.md` B-5).
+- В BD нет ни порта `S_AXI_DEBUG_REGS`, ни скрипта `add_debug_bd.tcl`.
+- Адрес `0x4700_0000` остаётся зарезервированным в `docs/ADDRESS_MAP.md`.
+- Если в будущем потребуется — создать модуль и добавить через `add_debug_bd.tcl`
+  (отдельная задача, не блокирует текущую сборку).
 
 ## Формат данных в DDR3
 - `data[i]` по адресу `data_start + i*8` — TFloat48 в младших 48 битах
@@ -96,7 +109,7 @@ axi_periph ─ M00 → axi_gpio            (0x4000_0000, LED)
 | `rtl/block/tfadd_raw.sv` | Сумматор с нормализацией |
 | `rtl/integration/tdot_axi4.sv` | AXI4-мастер + AXI-Lite регистры ускорителя |
 | `rtl/integration/icap_ctrl.sv` | ICAP-контроллер для перезагрузки |
-| `rtl/integration/debug_mon.sv` | Debug-монитор (кольцевой буфер) |
+| `rtl/integration/xadc_temp.sv` | AXI-Lite slave: регистры TEMP/VCCINT/STATUS (база 0x46000000) |
 | `rtl/integration/xdma_ddr3_core_top.sv` | Top-уровень (BD + все модули) |
 
 ### BD
@@ -104,8 +117,8 @@ axi_periph ─ M00 → axi_gpio            (0x4000_0000, LED)
 |--------|-----------|
 | `scripts/add_tdot_axi4_bd.tcl` | axi_smc NUM_SI 1→2, порт M_AXI_TDOT |
 | `scripts/add_tdot_axil_host.tcl` | axi_periph NUM_MI 1→2, порт TDOT_REGS |
-| `scripts/add_icap_xadc_bd.tcl` | axi_periph NUM_MI 2→3, порт ICAP_REGS |
-| `scripts/add_debug_bd.tcl` | axi_periph 3→4, axi_smc 2→3, порт DEBUG |
+| `scripts/add_icap_xadc_bd.tcl` | axi_periph NUM_MI 2→4: M02=ICAP_REGS@0x40002000, M03=XADC_REGS@0x46000000; cleanup legacy M_AXI_ICAP (FIX-5) |
+| `scripts/add_debug_bd.tcl` | **не существует** (debug_mon не реализован, см. B-5) |
 | `scripts/build_all.tcl` | Полная сборка (BD → synth → impl → bitstream) |
 
 ### Хостовые скрипты

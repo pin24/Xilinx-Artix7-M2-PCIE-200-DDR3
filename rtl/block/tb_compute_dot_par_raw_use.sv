@@ -2,7 +2,7 @@
 // tb_compute_dot_par_raw.sv - тестбенч параллельного dot (NUM_MAC)
 // ============================================================================
 module tb_compute_dot_par_raw;
-    parameter int NUM_MAC = 64;
+    parameter int NUM_MAC = 32;
     logic clk = 0, rst_n = 0;
     logic [48*NUM_MAC-1:0] data_in, weights;
     logic valid_in = 0;

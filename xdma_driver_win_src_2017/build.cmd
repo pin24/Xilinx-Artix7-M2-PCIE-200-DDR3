@@ -54,9 +54,11 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo === Compiling test_xdma.exe ===
+rem FIX-3: duplicate xdma_driver_win_src_2017/exe/test_xdma.c removed;
+rem canonical source is now driver/test_xdma.c (single source of truth).
 cl.exe /nologo /O2 /MT /D_WIN64 /DAMD64 ^
     /Fo"%TMP_DIR%\test_xdma.obj" ^
-    "%EXE_DIR%\test_xdma.c" /Fe:"%BUILD_EXE%\test_xdma.exe" ^
+    "%~dp0..\driver\test_xdma.c" /Fe:"%BUILD_EXE%\test_xdma.exe" ^
     /I"%KIT_ROOT%\Include\%WDK_VERSION%\um" ^
     /I"%KIT_ROOT%\Include\%WDK_VERSION%\shared" ^
     /I"%KIT_ROOT%\Include\%WDK_VERSION%\ucrt" ^

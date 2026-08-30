@@ -18,21 +18,29 @@
   0x00 CTRL   бит0 GO
   0x04 STATUS бит0 BUSY, бит1 DONE
   0x08 N_IN
-  0x0C RES0, 0x10 RES1  (результат [15:0] и [47:32])
+  0x0C RES0 = result[31:0], 0x10 RES1 = {16'h0, result[47:32]}  (48-битный результат)
   0x14/0x18 DATA_ADDR_LO/HI
   0x1C/0x20 WEIGHTS_ADDR_LO/HI
   0x24/0x28 RESULT_ADDR_LO/HI
   0x2C/0x30 CORE_RES0/CORE_RES1
 """
 from __future__ import annotations
-import os, subprocess, struct
+import os, subprocess, struct, time
+
+# Границы AXI-окна (согласовано с driver/driver.c FIX-1):
+#   BAR0 = AXI-Lite  [0x4000_0000 .. 0x7FFF_FFFF]  (GPIO/TDOT/ICAP/XADC regs)
+#   BAR2 = DDR3      [0x8000_0000 .. ]             (data/weights/result)
+# Хост шлёт ПОЛНЫЕ AXI-адреса. Драйвер Linux/Windows сам маршрутизирует по этим
+# границам и вычитает базу BAR'а, чтобы получить offset внутри BAR-окна.
+AXI_LITE_BASE = 0x4000_0000   # начало BAR0 (AXI-Lite): GPIO/TDOT/ICAP/XADC
+DDR3_BASE     = 0x8000_0000   # начало BAR2 (DDR3)
 
 # адресная база AXI-Lite регистров ядра (из BD: в пределах BAR 64K)
-REG_BASE = 0x4000_1000      # tdot_axi4 регистры
-ICAP_BASE = 0x4000_2000     # ICAP-контроллер
-GPIO_BASE = 0x4000_0000     # axi_gpio (не используется)
-# адресация данных в DDR3 (из BD: MIG memmap на 0x8000_0000)
-DDR_BASE = 0x8000_0000
+REG_BASE  = 0x4000_1000      # tdot_axi4 регистры
+ICAP_BASE = 0x4000_2000      # ICAP-контроллер
+GPIO_BASE = 0x4000_0000      # axi_gpio (не используется)
+# legacy alias (модульно совместим со старым именем)
+DDR_BASE = DDR3_BASE
 
 
 def _tf48_to_bits(t) -> int:
@@ -41,8 +49,7 @@ def _tf48_to_bits(t) -> int:
 
 
 class XdmaError(RuntimeError):
-    print("XdmaError")
-    pass
+    """Ошибка взаимодействия с XDMA-устройством."""
 
 
 class XdmaDevice:
@@ -56,7 +63,13 @@ class XdmaDevice:
 
 
 class XdmaLinux(XdmaDevice):
-    """Linux: /dev/xdma0_control (BAR/regs) и /dev/xdma0_user (DDR3)."""
+    """Linux: /dev/xdma0_control (BAR0, AXI-Lite) и /dev/xdma0_user (BAR2, DDR3).
+
+    Хост шлёт ПОЛНЫЕ AXI-адреса (0x4000_xxxx для регистров, 0x8000_xxxx для DDR3).
+    Маршрутизация по двум устройствам:
+      AXI_LITE_BASE <= addr < DDR3_BASE  →  /dev/xdma0_control,  offset = addr - AXI_LITE_BASE
+      addr >= DDR3_BASE                  →  /dev/xdma0_user,     offset = addr - DDR3_BASE
+    """
 
     def __init__(self, base: str = "/dev/xdma0"):
         self.ctl = base + "_control"
@@ -65,40 +78,61 @@ class XdmaLinux(XdmaDevice):
             if not os.path.exists(p):
                 raise XdmaError(f"XDMA-устройство не найдено: {p}")
 
+    def _route(self, addr: int) -> tuple[str, int]:
+        """Вернуть (devpath, bar_offset) по полному AXI-адресу."""
+        if AXI_LITE_BASE <= addr < DDR3_BASE:
+            return self.ctl, addr - AXI_LITE_BASE
+        if addr >= DDR3_BASE:
+            return self.usr, addr - DDR3_BASE
+        raise XdmaError(f"Некорректный AXI-адрес 0x{addr:08X} "
+                        f"(должен быть >= 0x{AXI_LITE_BASE:08X})")
+
     def read(self, addr: int, length: int) -> bytes:
-        # регистры идём через control (офсет внутри BAR), DDR3 через user
-        dev = self.ctl if addr < 0x100000 else self.usr
+        dev, offset = self._route(addr)
         with open(dev, "rb", buffering=0) as f:
-            f.seek(addr)
+            f.seek(offset)
             return f.read(length)
 
     def write(self, addr: int, data: bytes) -> None:
-        dev = self.ctl if addr < 0x100000 else self.usr
+        dev, offset = self._route(addr)
         with open(dev, "wb", buffering=0) as f:
-            f.seek(addr)
+            f.seek(offset)
             f.write(data)
 
 
 class XdmaWindows(XdmaDevice):
-    """Windows: вызывает xdma_rw.exe (из XDMA_Driver_App)."""
+    r"""Windows: вызывает xdma_rw.exe (из XDMA_Driver_App).
 
-    def __init__(self, tool: str = "xdma_rw", devnode: str = "control"):
+    После FIX-1 (driver/driver.c) у драйвера единая точка входа `\\.\XDMA0`
+    (без суффиксов `\control`/`\user`); драйвер САМ маршрутизирует по offset:
+      AXI_LITE_BASE <= addr < DDR3_BASE  →  BAR0 (вычитает AXI_LITE_BASE внутри)
+      addr >= DDR3_BASE                  →  BAR2 (вычитает 0x80000000 внутри)
+    Поэтому хост шлёт ПОЛНЫЕ AXI-адреса в `xdma_rw.exe <DEVNODE> <op> <ADDR> ...`.
+
+    Если используется upstream-xdma_rw.exe с жёсткими devnode-суффиксами
+    (`control`/`user`), передайте devnode явно и при необходимости нормализуйте
+    addr (минус AXI_LITE_BASE/DDR3_BASE) перед вызовом — но это не требуется
+    для проекта, т.к. driver.c FIX-1 даёт единый symlink `\\.\XDMA0`.
+    """
+
+    def __init__(self, tool: str = "xdma_rw", devnode: str = "XDMA0"):
         self.tool = tool
         self.devnode = devnode
 
-    def _run(self, args, length=None):
-        cmd = [self.tool, self.devnode, args, f"{0x0}", "-l", str(length or 4)]
+    def _run(self, op: str, addr: int, length: int) -> bytes:
+        cmd = [self.tool, self.devnode, op, f"0x{addr:X}", "-l", str(length or 4)]
         r = subprocess.run(cmd, capture_output=True)
         if r.returncode != 0:
             raise XdmaError(f"xdma_rw не выполнился: {r.stderr.decode(errors='replace')}")
         return r.stdout
 
     def read(self, addr: int, length: int) -> bytes:
-        return self._run("read", length)
+        return self._run("read", addr, length)
 
     def write(self, addr: int, data: bytes) -> None:
+        # xdma_rw.exe ожидает байты как отдельные аргументы (LE: data[0] идёт первым).
         vals = " ".join(f"{b}" for b in data)
-        cmd = [self.tool, self.devnode, "write", f"{0x0}", *vals.split()]
+        cmd = [self.tool, self.devnode, "write", f"0x{addr:X}", *vals.split()]
         r = subprocess.run(cmd, capture_output=True)
         if r.returncode != 0:
             raise XdmaError(f"xdma_rw write не выполнился: {r.stderr.decode(errors='replace')}")
@@ -120,12 +154,22 @@ class TdotCore:
         return struct.unpack("<I", self.dev.read(REG_BASE + off, 4))[0]
 
     def set_addrs(self, data_addr: int, weights_addr: int, result_addr: int) -> None:
-        self._reg_w(0x14, data_addr & 0xFFFFFFFF)
-        self._reg_w(0x18, data_addr >> 32)
-        self._reg_w(0x1C, weights_addr & 0xFFFFFFFF)
-        self._reg_w(0x20, weights_addr >> 32)
-        self._reg_w(0x24, result_addr & 0xFFFFFFFF)
-        self._reg_w(0x28, result_addr >> 32)
+        """Программирует data/weights/result адреса в RTL.
+
+        Параметры da/wa/ra — СМЕЩЕНИЯ внутри DDR3 (в байтах, от 0x8000_0000).
+        RTL (tdot_axi4.sv) читает `data_start_reg` как ПОЛНЫЙ AXI-адрес для
+        M_AXI_ARADDR — значит, надо писать DDR3_BASE + offset, иначе RTL уйдёт
+        читать из BRAM (0x0..0x1FFF) вместо DDR3.
+        """
+        full_da = DDR3_BASE + data_addr
+        full_wa = DDR3_BASE + weights_addr
+        full_ra = DDR3_BASE + result_addr
+        self._reg_w(0x14, full_da & 0xFFFFFFFF)            # DATA_ADDR_LO
+        self._reg_w(0x18, (full_da >> 32) & 0xFFFFFFFF)    # DATA_ADDR_HI
+        self._reg_w(0x1C, full_wa & 0xFFFFFFFF)            # WEIGHTS_ADDR_LO
+        self._reg_w(0x20, (full_wa >> 32) & 0xFFFFFFFF)    # WEIGHTS_ADDR_HI
+        self._reg_w(0x24, full_ra & 0xFFFFFFFF)            # RESULT_ADDR_LO
+        self._reg_w(0x28, (full_ra >> 32) & 0xFFFFFFFF)    # RESULT_ADDR_HI
 
     def set_n(self, n: int) -> None:
         self._reg_w(0x08, n)
@@ -138,23 +182,27 @@ class TdotCore:
         return bool(s & 1), bool(s & 2)   # (busy, done)
 
     def wait_done(self, timeout_ms: float = 5000.0) -> None:
-        import time
-        t0 = time.time()
+        t0 = time.monotonic()
         while True:
             busy, done = self.status()
             if done:
                 return
-            if not busy and done is False:
-                # ни busy ни done — не началось, подождём ещё
-                pass
-            if (time.time() - t0) * 1000 > timeout_ms:
-                raise XdmaError("timeout ожидания DONE")
+            if (time.monotonic() - t0) * 1000 > timeout_ms:
+                raise XdmaError(f"timeout ожидания DONE ({timeout_ms} мс; "
+                                f"последний STATUS: busy={busy} done={done})")
+            time.sleep(0.0001)   # 100 мкс — PCIe round-trip всё равно дольше
 
     def read_result_reg(self) -> int:
-        lo = self._reg_r(0x0C) & 0xFFFF
-        hi = self._reg_r(0x10) & 0xFFFF
-        # регистры хранят [15:0] и [47:32]; [31:16] теряется -> читаем из DDR3
-        return (hi << 32) | lo
+        """RES0 = result[31:0], RES1 = {16'h0, result[47:32]} — 48-битный результат.
+
+        RTL (tdot_axi4.sv:523-524):
+          res0_reg <= core_result[31:0];              // полные 32 бита
+          res1_reg <= {16'h0, core_result[47:32]};    // только мл. 16 бит значимы
+        """
+        res0 = self._reg_r(0x0C) & 0xFFFFFFFF          # RES0 = result[31:0]
+        res1 = self._reg_r(0x10) & 0xFFFF              # RES1 = {16'h0, result[47:32]}
+        result = ((res1 & 0xFFFF) << 32) | (res0 & 0xFFFFFFFF)
+        return result  # 48 бит
 
     # ---- данные ----
     def write_tf48(self, addr: int, bits_list) -> None:
@@ -170,10 +218,13 @@ class TdotCore:
     # ---- высокоуровневый вызов ----
     def dot(self, data_bits, weights_bits, data_addr: int = 0x0,
             weights_addr: int = 0x1000, result_addr: int = 0x2000) -> int:
-        """Записывает data/weights в DDR3, запускает ядро, возвращает результат."""
+        """Записывает data/weights в DDR3, запускает ядро, возвращает результат.
+
+        data_addr/weights_addr/result_addr — СМЕЩЕНИЯ внутри DDR3 (от DDR3_BASE).
+        """
         n = len(data_bits)
-        if len(weights_bits) != n or n > self.num_mac:
-            raise ValueError(f"ожидается до {self.num_mac} пар, получено {n}")
+        if n == 0 or len(weights_bits) != n or n > self.num_mac:
+            raise ValueError(f"ожидается 1..{self.num_mac} пар, получено {n}")
         self.write_tf48(data_addr, data_bits)
         self.write_tf48(weights_addr, weights_bits)
         self.set_addrs(data_addr, weights_addr, result_addr)

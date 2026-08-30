@@ -144,6 +144,42 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .S_AXI_RVALID(icap_rvalid), .S_AXI_RREADY(icap_rready)
   );
 
+  // ======================== XADC (температура/напряжение, база 0x46000000) ========================
+  // FIX-5 RTL-1: инстанцируем xadc_temp.sv, чтобы BD-порт S_AXI_XADC_REGS (создаваемый
+  // scripts/add_icap_xadc_bd.tcl на M03 @ 0x46000000) был подключён к реальному
+  // AXI-Lite slave. Без этого wrapper-порт остаётся floating, monitor_temp.py
+  // получает decoder error / undefined. Соответствует ANALYSIS_AND_SPEC_FIX.md B-5.
+  //
+  // TODO: raw_temp/raw_vccint/raw_valid пока привязаны к 0 — нужен отдельный XADC
+  // Wizard IP в BD (xilinx.com:ip:xadc_wiz, режим Temperature/VCCINT monitoring),
+  // выходы .ip_temperature/~.ip_vccint/~.eoc вывести на top и подключить сюда.
+  // Пока slave отвечает (BVALID/RVALID формируются), но TEMP/VCCINT читаются как 0.
+  logic [7:0]  xadc_awaddr, xadc_araddr;
+  logic        xadc_awvalid, xadc_awready;
+  logic [31:0] xadc_wdata;
+  logic [3:0]  xadc_wstrb;
+  logic        xadc_wvalid, xadc_wready;
+  logic        xadc_bvalid, xadc_bready;
+  logic        xadc_arvalid, xadc_arready;
+  logic [31:0] xadc_rdata;
+  logic        xadc_rvalid, xadc_rready;
+  logic [1:0]  xadc_bresp, xadc_rresp;
+
+  xadc_temp u_xadc (
+      .S_AXI_ACLK(axi_aclk), .S_AXI_ARESETN(axi_aresetn),
+      .S_AXI_AWADDR(xadc_awaddr), .S_AXI_AWPROT(1'b0),
+      .S_AXI_AWVALID(xadc_awvalid), .S_AXI_AWREADY(xadc_awready),
+      .S_AXI_WDATA(xadc_wdata), .S_AXI_WSTRB(xadc_wstrb),
+      .S_AXI_WVALID(xadc_wvalid), .S_AXI_WREADY(xadc_wready),
+      .S_AXI_BRESP(xadc_bresp), .S_AXI_BVALID(xadc_bvalid), .S_AXI_BREADY(xadc_bready),
+      .S_AXI_ARADDR(xadc_araddr), .S_AXI_ARPROT(1'b0),
+      .S_AXI_ARVALID(xadc_arvalid), .S_AXI_ARREADY(xadc_arready),
+      .S_AXI_RDATA(xadc_rdata), .S_AXI_RRESP(xadc_rresp),
+      .S_AXI_RVALID(xadc_rvalid), .S_AXI_RREADY(xadc_rready),
+      // Источник сырых данных XADC: пока 0 (XADC Wizard IP не заведён в BD).
+      .raw_temp(16'h0), .raw_vccint(16'h0), .raw_valid(1'b0)
+  );
+
   // ======================== BD ========================
   xdma_ddr3 xdma_ddr3_i (
       .DDR3_0_addr(DDR3_0_addr),
@@ -205,6 +241,26 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .S_AXI_ICAP_REGS_arvalid(icap_arvalid), .S_AXI_ICAP_REGS_arready(icap_arready),
       .S_AXI_ICAP_REGS_rdata(icap_rdata), .S_AXI_ICAP_REGS_rresp(icap_rresp),
       .S_AXI_ICAP_REGS_rvalid(icap_rvalid), .S_AXI_ICAP_REGS_rready(icap_rready),
+      // FIX-5 RTL-1: S_AXI_XADC_REGS подключается к u_xadc (раньше floating).
+      // Канонический адрес 0x46000000 (см. docs/ADDRESS_MAP.md §2.1, resize_bar0.tcl).
+      .S_AXI_XADC_REGS_awaddr(xadc_awaddr), .S_AXI_XADC_REGS_awprot(),
+      .S_AXI_XADC_REGS_awvalid(xadc_awvalid), .S_AXI_XADC_REGS_awready(xadc_awready),
+      .S_AXI_XADC_REGS_wdata(xadc_wdata), .S_AXI_XADC_REGS_wstrb(xadc_wstrb),
+      .S_AXI_XADC_REGS_wvalid(xadc_wvalid), .S_AXI_XADC_REGS_wready(xadc_wready),
+      .S_AXI_XADC_REGS_bresp(xadc_bresp), .S_AXI_XADC_REGS_bvalid(xadc_bvalid),
+      .S_AXI_XADC_REGS_bready(xadc_bready),
+      .S_AXI_XADC_REGS_araddr(xadc_araddr), .S_AXI_XADC_REGS_arprot(),
+      .S_AXI_XADC_REGS_arvalid(xadc_arvalid), .S_AXI_XADC_REGS_arready(xadc_arready),
+      .S_AXI_XADC_REGS_rdata(xadc_rdata), .S_AXI_XADC_REGS_rresp(xadc_rresp),
+      .S_AXI_XADC_REGS_rvalid(xadc_rvalid), .S_AXI_XADC_REGS_rready(xadc_rready),
+      // FIX-5 RTL-3 (TODO, ANALYSIS_AND_SPEC_FIX.md B-3): в BD wrapper всё ещё есть
+      // legacy-порт M_AXI_ICAP (64-бит мастер от старой схемы «ICAP как мастер»). На
+      // top он НЕ подключён (ICAP теперь AXI-Lite slave), что даёт CRITICAL WARNING
+      // в impl. Удалить через TCL: `delete_bd_objs [get_bd_intf_ports M_AXI_ICAP]`
+      // (см. scripts/add_icap_xadc_bd.tcl, блок «cleanup legacy M_AXI_ICAP»), затем
+      // `make_wrapper -force`. Без Vivado на Linux выполнить нельзя — задаётся как
+      // post-synth TODO. Сам порт в этой инстанции не перечислен (Vivado оставит его
+      // unconnected — синтез проходит, impl даёт warning).
       .pcie_7x_mgt_rtl_0_rxn(pcie_7x_mgt_rtl_0_rxn),
       .pcie_7x_mgt_rtl_0_rxp(pcie_7x_mgt_rtl_0_rxp),
       .pcie_7x_mgt_rtl_0_txn(pcie_7x_mgt_rtl_0_txn),

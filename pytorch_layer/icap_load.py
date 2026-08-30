@@ -143,10 +143,25 @@ class IcapLoader:
                 raise IcapError(f"Таймаут READY на слове {i}")
             self._reg_w(REG_DATA, w)
 
+        # Отправка STOP — закрыть сессию ICAP (см. icap_ctrl.sv:11-17).
+        # Протокол: после последнего DATA хост пишет CTRL.STOP=1 → BUSY=0,
+        # CSIB принудительно поднимается. Даже при full-bitstream перезагрузке
+        # STOP успевает дойти до падения PCIe-линка (CDC toggle-handshake
+        # занимает ~5-10 тактов S_AXI_ACLK = 40-80 нс, что много раньше
+        # 5-10 секундного окна PCIe reset).
+        # Оборачиваем в try/except: при partial reconfig PCIe не падает, и STOP
+        # обязателен; при full reload возможна OSError/XdmaError на уже
+        # исчезнувшем устройстве — это нормально, игнорируем.
+        try:
+            self._reg_w(REG_CTRL, CTRL_STOP)
+            time.sleep(0.01)   # короткая пауза для CDC (toggle-handshake)
+        except (XdmaError, OSError) as e:
+            # ожидаемо при full-bitstream reload (PCIe-линк упал)
+            print(f"NOTE: STOP не доставлен (ожидаемо при full reload): {e}")
+
         print("Битстрим отправлен. FPGA перезагружается, "
-              "PCIe-линк упадёт на ~5-10 с.")
-        # После перезагрузки посылать STOP бессмысленно (устройство исчезнет);
-        # контроллер сам завершит сессию по DESYNC-потоку/сбросу.
+              "PCIe-линк упадёт на ~5-10 с (full reload) или останется "
+              "активным (partial reconfig).")
 
 
 def main():

@@ -24,6 +24,16 @@ StartType=3
 ErrorControl=1
 ServiceBinary=%12%\XDMA.sys
 
+; FIX F1 (DRV-5 INF-1): KMDF WDF section — required for WdfDriverCreate to
+; initialize correctly during PnP install. Without this, pnputil /add-driver
+; fails with STATUS_WDF_VERIFICATION_FAILURE. Section name must match the
+; DDInstall section ([XDMA_Inst.NT] -> [XDMA_Inst.NT.Wdf]).
+[XDMA_Inst.NT.Wdf]
+KmdfService=XDMA, XDMA_wdfsect
+
+[XDMA_wdfsect]
+KmdfLibraryVersion=1.15
+
 [CopyFiles]
 XDMA.sys
 
