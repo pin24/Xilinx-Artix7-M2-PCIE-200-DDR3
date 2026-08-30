@@ -16,13 +16,11 @@
 - **build.cmd**: путь к .cat исправлен
 
 ### Added
-- DFX Socket управление (decouple/shutdown) в test_xdma.c
-- HWICAP тест (чтение Device ID 0x42610000)
-- block_design_top.tcl — BD скрипт из reference
-- full.tcl — полный скрипт сборки Vivado
-- dfx_partition_default.tcl — RP с DataMovers (замена на tdot_axi4)
-- ADR-001, ADR-002 — Architecture Decision Records
-- workflow шаблоны (bug_report, feature_request)
+- **BD успешно создан через Vivado GUI**: dfx_partition (RP с tdot_axi4_wrapper) + xdma_ddr3_dfx (статик)
+- **dfx_partition_tdot.tcl** — RP с tdot_axi4 (TFloat48) вместо DataMovers
+- **tdot_axi4_wrapper.v** — Verilog-2001 обёртка для tdot_axi4.sv (BD module reference не принимает .sv)
+- **build_fpga.tcl** — полный batch-скрипт сборки (RTL + BD + synth + impl + bitstream)
+- **README.md** — полная инструкция: создание BD через GUI + batch сборка + драйвер
 
 ### Removed
 - XADC (нет в DFX архитектуре)
