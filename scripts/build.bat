@@ -6,9 +6,21 @@ REM Запуск из корня репозитория:
 REM   scripts\build.bat                 — сборка с NUM_MAC=32
 REM   scripts\build.bat NUM_MAC=16      — сборка с NUM_MAC=16
 REM   scripts\build.bat SKIP_SYNTH=1    — только создать проект без synth
+REM
+REM Особенности:
+REM   * Авто-поиск Vivado 2021.2 в стандартных путях
+REM   * Авто-subst: если путь к репозиторию длиннее 40 символов, создаётся
+REM     виртуальный диск X: (или Z:, Y:) для обхода Windows 260-byte лимита.
+REM     После сборки виртуальный диск отключается автоматически.
 REM ============================================================================
 
-setlocal
+setlocal enabledelayedexpansion
+
+REM --- Переход в корень репозитория ---
+set SCRIPT_DIR=%~dp0
+set SCRIPT_DIR=%SCRIPT_DIR:~0,-1%
+pushd "%SCRIPT_DIR%\.."
+set REPO_ROOT=%CD%
 
 REM --- Поиск Vivado 2021.2 ---
 set VIVADO_BIN=C:\Xilinx\Vivado\2021.2\bin
@@ -22,24 +34,85 @@ if not exist "%VIVADO_BIN%\vivado.bat" (
     echo   C:\Xilinx\Vivado\2021.2\bin\vivado.bat
     echo   C:\AMDDesignTools\Vivado\2021.2\bin\vivado.bat
     echo Or add vivado.bat to PATH.
+    popd
     exit /b 1
 )
 
 echo === Using Vivado: %VIVADO_BIN% ===
+echo === Repository root: %REPO_ROOT% ===
 
-REM --- Переход в корень репозитория ---
-set SCRIPT_DIR=%~dp0
-set REPO_ROOT=%SCRIPT_DIR:~0,-1%
-pushd "%REPO_ROOT%\.."
+REM ============================================================================
+REM Авто-subst: сокращаем путь если он слишком длинный (> 40 символов)
+REM Vivado + MIG IP создают глубокие вложенные пути (260+ символов),
+REM что ломает сборку на Windows с ограничением MAX_PATH.
+REM ============================================================================
+set SUBST_DRIVE=
+set NEED_SUBST=0
 
-echo === Repository root: %CD% ===
+REM Считаем длину пути (упрощённо: через string substitution)
+set "STR=%REPO_ROOT%"
+set LEN=0
+:len_loop
+if defined STR (
+    set "STR=!STR:~1!"
+    set /a LEN+=1
+    goto :len_loop
+)
+
+REM Если путь длиннее 40 символов — используем subst
+if %LEN% GTR 40 (
+    set NEED_SUBST=1
+)
+
+if %NEED_SUBST% equ 1 (
+    REM Ищем свободную букву диска: X:, потом Z:, потом Y:, потом W:
+    set "CANDIDATES=X Z Y W V U T"
+    set SUBST_DRIVE=
+    for %%D in (!CANDIDATES!) do (
+        if not defined SUBST_DRIVE (
+            if not exist %%D:\ (
+                set SUBST_DRIVE=%%D:
+            )
+        )
+    )
+    if not defined SUBST_DRIVE (
+        echo ERROR: No free drive letter for subst (X/Z/Y/W/V/U/T all in use).
+        echo Please free one of these drives or shorten repository path.
+        popd
+        exit /b 1
+    )
+    
+    echo === Path length %LEN% chars ^> 40 — using subst !SUBST_DRIVE! for short path ===
+    subst !SUBST_DRIVE! "%REPO_ROOT%"
+    if errorlevel 1 (
+        echo ERROR: subst command failed.
+        popd
+        exit /b 1
+    )
+    
+    REM Переходим на виртуальный диск
+    pushd !SUBST_DRIVE!\
+    set REPO_ROOT=!SUBST_DRIVE!\
+    echo === Short path: !REPO_ROOT! ===
+) else (
+    echo === Path length %LEN% chars — no subst needed ===
+)
+
 echo === Build script: scripts\build.tcl ===
 echo.
 
+REM --- Запуск Vivado ---
 "%VIVADO_BIN%\vivado.bat" -mode batch -source scripts\build.tcl -tclargs %*
 
 set EXITCODE=%ERRORLEVEL%
+
+REM --- Возврат в исходный каталог и отключение subst ---
 popd
+if %NEED_SUBST% equ 1 (
+    popd
+    subst !SUBST_DRIVE! /D
+    echo === Unmounted virtual drive !SUBST_DRIVE! ===
+)
 
 echo.
 if %EXITCODE% equ 0 (
