@@ -68,8 +68,11 @@ module icap_ctrl #(
     logic req_toggle;                       // fast -> slow: новое слово
     logic ack_toggle;                       // slow -> fast: слово доставлено
     logic ack_toggle_prev;
-    logic ack_sync_ff1, ack_sync_ff2;
-    logic busy_sync_ff1, busy_sync_ff2;     // BUSY (slow -> fast, для STATUS)
+    // CDC slow→fast: 2FF синхронизаторы с ASYNC_REG для Vivado CDC analyzer
+    // (без ASYNC_REG Vivado может разместить FF разрозненно, что увеличивает
+    // риск метастабильности при 125 МГц → 62.5 МГц переходе)
+    (* ASYNC_REG = "TRUE" *) logic ack_sync_ff1, ack_sync_ff2;
+    (* ASYNC_REG = "TRUE" *) logic busy_sync_ff1, busy_sync_ff2;     // BUSY (slow -> fast, для STATUS)
 
     wire mbox_busy = in_flight;             // занят mailbox (гейт commit в DATA)
 
