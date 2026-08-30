@@ -1,0 +1,40 @@
+# Vivado
+*.jou
+*.log
+*.backup.*
+.Xil/
+xsim.dir/
+*.cache/
+*.runs/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.str/
+*/.Xil/
+
+# Windows
+*.exe
+*.obj
+*.pdb
+*.sdf
+*.VC.db
+*.VC.opendb
+*.tlog/
+build_tmp/
+build/*/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Driver
+Driver/build/*.sys
+Driver/build/*.exe
+Driver/build/*.cat
+Driver/build/*.cer
+Driver/build/*.pfx
+Driver/build/*.cdf
