@@ -122,6 +122,8 @@ module tdot_axi4 #(
     localparam int FIFO_DEPTH = 2 * NUM_MAC;        // хватает на обе выборки
     localparam int FIFO_PTRW = $clog2(FIFO_DEPTH);  // бит адреса FIFO
     localparam int RD_LEN_W = $clog2(BURST_RD_LEN);
+    // NOTE: RD_LEN_W объявлен, но не используется в текущей логике. Оставлен
+    // для будущих расширений (например, динамический BURST_RD_LEN).
 
     logic clk, rst_n;
     assign clk   = M_AXI_ACLK;
@@ -267,6 +269,9 @@ module tdot_axi4 #(
     logic fifo_push, fifo_pop;
     logic [47:0] fifo_q;
     logic fifo_clr;   // принудительный сброс указателей при новом запуске (из контроллера)
+    // NOTE: fifo_full объявлен для отладки/будущего расширения (backpressure
+    // на read-channel при заполнении). В текущей логике не используется, т.к.
+    // FIFO_DEPTH = 2*NUM_MAC гарантирует, что все N_IN+NUM_MAC слов помещаются.
     wire fifo_full  = (fifo_wr - fifo_rd) >= FIFO_DEPTH;
     wire fifo_empty = (fifo_wr == fifo_rd);
     always_ff @(posedge clk or negedge rst_n) begin
@@ -336,6 +341,9 @@ module tdot_axi4 #(
                     end
                 end
                 RST_DONE: begin
+                    // defensive: гарантировать, что ar_valid_r не висит,
+                    // если ARREADY пришёл в RST_ACT, а rstate переключился
+                    ar_valid_r <= 0;
                     rstate <= RST_IDLE;
                 end
             endcase
@@ -444,7 +452,9 @@ module tdot_axi4 #(
     logic [$clog2(2*NUM_MAC):0] load_idx;
     logic load_active;
     logic [31:0] n_in_eff;
-    logic [47:0] res_cap;
+    logic [47:0] res_cap;  // TODO: dead code — res_cap записывается, но не читается.
+                           // res0_reg/res1_reg хранят тот же результат. Удалить
+                           // в отдельном коммите после проверки симуляции.
 
     always_comb begin
         if (n_in_reg == 0 || n_in_reg > NUM_MAC)

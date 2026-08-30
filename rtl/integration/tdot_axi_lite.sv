@@ -42,7 +42,7 @@ module tdot_axi_lite #(
     input  logic                                  S_AXI_ARPROT,
     input  logic                                  S_AXI_ARVALID,
     output logic                                  S_AXI_ARREADY,
-    input  logic [C_S_AXI_DATA_WIDTH-1:0]         S_AXI_RDATA,
+    output logic [C_S_AXI_DATA_WIDTH-1:0]         S_AXI_RDATA,
     output logic [1:0]                            S_AXI_RRESP,
     output logic                                  S_AXI_RVALID,
     input  logic                                  S_AXI_RREADY,

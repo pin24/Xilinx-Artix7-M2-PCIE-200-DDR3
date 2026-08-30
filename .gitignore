@@ -46,3 +46,5 @@ xdma_driver_win_src_2017/buildbuild_buckup/
 *.cdf
 *.sys
 *.exe
+parser.out
+parsetab.py
