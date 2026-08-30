@@ -45,19 +45,85 @@ Debug monitor (`debug_mon.sv`) **не реализован** — файл отс
 - Точность dot против torch: max diff ~5e-7.
 
 ## Сборка
+
+### Быстрый старт (одна команда)
+
+```cmd
+REM Из корня репозитория:
+scripts\build.bat
+```
+
+Скрипт автоматически:
+1. Находит Vivado 2021.2 (проверяет `C:\Xilinx\Vivado\2021.2\bin` и `C:\AMDDesignTools\Vivado\2021.2\bin`)
+2. Создаёт проект в `build/m2_artix7_xdma_ddr3/`
+3. Строит BD (XDMA + MIG DDR3 + GPIO + BRAM + TDOT + ICAP + XADC)
+4. Добавляет RTL троичного ядра
+5. Настраивает карту адресов (BAR0=128MB, GPIO/TDOT/ICAP/XADC)
+6. Запускает synth + impl + write_bitstream
+7. Экспортирует `.bit` / `.bin` / `.mcs` в `build/artifacts/`
+
+### Опции сборки
+
+```cmd
+REM Сборка с NUM_MAC=16 (меньше LUT):
+scripts\build.bat NUM_MAC=16
+
+REM Увеличить параллелизм:
+scripts\build.bat JOBS=12
+
+REM Только создать проект без synth (для отладки в GUI):
+scripts\build.bat SKIP_SYNTH=1
+
+REM Комбинация:
+scripts\build.bat NUM_MAC=32 JOBS=12
+```
+
+### Прямой запуск через Vivado
+
+Если `build.bat` не находит Vivado, добавьте его в PATH или запустите напрямую:
+
+```cmd
+"C:\Xilinx\Vivado\2021.2\bin\vivado.bat" -mode batch -source scripts\build.tcl -tclargs NUM_MAC=32
+```
+
+### Структура после сборки
+
+```
+build/
+├── m2_artix7_xdma_ddr3/         — Vivado проект
+│   ├── m2_artix7_xdma_ddr3.xpr
+│   ├── m2_artix7_xdma_ddr3.srcs/
+│   │   ├── sources_1/bd/xdma_ddr3/   — Block Design
+│   │   └── constrs_1/                — констрейны
+│   └── m2_artix7_xdma_ddr3.runs/
+│       ├── synth_1/                  — результаты синтеза
+│       └── impl_1/                   — результаты имплементации
+└── artifacts/                   — финальные битстримы
+    ├── xdma_ddr3_core_top.bit   — для JTAG загрузки
+    ├── xdma_ddr3_core_top.bin   — для ICAP загрузки
+    └── xdma_ddr3_core_top.mcs   — для SPI flash
+```
+
+### Верификация (опционально, перед сборкой)
+
 ```bash
-# Верификация
+# Симуляция AXI4-мастера (требует Vivado xsim):
 C:\Python39\python.exe rtl\integration\verify_tdot_axi4.py 32
 
-# Полная сборка (BD → synth → impl → bitstream)
-C:\AMDDesignTools\Vivado\2021.2\bin\vivado.bat -mode batch -source scripts\build_all.tcl
+# Статический lint RTL (без Vivado):
+python3 scripts/rtl_lint.py
 ```
+
+### Устаревший скрипт
+
+`scripts/build_all.tcl` — предыдущая версия (требует существующий проект).
+Используйте `scripts/build.tcl` для сборки с нуля.
+
 Примечание: ошибка `write_bitstream` (вызов с `.bin` вместо `.bit`) исправлена —
-`build_all.tcl` пишет `.bit` + `-bin_file` + `.mcs`; битстрим собран 25.08 (см.
-`scripts/gen_bin_mcs.log`).
+`build.tcl` пишет `.bit` + `-bin_file` + `.mcs`.
 
 Сборка также экспортирует такт PCIe-домена из BD: `scripts/fix_bd_clock_export.tcl`
-(шаг 6 в `build_all.tcl`, идемпотентно) создаёт порты `axi_aclk_out` /
+(шаг 6 в `build.tcl`, идемпотентно) создаёт порты `axi_aclk_out` /
 `axi_aresetn_out` / `axi_aclk_in`; в `xdma_ddr3_core_top.sv` выход замкнут на вход
 (loopback), тактируя ускоритель и ICAP реальным `xdma_0/axi_aclk`.
 
