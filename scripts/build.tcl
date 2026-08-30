@@ -85,7 +85,7 @@ set_property PROCESSING_ORDER NORMAL [get_files ${pins_xdc}]
 update_compile_order -fileset constrs_1
 
 # ---------- 5. Настройка BAR0=128MB и карты адресов ----------
-puts "=== 5. CONFIGURE BD: BAR0=128MB, ADDRESSES, ICAP/XADC PORTS ==="
+puts "=== 5. CONFIGURE BD: BAR0=128MB, ADDRESSES, TDOT/ICAP/XADC PORTS ==="
 open_bd_design [get_files xdma_ddr3.bd]
 
 # BAR0 = 128 MB
@@ -94,32 +94,61 @@ set_property -dict [list \
     CONFIG.pf0_bar0_size {128} \
 ] [get_bd_cells xdma_0]
 
-# GPIO: 0x40000000 (4K)
-set_property -dict [list CONFIG.C_S_AXI_ADDR_WIDTH 12] [get_bd_cells axi_gpio_0]
+# Сразу увеличиваем NUM_MI до 4 (GPIO + TDOT + ICAP + XADC) и NUM_SI до 2 для axi_smc.
+# axi_interconnect автоматически создаёт M01/M02/M03 пины при увеличении NUM_MI.
+# Вызывается до создания портов — идемпотентно при повторных запусках.
+set_property -dict [list CONFIG.NUM_MI 4] [get_bd_cells xdma_0_axi_periph]
+set_property -dict [list CONFIG.NUM_SI 2] [get_bd_cells axi_smc]
+
+# ---------- 5.1. GPIO: уменьшить с 64K до 4K (освободить место под TDOT/ICAP) ----------
+# NOTE: параметр C_S_AXI_ADDR_WIDTH не существует у axi_gpio (только у axi_bram_ctrl).
+# Размер декодирования GPIO управляется через assign_bd_address -range.
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_axi_gpio_0_Reg}]
 assign_bd_address -offset 0x40000000 -range 0x1000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
 
-# TDOT CSRs: 0x40001000 (4K) — через S_AXI_TDOT_REGS (уже есть в BD)
+# ---------- 5.2. S_AXI_TDOT_REGS: Master-порт в BD для tdot_axi4 (slave на top) ----------
+# На top-уровне xdma_ddr3_core_top.sv инстанции u_tdot подключается к этому порту.
+set tdot_regs_port [get_bd_intf_ports -quiet S_AXI_TDOT_REGS]
+if {$tdot_regs_port eq ""} {
+    puts "=== Creating S_AXI_TDOT_REGS port (M01 @ 0x40001000) ==="
+    # NUM_MI увеличен до 4 в начале секции 5 (идемпотентно)
+    create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_TDOT_REGS
+    set_property -dict [list CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] [get_bd_intf_ports S_AXI_TDOT_REGS]
+    connect_bd_intf_net [get_bd_intf_pins xdma_0_axi_periph/M01_AXI] [get_bd_intf_ports S_AXI_TDOT_REGS]
+    connect_bd_net [get_bd_pins xdma_0_axi_periph/M01_ACLK] [get_bd_pins xdma_0/axi_aclk]
+    connect_bd_net [get_bd_pins xdma_0_axi_periph/M01_ARESETN] [get_bd_pins xdma_0/axi_aresetn]
+    # ASSOCIATED_BUSIF: привязать S_AXI_TDOT_REGS к клоковому домену xdma_0/axi_aclk
+    set old_assoc [get_property CONFIG.ASSOCIATED_BUSIF [get_bd_pins xdma_0/axi_aclk]]
+    if {[string first "S_AXI_TDOT_REGS" $old_assoc] == -1} {
+        set new_assoc [string trim "$old_assoc S_AXI_TDOT_REGS"]
+        set_property -dict [list CONFIG.ASSOCIATED_BUSIF $new_assoc] [get_bd_pins xdma_0/axi_aclk]
+    }
+}
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_TDOT_REGS_Reg}]
 assign_bd_address -offset 0x40001000 -range 0x1000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs S_AXI_TDOT_REGS/Reg] -force
 
-# ICAP: 0x40002000 (4K) — создать порт S_AXI_ICAP_REGS если его нет
+# ---------- 5.3. S_AXI_ICAP_REGS: Master-порт для icap_ctrl (slave на top) ----------
 set icap_port [get_bd_intf_ports -quiet S_AXI_ICAP_REGS]
 if {$icap_port eq ""} {
-    set_property -dict [list CONFIG.NUM_MI 3] [get_bd_cells xdma_0_axi_periph]
+    puts "=== Creating S_AXI_ICAP_REGS port (M02 @ 0x40002000) ==="
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_ICAP_REGS
     set_property -dict [list CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] [get_bd_intf_ports S_AXI_ICAP_REGS]
     connect_bd_intf_net [get_bd_intf_pins xdma_0_axi_periph/M02_AXI] [get_bd_intf_ports S_AXI_ICAP_REGS]
     connect_bd_net [get_bd_pins xdma_0_axi_periph/M02_ACLK] [get_bd_pins xdma_0/axi_aclk]
     connect_bd_net [get_bd_pins xdma_0_axi_periph/M02_ARESETN] [get_bd_pins xdma_0/axi_aresetn]
+    set old_assoc [get_property CONFIG.ASSOCIATED_BUSIF [get_bd_pins xdma_0/axi_aclk]]
+    if {[string first "S_AXI_ICAP_REGS" $old_assoc] == -1} {
+        set new_assoc [string trim "$old_assoc S_AXI_ICAP_REGS"]
+        set_property -dict [list CONFIG.ASSOCIATED_BUSIF $new_assoc] [get_bd_pins xdma_0/axi_aclk]
+    }
 }
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_ICAP_REGS_Reg}]
 assign_bd_address -offset 0x40002000 -range 0x1000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs S_AXI_ICAP_REGS/Reg] -force
 
-# XADC: 0x46000000 (4K) — создать порт S_AXI_XADC_REGS если его нет
+# ---------- 5.4. S_AXI_XADC_REGS: Master-порт для xadc_temp (slave на top) ----------
 set xadc_port [get_bd_intf_ports -quiet S_AXI_XADC_REGS]
 if {$xadc_port eq ""} {
-    set_property -dict [list CONFIG.NUM_MI 4] [get_bd_cells xdma_0_axi_periph]
+    puts "=== Creating S_AXI_XADC_REGS port (M03 @ 0x46000000) ==="
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_XADC_REGS
     set_property -dict [list CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] [get_bd_intf_ports S_AXI_XADC_REGS]
     connect_bd_intf_net [get_bd_intf_pins xdma_0_axi_periph/M03_AXI] [get_bd_intf_ports S_AXI_XADC_REGS]
@@ -133,6 +162,27 @@ if {$xadc_port eq ""} {
 }
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_XADC_REGS_Reg}]
 assign_bd_address -offset 0x46000000 -range 0x1000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs S_AXI_XADC_REGS/Reg] -force
+
+# ---------- 5.5. M_AXI_TDOT: Slave-порт в BD для tdot_axi4 master (доступ к DDR3) ----------
+# tdot_axi4 читает data/weights из DDR3 и пишет результат — нужен master-выход в BD.
+set m_axi_tdot_port [get_bd_intf_ports -quiet M_AXI_TDOT]
+if {$m_axi_tdot_port eq ""} {
+    puts "=== Creating M_AXI_TDOT slave port (S01 of axi_smc for DDR3 access) ==="
+    # NUM_SI axi_smc уже увеличен до 2 в начале секции 5
+    create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_TDOT
+    set_property -dict [list CONFIG.PROTOCOL AXI4 CONFIG.DATA_WIDTH 64 CONFIG.ADDR_WIDTH 32 CONFIG.FREQ_HZ 125000000] [get_bd_intf_ports M_AXI_TDOT]
+    connect_bd_intf_net [get_bd_intf_ports M_AXI_TDOT] [get_bd_intf_pins axi_smc/S01_AXI]
+    # ACLK/ARESETN для S01
+    connect_bd_net [get_bd_pins axi_smc/aclk] [get_bd_pins xdma_0/axi_aclk]
+    # Адрес: tdot_axi4 видит DDR3 по тому же адресу, что и XDMA (0x80000000+)
+    assign_bd_address -offset 0x80000000 -range 0x10000000 -target_address_space [get_bd_addr_spaces M_AXI_TDOT] [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
+    # ASSOCIATED_BUSIF для клока
+    set old_assoc [get_property CONFIG.ASSOCIATED_BUSIF [get_bd_pins xdma_0/axi_aclk]]
+    if {[string first "M_AXI_TDOT" $old_assoc] == -1} {
+        set new_assoc [string trim "$old_assoc M_AXI_TDOT"]
+        set_property -dict [list CONFIG.ASSOCIATED_BUSIF $new_assoc] [get_bd_pins xdma_0/axi_aclk]
+    }
+}
 
 # Cleanup legacy M_AXI_ICAP port (если остался от старой схемы)
 set legacy_icap [get_bd_intf_ports -quiet M_AXI_ICAP]
