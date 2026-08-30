@@ -1,0 +1,38 @@
+;
+; XDMA DDR3 V2 Driver INF
+;
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%Provider%
+DriverVer=08/30/2026,1.0.0.0
+CatalogFile=XDMA.cat
+
+[Manufacturer]
+%Provider%=Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceDesc%=XDMA_Inst, PCI\VEN_10ee&DEV_7024
+
+[XDMA_Inst.NT]
+CopyFiles=CopyFiles
+
+[XDMA_Inst.NT.Services]
+AddService=XDMA,0x00000002,ServiceInstall
+
+[ServiceInstall]
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\XDMA.sys
+
+[CopyFiles]
+XDMA.sys
+
+[DestinationDirs]
+CopyFiles=12
+
+[Strings]
+Provider="MultiTool"
+DeviceDesc="XDMA DDR3 V2 Ternary Accelerator (DFX)"

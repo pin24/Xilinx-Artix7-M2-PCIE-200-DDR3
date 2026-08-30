@@ -1,12 +1,14 @@
-"""Драйвер XDMA для доступа к троичному ускорителю (TFloat48) на FPGA.
+"""Драйвер XDMA для доступа к троичному ускорителю (TFloat48) на FPGA (V2).
 
 Инкапсулирует взаимодействие хоста с картой:
   - регистры tdot_axi4   (AXI-Lite, через XDMA control / xdma_user на BAR)
   - DDR3 (XDMA M_AXI, 0x8000_0000) — векторы data/weights и результат.
 
-Два бэкенда:
-  - Linux  : файлы устройства /dev/xdma0_control, /dev/xdma0_user (dma).
-  - Windows: утилита xdma_rw (exe/xdma_rw), читает/пишет BAR по адресу.
+V2 адресная карта:
+  GPIO:      0x4000_0000
+  ICAP:      0x4000_1000
+  TDOT:      0x4001_0000
+  DDR3:      0x8000_0000
 
 Формат данных в DDR3 (согласовано с tdot_axi4.sv):
   каждый TFloat48 занимает 64-битное слово, младшие 48 бит = число:
@@ -27,12 +29,12 @@
 from __future__ import annotations
 import os, subprocess, struct
 
-# адресная база AXI-Lite регистров ядра (из BD: в пределах BAR 64K)
-REG_BASE = 0x4000_1000      # tdot_axi4 регистры
-ICAP_BASE = 0x4000_2000     # ICAP-контроллер
-GPIO_BASE = 0x4000_0000     # axi_gpio (не используется)
-# адресация данных в DDR3 (из BD: MIG memmap на 0x8000_0000)
-DDR_BASE = 0x8000_0000
+# V2 адресная карта (AXI-Lite через XDMA BAR0)
+REG_BASE = 0x4001_0000      # tdot_axi4 регистры (TDOT RP, +1MB)
+ICAP_BASE = 0x4000_1000     # HWICAP
+GPIO_BASE = 0x4000_0000     # axi_gpio (без изменений)
+
+DDR_BASE = 0x8000_0000      # DDR3 (MIG, без изменений)
 
 
 def _tf48_to_bits(t) -> int:
@@ -66,7 +68,6 @@ class XdmaLinux(XdmaDevice):
                 raise XdmaError(f"XDMA-устройство не найдено: {p}")
 
     def read(self, addr: int, length: int) -> bytes:
-        # регистры идём через control (офсет внутри BAR), DDR3 через user
         dev = self.ctl if addr < 0x100000 else self.usr
         with open(dev, "rb", buffering=0) as f:
             f.seek(addr)
@@ -112,7 +113,6 @@ class TdotCore:
         self.num_mac = num_mac
         self.ddr = ddr_base
 
-    # ---- регистры ----
     def _reg_w(self, off: int, val: int) -> None:
         self.dev.write(REG_BASE + off, struct.pack("<I", val & 0xFFFFFFFF))
 
@@ -131,11 +131,11 @@ class TdotCore:
         self._reg_w(0x08, n)
 
     def start(self) -> None:
-        self._reg_w(0x00, 0x1)  # GO
+        self._reg_w(0x00, 0x1)
 
     def status(self) -> tuple:
         s = self._reg_r(0x04)
-        return bool(s & 1), bool(s & 2)   # (busy, done)
+        return bool(s & 1), bool(s & 2)
 
     def wait_done(self, timeout_ms: float = 5000.0) -> None:
         import time
@@ -145,7 +145,6 @@ class TdotCore:
             if done:
                 return
             if not busy and done is False:
-                # ни busy ни done — не началось, подождём ещё
                 pass
             if (time.time() - t0) * 1000 > timeout_ms:
                 raise XdmaError("timeout ожидания DONE")
@@ -153,12 +152,9 @@ class TdotCore:
     def read_result_reg(self) -> int:
         lo = self._reg_r(0x0C) & 0xFFFF
         hi = self._reg_r(0x10) & 0xFFFF
-        # регистры хранят [15:0] и [47:32]; [31:16] теряется -> читаем из DDR3
         return (hi << 32) | lo
 
-    # ---- данные ----
     def write_tf48(self, addr: int, bits_list) -> None:
-        """Раскладывает список 48-битных TFloat48 по 8 байт/элемент."""
         buf = bytearray()
         for b in bits_list:
             buf += struct.pack("<Q", b & 0xFFFFFFFFFFFF)
@@ -167,10 +163,8 @@ class TdotCore:
     def read_tf48(self, addr: int) -> int:
         return struct.unpack("<Q", self.dev.read(self.ddr + addr, 8))[0] & 0xFFFFFFFFFFFF
 
-    # ---- высокоуровневый вызов ----
     def dot(self, data_bits, weights_bits, data_addr: int = 0x0,
             weights_addr: int = 0x1000, result_addr: int = 0x2000) -> int:
-        """Записывает data/weights в DDR3, запускает ядро, возвращает результат."""
         n = len(data_bits)
         if len(weights_bits) != n or n > self.num_mac:
             raise ValueError(f"ожидается до {self.num_mac} пар, получено {n}")

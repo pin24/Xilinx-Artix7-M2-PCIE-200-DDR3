@@ -2,9 +2,7 @@
 #include <wdf.h>
 
 // XDMA pciebar2axibar_axil_master = 0x40000000 (from BD)
-// Host sends AXI-Lite addresses (0x40000000+), driver subtracts the base
-// to get BAR0 offset within the 64KB window.
-#define AXI_LITE_BASE   0x40000000ULL
+// BAR0 = 128MB — AXI-Lite addresses map directly via XDMA translation
 UINT_PTR __security_cookie = (UINT_PTR)0xDEADBEEFDEADBEEFull;
 void __cdecl __security_init_cookie(void) { }
 
@@ -281,21 +279,19 @@ EvtIoRead(
         return;
     }
 
-    // BAR0: AXI-Lite — XDMA IP adds AXI_LITE_BASE internally
-    // Host sends absolute AXI-Lite addresses (0x40000000+), subtract base to get BAR offset
-    if ((ULONG64)offset >= AXI_LITE_BASE && (ULONG64)offset < 0x80000000ULL) {
-        ULONG64 bar0Offset = (ULONG64)offset - AXI_LITE_BASE;
+    // BAR0: AXI-Lite (0x00000000 - 0x7FFFFFFF) — offset directly maps to AXI-Lite address
+    if ((ULONG64)offset < 0x80000000ULL) {
         if (devCtx->Bar0Va == NULL) {
             WdfRequestComplete(Request, STATUS_DEVICE_NOT_CONNECTED);
             return;
         }
-        // Bounds check against actual BAR0 size (64KB = 0x10000)
-        if (bar0Offset > devCtx->Bar0Length ||
-            bufferLen > devCtx->Bar0Length - bar0Offset) {
+        // Bounds check against actual BAR0 size
+        if ((ULONG64)offset > devCtx->Bar0Length ||
+            bufferLen > devCtx->Bar0Length - (ULONG64)offset) {
             WdfRequestComplete(Request, STATUS_INVALID_PARAMETER);
             return;
         }
-        RtlCopyMemory(buffer, (PUCHAR)devCtx->Bar0Va + (SIZE_T)bar0Offset, bufferLen);
+        RtlCopyMemory(buffer, (PUCHAR)devCtx->Bar0Va + (SIZE_T)offset, bufferLen);
     }
     // BAR2: DDR3 (0x80000000+)
     else {

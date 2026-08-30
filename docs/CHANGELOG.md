@@ -1,4 +1,34 @@
-# Changelog — XDMA DDR3 Driver
+# Changelog — XDMA DDR3 V2 Driver
+
+## [2.0.0] — 2026-08-30
+### Changed
+- **Полная смена архитектуры**: переход на DFX-архитектуру из rigoorozco/m2-artix7-accelerator-card (xdma_ddr3_dfx)
+- **Новый каталог**: XDMA_DDR3_V2 (C:\A7_M2\EXAMPLES\XDMA_DDR3_V2)
+- **Структура**: FPGA_Vivado/ + Driver/ + Python/ + docs/ + workflows/
+
+### Fixed
+- **Адресация под DFX**: GPIO 0x40000000, HWICAP 0x40001000, DFX Socket 0x40002000, TDOT 0x40010000 (RP)
+- **driver.c**: удалён AXI_LITE_BASE (BAR0 offset = AXI-Lite адрес напрямую)
+- **test_xdma.c**: TDOT_BASE=0x40010000, HWICAP=0x40001000, XADC удалён, DFX Socket добавлен
+- **emulate_test.py**: адреса синхронизированы, 6/6 PASS
+- **Python xdma_driver.py**: REG_BASE=0x40010000, ICAP_BASE=0x40001000
+- **block_design_top.tcl**: версия Vivado 2021.2, DDR3 адрес 0x80000000
+- **build.cmd**: путь к .cat исправлен
+
+### Added
+- DFX Socket управление (decouple/shutdown) в test_xdma.c
+- HWICAP тест (чтение Device ID 0x42610000)
+- block_design_top.tcl — BD скрипт из reference
+- full.tcl — полный скрипт сборки Vivado
+- dfx_partition_default.tcl — RP с DataMovers (замена на tdot_axi4)
+- ADR-001, ADR-002 — Architecture Decision Records
+- workflow шаблоны (bug_report, feature_request)
+
+### Removed
+- XADC (нет в DFX архитектуре)
+- Кастомный icap_ctrl (заменён на AXI HWICAP)
+- xdma_ddr3_core_top.sv (top-level теперь из BD wrapper)
+- xadc_temp.sv (XADC не используется)
 
 ## [1.1.0] — 2026-08-28
 ### Fixed

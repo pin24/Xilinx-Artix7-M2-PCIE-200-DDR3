@@ -3,16 +3,26 @@
 #include <winioctl.h>
 
 /* ========================================================================== */
-/*  Address map — AXI-Lite BAR0                                               */
+/*  Address map -- AXI-Lite BAR0 (XDMA_DDR3_V2 / DFX-based)                   */
 /* ========================================================================== */
 
-/* GPIO */
+/* GPIO -- LED control */
 #define GPIO_BASE       0x40000000UL
 #define GPIO_DATA       (GPIO_BASE + 0x00)
 #define GPIO_TRI        (GPIO_BASE + 0x04)
 
-/* TDOT compute core */
-#define TDOT_BASE       0x40001000UL
+/* AXI HWICAP */
+#define HWICAP_BASE     0x40001000UL
+#define HWICAP_ID       (HWICAP_BASE + 0x02C)  /* ID register (offset 0x2C, 16-bit) */
+
+/* DFX Socket -- decouple / shutdown control */
+#define DFX_SOCKET_BASE     0x40002000UL
+#define DFX_DECOUPLE        (DFX_SOCKET_BASE + 0x00)  /* GPIO: bit0=decouple, bit1=shutdown_master, bit2=shutdown_slave */
+#define DFX_TRI             (DFX_SOCKET_BASE + 0x04)  /* GPIO tri */
+#define DFX_STATUS          (DFX_SOCKET_BASE + 0x08)  /* GPIO2: status of shutdown / decouple */
+
+/* TDOT compute core (inside DFX RP) */
+#define TDOT_BASE       0x40010000UL
 #define TDOT_CTRL       (TDOT_BASE + 0x00)   /* W: [0]=GO (self-clearing) */
 #define TDOT_STATUS     (TDOT_BASE + 0x04)   /* R: [0]=BUSY, [1]=DONE */
 #define TDOT_N_IN       (TDOT_BASE + 0x08)   /* R/W: number of pairs */
@@ -27,20 +37,7 @@
 #define TDOT_CORE_RES0  (TDOT_BASE + 0x2C)
 #define TDOT_CORE_RES1  (TDOT_BASE + 0x30)
 
-/* ICAP */
-#define ICAP_BASE       0x40002000UL
-#define ICAP_GO         (ICAP_BASE + 0x00)
-#define ICAP_READY      (ICAP_BASE + 0x04)
-
-/* XADC — BD: axi_periph M02 @ 0x4600_0000 */
-#define XADC_BASE       0x46000000UL
-#define XADC_TEMP       (XADC_BASE + 0x00)
-#define XADC_VCCINT     (XADC_BASE + 0x04)
-
-/* DDR3 */
-#define DDR3_BASE       0x80000000ULL
-
-/* Device path (XDMA Win driver — single device, BAR0 + BAR2 through same handle) */
+/* Device path (XDMA Win driver -- single device, BAR0 through same handle) */
 #define DEVICE_CONTROL  L"\\\\.\\XDMA0"
 
 /* Timing */
@@ -51,18 +48,15 @@
 /*  Forward declarations                                                      */
 /* ========================================================================== */
 
-/* Low-level helpers */
 ULONG  ReadReg(HANDLE hDev, ULONG addr);
 void   WriteReg(HANDLE hDev, ULONG addr, ULONG value);
 
-/* Test cases */
 BOOL   TestGpio(HANDLE hDev);
 BOOL   TestTdotRegs(HANDLE hDev);
-BOOL   TestXadc(HANDLE hDev);
+BOOL   TestDfxSocket(HANDLE hDev);
 BOOL   TestTdotProtocol(HANDLE hDev);
-BOOL   TestIcap(HANDLE hDev);
+BOOL   TestHwicap(HANDLE hDev);
 
-/* Utils */
 static const char* PassFail(BOOL ok);
 
 /* ========================================================================== */
@@ -124,14 +118,13 @@ void WriteReg(HANDLE hDev, ULONG addr, ULONG value)
 }
 
 /* ========================================================================== */
-/*  Test: GPIO — write tri-state, toggle LEDs, verify readback                */
+/*  Test: GPIO -- write tri-state, toggle LEDs, verify readback               */
 /* ========================================================================== */
 
 BOOL TestGpio(HANDLE hDev)
 {
     printf("\n--- GPIO Test ---\n");
 
-    /* Set all GPIO pins as outputs (TRI=0 means output) */
     WriteReg(hDev, GPIO_TRI, 0x00);
     {
         ULONG tri = ReadReg(hDev, GPIO_TRI);
@@ -203,7 +196,6 @@ BOOL TestTdotRegs(HANDLE hDev)
         if (r != regs[i].wval) return FALSE;
     }
 
-    /* Read-only registers: just verify they don't hang */
     ULONG res0 = ReadReg(hDev, TDOT_RES0);
     ULONG res1 = ReadReg(hDev, TDOT_RES1);
     ULONG st   = ReadReg(hDev, TDOT_STATUS);
@@ -214,28 +206,63 @@ BOOL TestTdotRegs(HANDLE hDev)
 }
 
 /* ========================================================================== */
-/*  Test: XADC — read temperature and VCCINT                                  */
+/*  Test: DFX Socket -- verify decouple / shutdown registers                   */
 /* ========================================================================== */
 
-BOOL TestXadc(HANDLE hDev)
+BOOL TestDfxSocket(HANDLE hDev)
 {
-    printf("\n--- XADC Test ---\n");
+    printf("\n--- DFX Socket Test ---\n");
 
-    ULONG raw_temp   = ReadReg(hDev, XADC_TEMP)   & 0xFFFF;
-    ULONG raw_vccint = ReadReg(hDev, XADC_VCCINT) & 0xFFFF;
+    /* Read initial state */
+    ULONG decouple = ReadReg(hDev, DFX_DECOUPLE);
+    ULONG tri      = ReadReg(hDev, DFX_TRI);
+    ULONG status   = ReadReg(hDev, DFX_STATUS);
+    printf("  Initial: DECOUPLE=0x%08lX TRI=0x%08lX STATUS=0x%08lX\n",
+           decouple, tri, status);
 
-    /* XADC formulas */
-    double temp_c  = ((double)raw_temp   * 503.975 / 4096.0) - 273.15;
-    double vccint  =  (double)raw_vccint * 3.0    / 4096.0;
+    /* Set DFX GPIO pins as outputs (TRI=0) */
+    WriteReg(hDev, DFX_TRI, 0x00);
+    {
+        ULONG r = ReadReg(hDev, DFX_TRI);
+        printf("  DFX_TRI = 0x%08lX (expect 0x00000000)\n", r);
+        if (r != 0x00) return FALSE;
+    }
 
-    printf("  TEMP:   raw=0x%04lX  (%lu)  -> %.2f °C\n",
-           raw_temp, raw_temp, temp_c);
-    printf("  VCCINT: raw=0x%04lX  (%lu)  -> %.3f V\n",
-           raw_vccint, raw_vccint, vccint);
+    /* Assert decouple (bit 0), keep shutdown de-asserted */
+    WriteReg(hDev, DFX_DECOUPLE, 0x01);
+    Sleep(10);
+    {
+        ULONG d = ReadReg(hDev, DFX_DECOUPLE);
+        printf("  DECOUPLE after set bit0 = 0x%08lX (bit0=1)\n", d);
+        if ((d & 0x01) == 0) return FALSE;
+    }
 
-    /* Sanity check — temperature should be in plausible range (0..125°C) */
-    if (raw_temp == 0 || raw_temp == 0xFFFF)
-        return FALSE;
+    /* De-assert decouple */
+    WriteReg(hDev, DFX_DECOUPLE, 0x00);
+    Sleep(10);
+    {
+        ULONG d = ReadReg(hDev, DFX_DECOUPLE);
+        printf("  DECOUPLE after clear = 0x%08lX (bit0=0)\n", d);
+        if (d != 0) return FALSE;
+    }
+
+    /* Set all: decouple + shutdown_master + shutdown_slave */
+    WriteReg(hDev, DFX_DECOUPLE, 0x07);
+    Sleep(10);
+    {
+        ULONG d = ReadReg(hDev, DFX_DECOUPLE);
+        printf("  DECOUPLE bits[2:0]=111 = 0x%08lX\n", d);
+        if ((d & 0x07) != 0x07) return FALSE;
+    }
+
+    /* All off again */
+    WriteReg(hDev, DFX_DECOUPLE, 0x00);
+    Sleep(10);
+    {
+        ULONG d = ReadReg(hDev, DFX_DECOUPLE);
+        printf("  DECOUPLE all clear = 0x%08lX\n", d);
+        if (d != 0) return FALSE;
+    }
 
     return TRUE;
 }
@@ -248,7 +275,6 @@ BOOL TestTdotProtocol(HANDLE hDev)
 {
     printf("\n--- TDOT Protocol Test ---\n");
 
-    /* Program address registers */
     WriteReg(hDev, TDOT_N_IN,               8);
     WriteReg(hDev, TDOT_DATA_ADDR_LO,       0x80000000UL);
     WriteReg(hDev, TDOT_DATA_ADDR_HI,       0);
@@ -257,7 +283,6 @@ BOOL TestTdotProtocol(HANDLE hDev)
     WriteReg(hDev, TDOT_RESULT_ADDR_LO,     0x80002000UL);
     WriteReg(hDev, TDOT_RESULT_ADDR_HI,     0);
 
-    /* Verify registers were written correctly */
     {
         ULONG n = ReadReg(hDev, TDOT_N_IN);
         if (n != 8) {
@@ -266,24 +291,16 @@ BOOL TestTdotProtocol(HANDLE hDev)
         }
     }
 
-    /* NOTE: In current RTL, writing GO (0x01) also sets N_IN from bits [16:8].
-     * If RTL were fixed, the workaround below would be needed:
-     *   WriteReg(hDev, TDOT_CTRL, (8 << 8) | 0x01);
-     * Until then, N_IN is written separately before GO, which works
-     * if RTL propagates the separately-written N_IN before GO latches it. */
-
-    /* Fire GO */
     WriteReg(hDev, TDOT_CTRL, 0x01);
     printf("  GO asserted, waiting for DONE...\n");
 
-    /* Poll STATUS for DONE (bit 1), with timeout */
     BOOL    done   = FALSE;
     int     waited = 0;
     ULONG   status = 0;
 
     while (waited < POLL_TIMEOUT_MS) {
         status = ReadReg(hDev, TDOT_STATUS);
-        if (status & 0x02) {   /* bit 1 = DONE */
+        if (status & 0x02) {
             done = TRUE;
             break;
         }
@@ -298,13 +315,11 @@ BOOL TestTdotProtocol(HANDLE hDev)
 
     printf("  DONE detected after ~%d ms, STATUS=0x%08lX\n", waited, status);
 
-    /* Read result */
     ULONG res0   = ReadReg(hDev, TDOT_RES0);
     ULONG res1   = ReadReg(hDev, TDOT_RES1);
     ULONG cres0  = ReadReg(hDev, TDOT_CORE_RES0);
     ULONG cres1  = ReadReg(hDev, TDOT_CORE_RES1);
 
-    /* Combine into 48-bit result: RES0[15:0] + RES1[47:32] left-justified */
     ULONG64 result = ((ULONG64)(res1 & 0xFFFF) << 32) | (res0 & 0xFFFF);
 
     printf("  RES0=0x%08lX  RES1=0x%08lX  -> combined=0x%012llX\n",
@@ -315,23 +330,20 @@ BOOL TestTdotProtocol(HANDLE hDev)
 }
 
 /* ========================================================================== */
-/*  Test: ICAP — fire GO, check READY flag                                    */
+/*  Test: HWICAP -- verify ID register (read only)                             */
 /* ========================================================================== */
 
-BOOL TestIcap(HANDLE hDev)
+BOOL TestHwicap(HANDLE hDev)
 {
-    printf("\n--- ICAP Test ---\n");
+    printf("\n--- HWICAP Test ---\n");
 
-    /* Fire GO — triggers a partial reconfiguration or idle check */
-    WriteReg(hDev, ICAP_GO, 1);
-    Sleep(50);
+    ULONG id = ReadReg(hDev, HWICAP_ID);
+    printf("  HWICAP_ID = 0x%04lX (expect 0x0263 or 0x4261 for Xilinx HWICAP)\n",
+           id & 0xFFFF);
 
-    ULONG ready = ReadReg(hDev, ICAP_READY);
-    printf("  ICAP_READY=0x%08lX (bit0=", ready);
-    printf((ready & 0x01) ? "1" : "0");
-    printf(")\n");
+    if ((id & 0xFFFF) == 0 || (id & 0xFFFF) == 0xFFFF)
+        return FALSE;
 
-    /* ICAP busy/ready is allowed to be 0 after a GO; just verify no bus error */
     return TRUE;
 }
 
@@ -369,7 +381,7 @@ int main(void)
     HANDLE hDev;
     int pass = 0, fail = 0;
 
-    printf("=== XDMA Ternary Accelerator Test ===\n\n");
+    printf("=== XDMA DDR3 V2 (DFX) Test ===\n\n");
     printf("Device: %ws\n", DEVICE_CONTROL);
 
     hDev = OpenXdmDev();
@@ -380,49 +392,31 @@ int main(void)
 
     printf("Device opened OK.\n\n");
 
-    /* ------------------------------------------------------------------ */
-    /*  GPIO test                                                         */
-    /* ------------------------------------------------------------------ */
-    printf("[GPIO]      ");
+    printf("[GPIO]       ");
     BOOL ok = TestGpio(hDev);
-    printf("  -> %s\n", PassFail(ok));
+    printf(" -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
 
-    /* ------------------------------------------------------------------ */
-    /*  TDOT register test                                                */
-    /* ------------------------------------------------------------------ */
-    printf("[TDOT_REGS] ");
+    printf("[TDOT_REGS]  ");
     ok = TestTdotRegs(hDev);
-    printf("  -> %s\n", PassFail(ok));
+    printf(" -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
 
-    /* ------------------------------------------------------------------ */
-    /*  XADC test                                                         */
-    /* ------------------------------------------------------------------ */
-    printf("[XADC]      ");
-    ok = TestXadc(hDev);
-    printf("  -> %s\n", PassFail(ok));
+    printf("[DFX_SOCKET] ");
+    ok = TestDfxSocket(hDev);
+    printf(" -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
 
-    /* ------------------------------------------------------------------ */
-    /*  TDOT protocol test                                                */
-    /* ------------------------------------------------------------------ */
-    printf("[TDOT_PROTO]");
+    printf("[TDOT_PROTO] ");
     ok = TestTdotProtocol(hDev);
-    printf("  -> %s\n", PassFail(ok));
+    printf(" -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
 
-    /* ------------------------------------------------------------------ */
-    /*  ICAP test                                                         */
-    /* ------------------------------------------------------------------ */
-    printf("[ICAP]      ");
-    ok = TestIcap(hDev);
-    printf("  -> %s\n", PassFail(ok));
+    printf("[HWICAP]     ");
+    ok = TestHwicap(hDev);
+    printf(" -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
 
-    /* ================================================================== */
-    /*  Summary                                                            */
-    /* ================================================================== */
     printf("\n=== Summary: %d PASS, %d FAIL (%d total) ===\n",
            pass, fail, pass + fail);
 
