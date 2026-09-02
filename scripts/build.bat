@@ -1,19 +1,22 @@
 @echo off
 REM ============================================================================
-REM build.bat — wrapper для запуска Vivado 2021.2 сборки проекта
+REM build.bat — wrapper для запуска Vivado 2025.2 сборки DFX-варианта проекта
 REM ============================================================================
-REM Автоматически создаёт виртуальный диск R: (subst) для обхода лимита
+REM Автоматически создаёт виртуальный диск (subst) для обхода лимита
 REM Windows в 260 символов на длину пути (проблема MIG IP генерации).
 REM
 REM Запуск из корня репозитория:
-REM   scripts\build.bat                 — сборка с NUM_MAC=32
-REM   scripts\build.bat NUM_MAC=16      — сборка с NUM_MAC=16
+REM   scripts\build.bat                 — сборка с NUM_MAC=32 (по умолчанию)
+REM   scripts\build.bat NUM_MAC=16       — сборка с NUM_MAC=16
 REM   scripts\build.bat SKIP_SYNTH=1    — только создать проект без synth
 REM
+REM Запускает scripts\build_dfx.tcl — DFX-вариант (xdma_ddr3_dfx.bd).
+REM Проект создаётся в C:\build_dfx (см. build_dfx.tcl).
+REM
 REM Особенности:
-REM   * Авто-поиск Vivado 2021.2 в стандартных путях
+REM   * Авто-поиск Vivado 2025.2 в стандартных путях
 REM   * Авто-subst: если путь к репозиторию длиннее 40 символов, создаётся
-REM     виртуальный диск X: (или Z:, Y:) для обхода Windows 260-byte лимита.
+REM     виртуальный диск (X:/Z:/Y:/W:...) для обхода Windows 260-byte лимита.
 REM     После сборки виртуальный диск отключается автоматически.
 REM ============================================================================
 
@@ -28,6 +31,8 @@ set REPO_ROOT=%CD%
 REM --- Поиск Vivado 2025.2 ---
 set VIVADO_BIN=C:\AMDDesignTools\2025.2\Vivado\bin
 if not exist "%VIVADO_BIN%\vivado.bat" set VIVADO_BIN=C:\AMDDesignTools\2025.2\bin
+if not exist "%VIVADO_BIN%\vivado.bat" set VIVADO_BIN=C:\AMDDesignTools\Vivado\2025.2\bin
+if not exist "%VIVADO_BIN%\vivado.bat" set VIVADO_BIN=C:\Xilinx\Vivado\2025.2\bin
 if not exist "%VIVADO_BIN%\vivado.bat" (
     for /f "delims=" %%I in ('where vivado.bat 2^>nul') do set VIVADO_BIN=%%~dpI
 )
@@ -35,15 +40,8 @@ if not exist "%VIVADO_BIN%\vivado.bat" (
     echo ERROR: Vivado 2025.2 not found.
     echo Expected locations:
     echo   C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat
-    echo   C:\AMDDesignTools\2025.2\bin\vivado.bat
-    echo Or add vivado.bat to PATH.
-    exit /b 1
-)
-if not exist "%VIVADO_BIN%\vivado.bat" (
-    echo ERROR: Vivado 2025.2 not found.
-    echo Expected locations:
-    echo   C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat
     echo   C:\AMDDesignTools\Vivado\2025.2\bin\vivado.bat
+    echo   C:\Xilinx\Vivado\2025.2\bin\vivado.bat
     echo Or add vivado.bat to PATH.
     popd
     exit /b 1
@@ -52,7 +50,6 @@ if not exist "%VIVADO_BIN%\vivado.bat" (
 echo === Using Vivado: %VIVADO_BIN% ===
 echo === Repository root: %REPO_ROOT% ===
 
-<<<<<<< HEAD
 REM ============================================================================
 REM Авто-subst: сокращаем путь если он слишком длинный (> 40 символов)
 REM Vivado + MIG IP создают глубокие вложенные пути (260+ символов),
@@ -77,7 +74,7 @@ if %LEN% GTR 40 (
 )
 
 if %NEED_SUBST% equ 1 (
-    REM Ищем свободную букву диска: X:, потом Z:, потом Y:, потом W:
+    REM Ищем свободную букву диска: X:, потом Z:, потом Y:, потом W:, и т.д.
     set "CANDIDATES=X Z Y W V U T"
     set SUBST_DRIVE=
     for %%D in (!CANDIDATES!) do (
@@ -93,7 +90,7 @@ if %NEED_SUBST% equ 1 (
         popd
         exit /b 1
     )
-    
+
     echo === Path length %LEN% chars ^> 40 — using subst !SUBST_DRIVE! for short path ===
     subst !SUBST_DRIVE! "%REPO_ROOT%"
     if errorlevel 1 (
@@ -101,7 +98,7 @@ if %NEED_SUBST% equ 1 (
         popd
         exit /b 1
     )
-    
+
     REM Переходим на виртуальный диск
     pushd !SUBST_DRIVE!\
     set REPO_ROOT=!SUBST_DRIVE!\
@@ -110,36 +107,11 @@ if %NEED_SUBST% equ 1 (
     echo === Path length %LEN% chars — no subst needed ===
 )
 
-echo === Build script: scripts\build.tcl ===
-echo.
-
-REM --- Запуск Vivado ---
-"%VIVADO_BIN%\vivado.bat" -mode batch -source scripts\build.tcl -tclargs %*
-=======
-REM --- Определение корня репозитория ---
-set SCRIPT_DIR=%~dp0
-set REPO_ROOT=%SCRIPT_DIR:~0,-1%
-pushd "%REPO_ROOT%\.."
-set REPO_ROOT=%CD%
-popd
-
-REM --- Создание виртуального диска для обхода 260-символьного лимита ---
-set SUBST_DRIVE=R:
-echo === Mapping %REPO_ROOT% to %SUBST_DRIVE% ===
-subst %SUBST_DRIVE% "%REPO_ROOT%" >nul 2>&1
-if %ERRORLEVEL% neq 0 (
-    echo ERROR: Could not create virtual drive %SUBST_DRIVE%. Is it already in use?
-    exit /b 1
-)
-
-REM --- Запуск Vivado с короткого пути ---
-pushd %SUBST_DRIVE%
-echo === Repository root (virtual): %CD% ===
 echo === Build script: scripts\build_dfx.tcl ===
 echo.
 
-"%VIVADO_BIN%\vivado.bat" -mode batch -source scripts\build_dfx.tcl 2>&1 | findstr /v "^$"
->>>>>>> 6313fd0 (DFX integration: xdma_ddr3_dfx BD, icap_ctrl fix, address map, driver, build scripts)
+REM --- Запуск Vivado (DFX-вариант) ---
+"%VIVADO_BIN%\vivado.bat" -mode batch -source scripts\build_dfx.tcl -tclargs %*
 
 set EXITCODE=%ERRORLEVEL%
 
@@ -151,13 +123,10 @@ if %NEED_SUBST% equ 1 (
     echo === Unmounted virtual drive !SUBST_DRIVE! ===
 )
 
-REM --- Очистка виртуального диска ---
-subst %SUBST_DRIVE% /D >nul 2>&1
-
 echo.
 if %EXITCODE% equ 0 (
     echo === BUILD SUCCESS ===
-    echo Artifacts in: build\artifacts\
+    echo Artifacts in: build\artifacts_dfx\
 ) else (
     echo === BUILD FAILED (exit code %EXITCODE%) ===
 )

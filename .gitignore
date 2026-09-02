@@ -7,6 +7,14 @@
 build/
 .images/
 
+# Vivado HD Visual — генерируемые скрипты визуализации pblock (21K-27K строк каждый).
+# Если нужны — сгенерировать через Vivado GUI: Tools → HD Visual.
+# В репозитории не отслеживаются.
+hd_visual/pblock_rm_AllTiles.tcl
+hd_visual/pblock_rm_FrameTiles.tcl
+hd_visual/pblock_rm_GlitchTiles.tcl
+hd_visual/pblock_rm_RangedSites.tcl
+
 # Python
 __pycache__/
 *.pyc

@@ -1,7 +1,8 @@
-# TFloat48 Ternary FP Accelerator — XDMA + DDR3 (Artix-7 XC7A200T, M.2 PCIe)
+# TFloat48 Ternary FP Accelerator — XDMA + DDR3 + DFX (Artix-7 XC7A200T, M.2 PCIe)
 
 Проект троичного FP-ускорителя **TFloat48** на плате M.2 (Xilinx Artix-7 XC7A200T),
-доступного хосту через PCIe (XDMA) c памятью DDR3, с интеграцией в PyTorch.
+доступного хосту через PCIe (XDMA) c памятью DDR3, с Dynamic Function eXchange (DFX)
+и интеграцией в PyTorch.
 
 ## Формат TFloat48
 - 48 бит = 6 байт, блоки по 4 трита (1 байт).
@@ -9,42 +10,57 @@
 - Точность мантиссы 3^-18 ≈ 5.2e-9 (~в 22 раза точнее float32).
 - Вся арифметика на LUT: DSP = 0, BRAM ≈ 10%.
 
+## Архитектура DFX
+
+Проект использует **Dynamic Function eXchange** — partial reconfiguration через PCIe:
+
+- **Static region** — XDMA, MIG DDR3, AXI HWICAP, DFX Socket, Clocking Wizard, GPIO
+- **Reconfigurable Partition (RP)** — `dfx_partition` Block Design Container (BDC)
+- **DFX Socket** — shutdown/decouple менеджеры для безопасной перезагрузки RP
+
+Перезагрузка RP через PCIe:
+1. Хост пишет в DFX Socket (0x40002000) → shutdown AXI buses + decouple reset
+2. Хост пишет partial bitstream в HWICAP (0x40001000)
+3. Хост очищает DFX Socket → RP запускается с новой логикой
+
+Подробности: [`xdma_ddr3_dfx_README.md`](xdma_ddr3_dfx_README.md).
+
 ## Состав репозитория
 | Каталог | Содержимое |
-|---|---|---|
-| `rtl/block/` | Блочное ядро: `tbyte_add/mul.sv`, `tfmul_raw.sv`, `tfadd_raw.sv`, `compute_dot_par_raw.sv` (параллельный dot, параметр NUM_MAC) + тестбенчи и Python-верификация |
-| `rtl/rtl/` | Ранняя версия ядра (tf40_*, конвертеры f32↔tf) |
-| `rtl/integration/` | `tdot_axi4.sv` (AXI4-мастер + AXI-Lite регистры ускорителя), `icap_ctrl.sv`, `xadc_temp.sv`, `xdma_ddr3_core_top.sv` |
-| `constraints/` | XDC-файлы платы (pins, early, pblock) |
-| `scripts/` | TCL-скрипты сборки BD (не-DFX: `build.tcl`, DFX: `build_dfx.tcl`) |
-| `dfx_block_designs/` | DFX Partition BDC (default.tcl — DataMover loopback, test.tcl — GPIO расширение) |
+|---|---|
+| `rtl/block/` | Блочное ядро: `tbyte_add/mul.sv`, `tfmul_raw.sv`, `tfadd_raw.sv`, `compute_dot_par_raw.sv` (параллельный dot, параметр NUM_MAC) |
+| `rtl/integration/` | `tdot_axi4.sv` (AXI4-мастер + AXI-Lite), `icap_ctrl.sv`, `xadc_temp.sv`, `xdma_ddr3_core_top.sv` |
+| `constraints/` | XDC-файлы: `xdma_ddr3_pins.xdc` (пины), `xdma_ddr3_early.xdc` (PCIe GT-lane LOC), `pblock.xdc` (DFX RP pblock) |
+| `scripts/` | `build_dfx.tcl` — главная сборка DFX, `post_bd_dfx.tcl` — постобработка BD, `build.bat` — Windows wrapper |
+| `dfx_block_designs/` | `default.tcl` (DataMover loopback demo), `test.tcl` (GPIO test) — DFX Partition BDC |
+| `third_party/m2-artix7-accelerator-card/` | Встроенные HDL из [rigoorozco/m2-artix7-accelerator-card](https://github.com/rigoorozco/m2-artix7-accelerator-card) (up_axi.v, datamover_ctrl.v, DataMover wrappers) |
 | `pytorch_layer/` | Хост-софт: `fpga_backend.py`, `xdma_driver.py`, `icap_load.py`, `ternary_dot_layer.py` |
 | `ternary_sw/` | Python-эталон арифметики TFloat48 (arith48) и тесты |
 | `driver/`, `xdma_driver_win_src_2017/` | Windows KMDF-драйвер XDMA + test_xdma.exe |
 | `docs/` | `ADDRESS_MAP.md` (карта адресов), `ERROR_HISTORY.md` (хронология багов) |
 
-## Карта адресов (DFX-BD, PCIe BAR0 128 МБ / AXI M_AXI_LITE, согласована с `docs/ADDRESS_MAP.md` и `docs/ERROR_HISTORY.md`)
-| Модуль | Адрес | Примечание |
-|---|---|---|
-| AXI GPIO (LED) | 0x4000_0000 | |
-| AXI HWICAP | 0x4000_1000 | Ядро HWICAP (не icap_ctrl!) |
-| DFX Socket control | 0x4000_2000 | decouple/shutdown GPIO |
-| **TDOT registers** | **0x4000_3000** | **Регистры троичного ускорителя** |
-| **ICAP registers** | **0x4000_4000** | **icap_ctrl (перезагрузка FPGA)** |
-| DFX Partition MM2S | 0x4001_0000 | DataMover MM2S |
-| DFX Partition S2MM | 0x4001_8000 | DataMover S2MM |
-| XADC | 0x4600_0000 | Температура/напряжение |
-| DDR3 (через BAR2) | 0x8000_0000 | 256 MB |
-| DDR3 (M_AXI_TDOT) | 0x8000_0000 | Доступ ядра к DDR3 |
-| DDR3 (через XDMA M_AXI) | 0x8000_0000 |
+## Карта адресов (DFX-BD, PCIe BAR0 128 МБ)
 
-Debug monitor (`debug_mon.sv`) **не реализован** — файл отсутствует в `rtl/integration/`, в BD нет ни порта `S_AXI_DEBUG_REGS`, ни скрипта `add_debug_bd.tcl`. Адрес 0x4700_0000 остаётся зарезервированным (см. `docs/ADDRESS_MAP.md` §2 и `ANALYSIS_AND_SPEC_FIX.md` B-5).
+Подробная карта: [`docs/ADDRESS_MAP.md`](docs/ADDRESS_MAP.md), история изменений: [`docs/ERROR_HISTORY.md`](docs/ERROR_HISTORY.md).
+
+| Модуль | Адрес | Размер | Примечание |
+|---|---|---|---|
+| AXI GPIO (LED) | 0x4000_0000 | 4K | LED + MIG status |
+| AXI HWICAP | 0x4000_1000 | 4K | Xilinx IP (partial reconfig) |
+| DFX Socket | 0x4000_2000 | 4K | shutdown/decouple GPIO |
+| **TDOT registers** | **0x4000_3000** | 4K | Регистры троичного ускорителя |
+| **ICAP registers** | **0x4000_4000** | 4K | icap_ctrl (кастомный, не HWICAP) |
+| DFX Partition MM2S | 0x4001_0000 | 32K | DataMover MM2S |
+| DFX Partition S2MM | 0x4001_8000 | 32K | DataMover S2MM |
+| XADC | 0x4600_0000 | 4K | Температура/напряжение |
+| DDR3 (через BAR2) | 0x8000_0000 | 256 MB | Доступ хоста |
+| DDR3 (M_AXI_TDOT) | 0x8000_0000 | 256 MB | Доступ ядра tdot_axi4 |
 
 Данные в DDR3: `data[i]`, `weights[i]` — TFloat48 в младших 48 битах 64-битного слова; результат dot — по `result_addr`.
 
-## Ресурсы (XC7A200T, Vivado 2021.2)
+## Ресурсы (XC7A200T, Vivado 2025.2)
 - Ядро NUM_MAC=32: ~55k LUT (45%); NUM_MAC=64: ~115k (85%).
-- Полный дизайн (ядро 32 + XDMA + DDR3): ~101k LUT (~75%), 0 DSP.
+- Полный дизайн (ядро 32 + XDMA + DDR3 + DFX): ~101k LUT (~75%), 0 DSP.
 
 ## Верификация
 - `rtl/integration/verify_tdot_axi4.py 32` — PASS (RTL == raw-модель).
@@ -61,14 +77,22 @@ REM Из корня репозитория:
 scripts\build.bat
 ```
 
-Скрипт автоматически:
-1. Находит Vivado 2021.2 (проверяет `C:\Xilinx\Vivado\2021.2\bin` и `C:\AMDDesignTools\Vivado\2021.2\bin`)
-2. Создаёт проект в `build/m2_artix7_xdma_ddr3/`
-3. Строит BD (XDMA + MIG DDR3 + GPIO + BRAM + TDOT + ICAP + XADC)
-4. Добавляет RTL троичного ядра
-5. Настраивает карту адресов (BAR0=128MB, GPIO/TDOT/ICAP/XADC)
-6. Запускает synth + impl + write_bitstream
-7. Экспортирует `.bit` / `.bin` / `.mcs` в `build/artifacts/`
+`build.bat` автоматически:
+1. Находит Vivado 2025.2 в стандартных путях (`C:\AMDDesignTools\...`, `C:\Xilinx\...`)
+2. Если путь к репо длиннее 40 символов — создаёт виртуальный диск (subst) для обхода Windows MAX_PATH лимита (Vivado MIG IP генерирует пути 260+ символов)
+3. Запускает `scripts\build_dfx.tcl` — сборка DFX-варианта
+4. После сборки (успех или fail) отключает виртуальный диск
+
+`build_dfx.tcl` выполняет:
+1. Создаёт проект в `C:\build_dfx` (хардкод — см. замечание ниже)
+2. Добавляет HDL DFX Partition (из `third_party/m2-artix7-accelerator-card/hdl/`)
+3. Создаёт BDC `dfx_partition` (из `dfx_block_designs/default.tcl`)
+4. Создаёт DFX BD `xdma_ddr3_dfx.bd` (из `scripts/xdma_ddr3_dfx_bd.tcl`)
+5. Постобработка BD (из `scripts/post_bd_dfx.tcl`) — добавляет TDOT/ICAP/XADC порты, экспорт клока
+6. Настраивает BAR0=128MB и карту адресов
+7. Добавляет RTL троичного ядра
+8. Запускает synth + impl + write_bitstream
+9. Экспортирует `.bit` / `.bin` / `.mcs` в `build/artifacts_dfx/`
 
 ### Опции сборки
 
@@ -88,28 +112,26 @@ scripts\build.bat NUM_MAC=32 JOBS=12
 
 ### Прямой запуск через Vivado
 
-Если `build.bat` не находит Vivado, добавьте его в PATH или запустите напрямую:
-
 ```cmd
-"C:\Xilinx\Vivado\2021.2\bin\vivado.bat" -mode batch -source scripts\build.tcl -tclargs NUM_MAC=32
+"C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat" -mode batch -source scripts\build_dfx.tcl -tclargs NUM_MAC=32
 ```
 
 ### Структура после сборки
 
 ```
-build/
-├── m2_artix7_xdma_ddr3/         — Vivado проект
-│   ├── m2_artix7_xdma_ddr3.xpr
-│   ├── m2_artix7_xdma_ddr3.srcs/
-│   │   ├── sources_1/bd/xdma_ddr3/   — Block Design
-│   │   └── constrs_1/                — констрейны
-│   └── m2_artix7_xdma_ddr3.runs/
-│       ├── synth_1/                  — результаты синтеза
-│       └── impl_1/                   — результаты имплементации
-└── artifacts/                   — финальные битстримы
-    ├── xdma_ddr3_core_top.bit   — для JTAG загрузки
-    ├── xdma_ddr3_core_top.bin   — для ICAP загрузки
-    └── xdma_ddr3_core_top.mcs   — для SPI flash
+C:\build_dfx\                                     — Vivado проект (хардкод)
+├── m2_artix7_xdma_ddr3_dfx.xpr
+├── m2_artix7_xdma_ddr3_dfx.srcs/
+│   ├── sources_1/bd/xdma_ddr3_dfx/                — DFX Block Design
+│   └── constrs_1/                                  — констрейны
+└── m2_artix7_xdma_ddr3_dfx.runs/
+    ├── synth_1/                                    — результаты синтеза
+    └── impl_1/                                     — результаты имплементации
+
+build/artifacts_dfx/                                — финальные битстримы
+├── xdma_ddr3_core_top.bit                          — для JTAG загрузки
+├── xdma_ddr3_core_top.bin                          — для ICAP загрузки
+└── xdma_ddr3_core_top.mcs                          — для SPI flash
 ```
 
 ### Верификация (опционально, перед сборкой)
@@ -122,29 +144,17 @@ C:\Python39\python.exe rtl\integration\verify_tdot_axi4.py 32
 python3 scripts/rtl_lint.py
 ```
 
-### Устаревший скрипт
-
-`scripts/build_all.tcl` — предыдущая версия (требует существующий проект).
-Используйте `scripts/build.tcl` для сборки с нуля.
-
-Примечание: ошибка `write_bitstream` (вызов с `.bin` вместо `.bit`) исправлена —
-`build.tcl` пишет `.bit` + `-bin_file` + `.mcs`.
-
-Сборка также экспортирует такт PCIe-домена из BD: `scripts/fix_bd_clock_export.tcl`
-(шаг 6 в `build.tcl`, идемпотентно) создаёт порты `axi_aclk_out` /
-`axi_aresetn_out` / `axi_aclk_in`; в `xdma_ddr3_core_top.sv` выход замкнут на вход
-(loopback), тактируя ускоритель и ICAP реальным `xdma_0/axi_aclk`.
-
 ## Драйвер Windows
 `driver/build.cmd` (WDK) → `XDMA.sys`; тест: `test_xdma.exe`.
-Известные исправленные проблемы — см. `xdma_driver_win_src_2017/DRIVER_DEVLOG.md`.
+Известные исправленные проблемы — см. `xdma_driver_win_src_2017/DRIVER_DEVLOG.md` и `docs/ERROR_HISTORY.md`.
 
 ## Открытые задачи
-- [x] Исправить `write_bitstream` в `build_all.tcl` и собрать .bit/.bin — исправлено (`write_bitstream` + `-bin_file` + `.mcs`), битстрим собран 25.08
-- [x] RTL-баг: GO затирает N_IN через биты [16:8] CTRL — исправлено (`rtl/integration/tdot_axi4.sv`: запись в CTRL меняет только бит0 GO, N_IN — отдельный регистр 0x08)
-- [x] Экспорт такта из BD: порты `axi_aclk_out`/`axi_aresetn_out`/`axi_aclk_in` (`scripts/fix_bd_clock_export.tcl`, шаг 6 в `build_all.tcl`; в top — loopback на `axi_aclk`)
-- [x] FIX-5: инстанцирован `xadc_temp.sv` в `xdma_ddr3_core_top.sv`; S_AXI_XADC_REGS подключён к `u_xadc` (база 0x46000000). `add_icap_xadc_bd.tcl` синхронизирован с `build_all.tcl`/`resize_bar0.tcl` (M02=ICAP@0x40002000, M03=XADC@0x46000000)
+- [x] DFX интеграция: `xdma_ddr3_dfx.bd`, DFX Socket, `dfx_partition` BDC
+- [x] ICAP fix: BUFGCE_DIV → BUFG + register divider (Artix-7 не поддерживает BUFGCE_DIV)
+- [x] Карта адресов DFX: HWICAP 0x40001000, TDOT 0x40003000, ICAP 0x40004000
+- [x] Констрейны: `xdma_ddr3_early.xdc` обновлён под `xdma_ddr3_dfx_i/...`
+- [x] Встроены HDL-файлы из reference-репо в `third_party/`
 - [ ] DMA-тест DDR3 (ReadBlock/WriteBlock)
 - [ ] Интеграционное тестирование на плате, загрузка через ICAP
 - [ ] Инсталлятор драйвера
-- [ ] Конфликты LOC GT-ланок PCIe (нужна схема платы; см. комментарий в конце `constraints/xdma_ddr3_pins.xdc` и `vivado_9916.backup.log:1138-1144`)
+- [ ] Замена DFX Partition на троичное ядро (`tdot_axi4` + `compute_dot_par_raw`)

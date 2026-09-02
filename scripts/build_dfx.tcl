@@ -51,7 +51,9 @@ set_property target_simulator XSim [current_project]
 
 # ---------- 2a. Добавление HDL-файлов модулей DFX Partition ----------
 puts "=== 2a. ADD DFX PARTITION HDL (up_axi + datamover_ctrl) ==="
-set HDL_DIR "${ROOT}/../../m2-artix7-accelerator-card-develop/hdl"
+# Файлы встроены в репозиторий: third_party/m2-artix7-accelerator-card/hdl/
+# (см. third_party/m2-artix7-accelerator-card/README.md)
+set HDL_DIR "${ROOT}/third_party/m2-artix7-accelerator-card/hdl"
 add_files -norecurse \
     ${HDL_DIR}/common/up_axi.v \
     ${HDL_DIR}/common/datamover_ctrl.v \
