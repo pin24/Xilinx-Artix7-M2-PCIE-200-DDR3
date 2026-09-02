@@ -106,23 +106,33 @@ set_property -dict [list CONFIG.NUM_SI 2] [get_bd_cells axi_smc]
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_axi_gpio_0_Reg}]
 assign_bd_address -offset 0x40000000 -range 0x1000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
 
+<<<<<<< HEAD
 # ---------- 5.2. S_AXI_TDOT_REGS: Master-порт в BD для tdot_axi4 (slave на top) ----------
 # На top-уровне xdma_ddr3_core_top.sv инстанции u_tdot подключается к этому порту.
 set tdot_regs_port [get_bd_intf_ports -quiet S_AXI_TDOT_REGS]
 if {$tdot_regs_port eq ""} {
     puts "=== Creating S_AXI_TDOT_REGS port (M01 @ 0x40001000) ==="
     # NUM_MI увеличен до 4 в начале секции 5 (идемпотентно)
+=======
+# TDOT CSRs: 0x40001000 (4K) — создать порт S_AXI_TDOT_REGS если его нет
+set tdot_port [get_bd_intf_ports -quiet S_AXI_TDOT_REGS]
+if {$tdot_port eq ""} {
+    set_property -dict [list CONFIG.NUM_MI 2] [get_bd_cells xdma_0_axi_periph]
+>>>>>>> 6313fd0 (DFX integration: xdma_ddr3_dfx BD, icap_ctrl fix, address map, driver, build scripts)
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_TDOT_REGS
     set_property -dict [list CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] [get_bd_intf_ports S_AXI_TDOT_REGS]
     connect_bd_intf_net [get_bd_intf_pins xdma_0_axi_periph/M01_AXI] [get_bd_intf_ports S_AXI_TDOT_REGS]
     connect_bd_net [get_bd_pins xdma_0_axi_periph/M01_ACLK] [get_bd_pins xdma_0/axi_aclk]
     connect_bd_net [get_bd_pins xdma_0_axi_periph/M01_ARESETN] [get_bd_pins xdma_0/axi_aresetn]
+<<<<<<< HEAD
     # ASSOCIATED_BUSIF: привязать S_AXI_TDOT_REGS к клоковому домену xdma_0/axi_aclk
     set old_assoc [get_property CONFIG.ASSOCIATED_BUSIF [get_bd_pins xdma_0/axi_aclk]]
     if {[string first "S_AXI_TDOT_REGS" $old_assoc] == -1} {
         set new_assoc [string trim "$old_assoc S_AXI_TDOT_REGS"]
         set_property -dict [list CONFIG.ASSOCIATED_BUSIF $new_assoc] [get_bd_pins xdma_0/axi_aclk]
     }
+=======
+>>>>>>> 6313fd0 (DFX integration: xdma_ddr3_dfx BD, icap_ctrl fix, address map, driver, build scripts)
 }
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_TDOT_REGS_Reg}]
 assign_bd_address -offset 0x40001000 -range 0x1000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs S_AXI_TDOT_REGS/Reg] -force
@@ -154,15 +164,11 @@ if {$xadc_port eq ""} {
     connect_bd_intf_net [get_bd_intf_pins xdma_0_axi_periph/M03_AXI] [get_bd_intf_ports S_AXI_XADC_REGS]
     connect_bd_net [get_bd_pins xdma_0_axi_periph/M03_ACLK] [get_bd_pins xdma_0/axi_aclk]
     connect_bd_net [get_bd_pins xdma_0_axi_periph/M03_ARESETN] [get_bd_pins xdma_0/axi_aresetn]
-    set old_assoc [get_property CONFIG.ASSOCIATED_BUSIF [get_bd_pins xdma_0/axi_aclk]]
-    if {[string first "S_AXI_XADC_REGS" $old_assoc] == -1} {
-        set new_assoc [string trim "$old_assoc S_AXI_XADC_REGS"]
-        set_property -dict [list CONFIG.ASSOCIATED_BUSIF $new_assoc] [get_bd_pins xdma_0/axi_aclk]
-    }
 }
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_XADC_REGS_Reg}]
 assign_bd_address -offset 0x46000000 -range 0x1000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs S_AXI_XADC_REGS/Reg] -force
 
+<<<<<<< HEAD
 # ---------- 5.5. M_AXI_TDOT: Slave-порт в BD для tdot_axi4 master (доступ к DDR3) ----------
 # tdot_axi4 читает data/weights из DDR3 и пишет результат — нужен master-выход в BD.
 set m_axi_tdot_port [get_bd_intf_ports -quiet M_AXI_TDOT]
@@ -183,6 +189,63 @@ if {$m_axi_tdot_port eq ""} {
         set_property -dict [list CONFIG.ASSOCIATED_BUSIF $new_assoc] [get_bd_pins xdma_0/axi_aclk]
     }
 }
+=======
+# ---------- 5a. M_AXI_TDOT (slave port, подключается к tdot_axi4.M_AXI) ----------
+puts "=== 5a. ADD M_AXI_TDOT (AXI4 slave -> axi_smc/S01_AXI) ==="
+set tdot_m_port [get_bd_intf_ports -quiet M_AXI_TDOT]
+if {$tdot_m_port eq ""} {
+    create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_TDOT
+}
+set_property -dict [list \
+    CONFIG.PROTOCOL AXI4 \
+    CONFIG.DATA_WIDTH 64 \
+    CONFIG.ADDR_WIDTH 32 \
+    CONFIG.NUM_READ_OUTSTANDING 2 \
+    CONFIG.NUM_WRITE_OUTSTANDING 2 \
+    CONFIG.FREQ_HZ 125000000 \
+] [get_bd_intf_ports M_AXI_TDOT]
+
+# axi_smc: второй slave порт
+set_property -dict [list CONFIG.NUM_SI 2] [get_bd_cells axi_smc]
+connect_bd_intf_net [get_bd_intf_pins axi_smc/S01_AXI] [get_bd_intf_ports M_AXI_TDOT]
+
+# адресные сегменты для M_AXI_TDOT (DDR3 + BRAM)
+assign_bd_address -offset 0x80000000 -range 0x10000000 \
+    -target_address_space [get_bd_addr_spaces M_AXI_TDOT] \
+    [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
+assign_bd_address -offset 0x00000000 -range 0x00002000 \
+    -target_address_space [get_bd_addr_spaces M_AXI_TDOT] \
+    [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+
+# ---------- 5b. Экспорт такта PCIe-домена из BD ----------
+puts "=== 5b. EXPORT CLOCK FROM BD (axi_aclk_out / axi_aresetn_out / axi_aclk_in) ==="
+if {[get_bd_ports -quiet axi_aclk_out] eq ""} {
+    create_bd_port -dir O axi_aclk_out
+}
+if {[get_bd_ports -quiet axi_aresetn_out] eq ""} {
+    create_bd_port -dir O axi_aresetn_out
+}
+if {[get_bd_ports -quiet axi_aclk_in] eq ""} {
+    create_bd_port -dir I -type clk axi_aclk_in
+}
+set_property -dict [list \
+    CONFIG.FREQ_HZ 125000000 \
+    CONFIG.ASSOCIATED_BUSIF {M_AXI_TDOT} \
+] [get_bd_ports axi_aclk_in]
+
+proc _clk_connect {port_name pin_name} {
+    set port [get_bd_ports -quiet $port_name]
+    set pin  [get_bd_pins  -quiet $pin_name]
+    if {$port eq "" || $pin eq ""} { return }
+    set npin [get_bd_nets -quiet -of_objects $pin]
+    if {[llength $npin] == 0} {
+        connect_bd_net $port $pin
+        puts "=== CLOCK: $pin_name -> $port_name ==="
+    }
+}
+_clk_connect axi_aclk_out    xdma_0/axi_aclk
+_clk_connect axi_aresetn_out xdma_0/axi_aresetn
+>>>>>>> 6313fd0 (DFX integration: xdma_ddr3_dfx BD, icap_ctrl fix, address map, driver, build scripts)
 
 # Cleanup legacy M_AXI_ICAP port (если остался от старой схемы)
 set legacy_icap [get_bd_intf_ports -quiet M_AXI_ICAP]
@@ -199,9 +262,7 @@ validate_bd_design
 save_bd_design
 puts "=== BD: GPIO 0x40000000, TDOT 0x40001000, ICAP 0x40002000, XADC 0x46000000 ==="
 
-# ---------- 6. Экспорт такта из BD ----------
-puts "=== 6. EXPORT CLOCK FROM BD (axi_aclk_out / axi_aresetn_out / axi_aclk_in) ==="
-source ${ROOT}/scripts/fix_bd_clock_export.tcl
+# ---------- 6. (сделано в шаге 5b) ----------
 
 # ---------- 7. Regenerate wrapper ----------
 puts "=== 7. REGENERATE WRAPPER ==="

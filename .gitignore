@@ -1,23 +1,11 @@
 # Vivado artifacts
 *.jou
 *.log
-*.backup.*
+*.backup.log
+*.dmp
 .Xil/
-*.wdb
-xsim.dir/
-*.cache/
-*.hw/
-*.ip_user_files/
-*.runs/
-*.sim/
-*.str/
-m2_artix7_xdma_ddr3/
-rtl/synth_check/
-rtl/block/synth_raw/
-rtl/block/synth_check/
-rtl/block/sim/
-rtl/integration/sim/
 build/
+.images/
 
 # Python
 __pycache__/

@@ -35,10 +35,15 @@ import os, subprocess, struct, time
 AXI_LITE_BASE = 0x4000_0000   # начало BAR0 (AXI-Lite): GPIO/TDOT/ICAP/XADC
 DDR3_BASE     = 0x8000_0000   # начало BAR2 (DDR3)
 
-# адресная база AXI-Lite регистров ядра (из BD: в пределах BAR 64K)
-REG_BASE  = 0x4000_1000      # tdot_axi4 регистры
-ICAP_BASE = 0x4000_2000      # ICAP-контроллер
+# адресная база AXI-Lite регистров ядра (DFX BD, xdma_axi_lite_smc):
+#   M00 GPIO  0x4000_0000    M03 TDOT   0x4000_3000
+#   M01 DFX sock 0x4000_2000 M04 ICAP   0x4000_4000
+#   M02 HWICAP 0x4000_1000   M05 XADC   0x4600_0000
+REG_BASE  = 0x4000_3000      # tdot_axi4 регистры
+ICAP_BASE = 0x4000_4000      # ICAP-контроллер
 GPIO_BASE = 0x4000_0000      # axi_gpio (не используется)
+HWICAP_BASE = 0x4000_1000    # axi_hwicap (если потребуется прямой доступ)
+DFX_SOCK_BASE = 0x4000_2000  # dfx_socket/decouple_shutdown_ctrl (shutdown/decouple GPIO)
 # legacy alias (модульно совместим со старым именем)
 DDR_BASE = DDR3_BASE
 

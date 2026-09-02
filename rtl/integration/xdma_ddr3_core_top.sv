@@ -14,6 +14,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
     DDR3_0_ras_n,
     DDR3_0_reset_n,
     DDR3_0_we_n,
+    clk50,
     diff_clock_rtl_0_clk_n,
     diff_clock_rtl_0_clk_p,
     gpio_rtl_0_tri_o,
@@ -37,6 +38,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   output DDR3_0_ras_n;
   output DDR3_0_reset_n;
   output DDR3_0_we_n;
+  input [0:0]clk50;
   input [0:0]diff_clock_rtl_0_clk_n;
   input [0:0]diff_clock_rtl_0_clk_p;
   output [2:0]gpio_rtl_0_tri_o;
@@ -180,8 +182,10 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .raw_temp(16'h0), .raw_vccint(16'h0), .raw_valid(1'b0)
   );
 
-  // ======================== BD ========================
-  xdma_ddr3 xdma_ddr3_i (
+  // ======================== BD (DFX variant) ========================
+  // BD wrapper: xdma_ddr3_dfx_wrapper (from xdma_ddr3_dfx.bd)
+  // Включает XDMA, MIG, HWICAP, DFX Socket, DFX Partition
+  xdma_ddr3_dfx xdma_ddr3_dfx_i (
       .DDR3_0_addr(DDR3_0_addr),
       .DDR3_0_ba(DDR3_0_ba),
       .DDR3_0_cas_n(DDR3_0_cas_n),
@@ -202,6 +206,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .axi_aclk_in(axi_aclk),       // loopback: та же цепь, что axi_aclk_out
       .diff_clock_rtl_0_clk_n(diff_clock_rtl_0_clk_n),
       .diff_clock_rtl_0_clk_p(diff_clock_rtl_0_clk_p),
+      .clk50(clk50),
       .gpio_rtl_0_tri_o(gpio_rtl_0_tri_o),
       .M_AXI_TDOT_awaddr(m_axi_awaddr), .M_AXI_TDOT_awlen(m_axi_awlen),
       .M_AXI_TDOT_awsize(m_axi_awsize), .M_AXI_TDOT_awburst(m_axi_awburst),
@@ -256,11 +261,10 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       // FIX-5 RTL-3 (TODO, ANALYSIS_AND_SPEC_FIX.md B-3): в BD wrapper всё ещё есть
       // legacy-порт M_AXI_ICAP (64-бит мастер от старой схемы «ICAP как мастер»). На
       // top он НЕ подключён (ICAP теперь AXI-Lite slave), что даёт CRITICAL WARNING
-      // в impl. Удалить через TCL: `delete_bd_objs [get_bd_intf_ports M_AXI_ICAP]`
-      // (см. scripts/add_icap_xadc_bd.tcl, блок «cleanup legacy M_AXI_ICAP»), затем
-      // `make_wrapper -force`. Без Vivado на Linux выполнить нельзя — задаётся как
-      // post-synth TODO. Сам порт в этой инстанции не перечислен (Vivado оставит его
-      // unconnected — синтез проходит, impl даёт warning).
+      // в impl. Удалять через TCL: `delete_bd_objs [get_bd_intf_ports M_AXI_ICAP]`
+      // (см. scripts/post_bd_dfx.tcl, блок «Очистка legacy M_AXI_ICAP»), затем
+      // `make_wrapper -force`. Если порт уже удалён — warning исчезнет после
+      // регенерации wrapper.
       .pcie_7x_mgt_rtl_0_rxn(pcie_7x_mgt_rtl_0_rxn),
       .pcie_7x_mgt_rtl_0_rxp(pcie_7x_mgt_rtl_0_rxp),
       .pcie_7x_mgt_rtl_0_txn(pcie_7x_mgt_rtl_0_txn),

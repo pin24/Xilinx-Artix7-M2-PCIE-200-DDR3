@@ -9,6 +9,9 @@ set_property BITSTREAM.CONFIG.SPI_FALL_EDGE Yes [current_design]
 #pcie reset_n input
 set_property -dict {PACKAGE_PIN K22 IOSTANDARD LVCMOS33} [get_ports reset_rtl_0]
 
+# 50 MHz system clock (BD port clk50)
+create_clock -name clk50 -period 20.000 [get_ports clk50]
+
 #led x3 output
 set_property -dict {PACKAGE_PIN AB21 IOSTANDARD LVCMOS33} [get_ports gpio_rtl_0_tri_o[2]]
 set_property -dict {PACKAGE_PIN AA20 IOSTANDARD LVCMOS33} [get_ports gpio_rtl_0_tri_o[1]]

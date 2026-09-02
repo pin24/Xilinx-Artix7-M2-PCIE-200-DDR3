@@ -12,8 +12,8 @@
 #define GPIO_DATA       (GPIO_BASE + 0x00)
 #define GPIO_TRI        (GPIO_BASE + 0x04)
 
-/* TDOT compute core */
-#define TDOT_BASE       0x40001000UL
+/* TDOT compute core (DFX-BD: xdma_axi_lite_smc M03 @ 0x4000_3000) */
+#define TDOT_BASE       0x40003000UL
 #define TDOT_CTRL       (TDOT_BASE + 0x00)   /* W: [0]=GO (self-clearing) */
 #define TDOT_STATUS     (TDOT_BASE + 0x04)   /* R: [0]=BUSY, [1]=DONE */
 #define TDOT_N_IN       (TDOT_BASE + 0x08)   /* R/W: number of pairs */
@@ -28,11 +28,8 @@
 #define TDOT_CORE_RES0  (TDOT_BASE + 0x2C)
 #define TDOT_CORE_RES1  (TDOT_BASE + 0x30)
 
-/* ICAP -- CTRL/STATUS/DATA (source: icap_ctrl.sv:1-15, ADDRESS_MAP.md sec 4).
- *   [0x00] CTRL   W: [0]=GO (self-clear), [1]=STOP (self-clear)
- *   [0x04] STATUS R: [0]=READY (mailbox free), [1]=BUSY (session active)
- *   [0x08] DATA   W: 32-bit ICAP word (LE bswap of BE .bin word)            */
-#define ICAP_BASE       0x40002000UL
+/* ICAP -- CTRL/STATUS/DATA (DFX-BD: xdma_axi_lite_smc M04 @ 0x4000_4000) */
+#define ICAP_BASE       0x40004000UL
 #define ICAP_CTRL       (ICAP_BASE + 0x00)
 #define ICAP_STATUS     (ICAP_BASE + 0x04)
 #define ICAP_DATA       (ICAP_BASE + 0x08)

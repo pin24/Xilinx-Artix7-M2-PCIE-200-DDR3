@@ -166,7 +166,7 @@ module icap_ctrl #(
     always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
         if (!S_AXI_ARESETN) begin
             word_q <= 0; in_flight <= 0;
-            req_toggle <= 0; ack_toggle <= 0;
+            req_toggle <= 0;
             ack_toggle_prev <= 0;
             ack_sync_ff1 <= 0; ack_sync_ff2 <= 0;
         end else begin
@@ -206,15 +206,15 @@ module icap_ctrl #(
     assign S_AXI_RDATA = rdata;
 
     // ==================== slow-домен (icap_clk = 62.5 МГц) ======================
+    // Artix-7: BUFGCE_DIV не поддерживается. Делим S_AXI_ACLK (125 МГц) на 2
+    // через register с BUFG, получаем icap_clk = 62.5 МГц.
+    logic icap_clk_int;
     logic icap_clk;
-    BUFGCE_DIV #(
-        .BUFGCE_DIVIDE(2)
-    ) u_clkdiv (
-        .I(S_AXI_ACLK),
-        .CE(1'b1),
-        .CLR(1'b0),
-        .O(icap_clk)
-    );
+    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
+        if (!S_AXI_ARESETN) icap_clk_int <= 0;
+        else                icap_clk_int <= ~icap_clk_int;
+    end
+    BUFG u_icap_bufg (.I(icap_clk_int), .O(icap_clk));
 
     // сброс slow-домена (async assert, sync deassert к icap_clk)
     logic icap_rst_n;
@@ -236,6 +236,7 @@ module icap_ctrl #(
             go_sync_ff1 <= 0; go_sync_ff2 <= 0; go_prev <= 0;
             stop_sync_ff1 <= 0; stop_sync_ff2 <= 0; stop_prev <= 0;
             busy_q <= 0;
+            ack_toggle <= 0;
             icap_cs <= 1; icap_rw <= 1; icap_data <= 0;
         end else begin
             // 2FF синхронизаторы toggle-флагов (fast -> slow)

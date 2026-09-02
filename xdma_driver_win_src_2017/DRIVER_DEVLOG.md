@@ -31,9 +31,11 @@ xdma_driver_win_src_2017/
 | Периферия | Адрес | Размер | Описание |
 |-----------|-------|--------|----------|
 | GPIO (LED) | 0x4000_0000 | 4K | 3 LED |
-| TDOT_REGS | 0x4000_1000 | 4K | Регистры троичного ядра |
-| ICAP | 0x4000_2000 | 4K | Перезагрузка FPGA |
-| XADC | 0x4600_0000 | 4K | Температура/напряжение |
+| TDOT_REGS | 0x4000_3000 | 4K | Регистры троичного ядра (DFX-BD M03) |
+| ICAP | 0x4000_4000 | 4K | Перезагрузка FPGA (DFX-BD M04) |
+| HWICAP_BASE | 0x4000_1000 | 4K | AXI HWICAP (DFX-BD M02) |
+| DFX_SOCK_BASE | 0x4000_2000 | 4K | DFX Socket shutdown/decouple (DFX-BD M01) |
+| XADC | 0x4600_0000 | 4K | Температура/напряжение (DFX-BD M05) |
 | DDR3 | 0x8000_0000 | 256MB | Данные для вычислений |
 
 ## Hardware Configuration

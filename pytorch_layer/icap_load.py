@@ -1,7 +1,7 @@
 """Загрузка битстрима через ICAP-контроллер FPGA.
 
 Читает .bin/.bit-файл, пишет 32-битные слова в регистр DATA ICAP
-(AXI-Lite, BAR0-relative 0x4000_2000; CTRL 0x00, STATUS 0x04, DATA 0x08).
+(AXI-Lite, BAR0-relative 0x4000_4000; CTRL 0x00, STATUS 0x04, DATA 0x08).
 
 ПОРЯДОК БАЙТОВ (важно!):
 Битстрим хранит слова в big-endian (файл: байты AA 99 55 66 = слово 0xAA995566).
@@ -27,7 +27,7 @@ import time
 
 from xdma_driver import XdmaLinux, XdmaWindows, XdmaError
 
-ICAP_BASE = 0x4000_2000
+ICAP_BASE = 0x4000_4000
 REG_CTRL = 0x00
 REG_STATUS = 0x04
 REG_DATA = 0x08

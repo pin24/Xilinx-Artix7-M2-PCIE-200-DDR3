@@ -80,7 +80,7 @@ module tfmul_raw (
     );
 
     logic [79:0] prod_next;
-    logic [5:0] shift_t;
+    logic signed [6:0] shift_t;
     always_comb begin
         shift_t = (mul_i + mul_j) * 4;
         prod_next = prod_r;
@@ -92,7 +92,7 @@ module tfmul_raw (
                 logic signed [2:0] sv;
                 logic [1:0] out_t;
                 if (t >= shift_t && t < shift_t + 8)
-                    pv = partial[2*(t - shift_t) +: 2];
+                    pv = partial[2'sd2*(t - shift_t) +: 2];
                 else
                     pv = 2'b00;
                 sv = trit_val2(prod_r[2*t +: 2]) + trit_val2(pv) + carry;
