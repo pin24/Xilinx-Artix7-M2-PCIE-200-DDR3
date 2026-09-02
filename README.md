@@ -11,23 +11,31 @@
 
 ## Состав репозитория
 | Каталог | Содержимое |
-|---|---|
+|---|---|---|
 | `rtl/block/` | Блочное ядро: `tbyte_add/mul.sv`, `tfmul_raw.sv`, `tfadd_raw.sv`, `compute_dot_par_raw.sv` (параллельный dot, параметр NUM_MAC) + тестбенчи и Python-верификация |
 | `rtl/rtl/` | Ранняя версия ядра (tf40_*, конвертеры f32↔tf) |
 | `rtl/integration/` | `tdot_axi4.sv` (AXI4-мастер + AXI-Lite регистры ускорителя), `icap_ctrl.sv`, `xadc_temp.sv`, `xdma_ddr3_core_top.sv` |
-| `constraints/` | XDC-файлы платы |
-| `scripts/` | TCL-скрипты сборки BD (XDMA + MIG DDR3 + interconnect) и битстрима |
+| `constraints/` | XDC-файлы платы (pins, early, pblock) |
+| `scripts/` | TCL-скрипты сборки BD (не-DFX: `build.tcl`, DFX: `build_dfx.tcl`) |
+| `dfx_block_designs/` | DFX Partition BDC (default.tcl — DataMover loopback, test.tcl — GPIO расширение) |
 | `pytorch_layer/` | Хост-софт: `fpga_backend.py`, `xdma_driver.py`, `icap_load.py`, `ternary_dot_layer.py` |
 | `ternary_sw/` | Python-эталон арифметики TFloat48 (arith48) и тесты |
-| `driver/`, `xdma_driver_win_src_2017/` | Windows KMDF-драйвер XDMA + test_xdma.exe (собран и подписан тестовым сертификатом WDK) |
+| `driver/`, `xdma_driver_win_src_2017/` | Windows KMDF-драйвер XDMA + test_xdma.exe |
+| `docs/` | `ADDRESS_MAP.md` (карта адресов), `ERROR_HISTORY.md` (хронология багов) |
 
-## Карта адресов (PCIe BAR0 128 МБ / AXI M_AXI_LITE, согласована с `scripts/build_all.tcl`)
-| Модуль | Адрес |
-|---|---|
-| AXI GPIO (LED) | 0x4000_0000 |
-| TDOT registers (акселератор) | 0x4000_1000 |
-| ICAP | 0x4000_2000 |
-| XADC (S_AXI_XADC_REGS; FIX-5: подключён к `u_xadc` в top-level) | 0x4600_0000 |
+## Карта адресов (DFX-BD, PCIe BAR0 128 МБ / AXI M_AXI_LITE, согласована с `docs/ADDRESS_MAP.md` и `docs/ERROR_HISTORY.md`)
+| Модуль | Адрес | Примечание |
+|---|---|---|
+| AXI GPIO (LED) | 0x4000_0000 | |
+| AXI HWICAP | 0x4000_1000 | Ядро HWICAP (не icap_ctrl!) |
+| DFX Socket control | 0x4000_2000 | decouple/shutdown GPIO |
+| **TDOT registers** | **0x4000_3000** | **Регистры троичного ускорителя** |
+| **ICAP registers** | **0x4000_4000** | **icap_ctrl (перезагрузка FPGA)** |
+| DFX Partition MM2S | 0x4001_0000 | DataMover MM2S |
+| DFX Partition S2MM | 0x4001_8000 | DataMover S2MM |
+| XADC | 0x4600_0000 | Температура/напряжение |
+| DDR3 (через BAR2) | 0x8000_0000 | 256 MB |
+| DDR3 (M_AXI_TDOT) | 0x8000_0000 | Доступ ядра к DDR3 |
 | DDR3 (через XDMA M_AXI) | 0x8000_0000 |
 
 Debug monitor (`debug_mon.sv`) **не реализован** — файл отсутствует в `rtl/integration/`, в BD нет ни порта `S_AXI_DEBUG_REGS`, ни скрипта `add_debug_bd.tcl`. Адрес 0x4700_0000 остаётся зарезервированным (см. `docs/ADDRESS_MAP.md` §2 и `ANALYSIS_AND_SPEC_FIX.md` B-5).
