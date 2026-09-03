@@ -45,6 +45,31 @@ puts "============================================================"
 # ---------- 1. Создание проекта ----------
 puts "=== 1. CREATE PROJECT ==="
 file mkdir [file dirname ${PROJ_DIR}]
+
+# Если каталог проекта уже существует — пробуем удалить его.
+# create_project -force делает то же самое, но если каталог .runs занят
+# другим процессом (открытый Vivado GUI, проводник, антивирус) — Vivado
+# падает с ERROR: [Project 1-161] Failed to remove the directory.
+# Мы удаляем заранее с явным сообщением.
+if {[file exists ${PROJ_DIR}]} {
+    puts "=== Cleaning existing project: ${PROJ_DIR} ==="
+    if {[catch {file delete -force ${PROJ_DIR}} err]} {
+        puts "ERROR: Cannot delete ${PROJ_DIR}"
+        puts "ERROR: $err"
+        puts ""
+        puts "============================================================"
+        puts " RESOLUTION:"
+        puts "============================================================"
+        puts " 1. Close all Vivado instances (Task Manager → End task)"
+        puts " 2. Close Windows Explorer if C:\\build_dfx is open"
+        puts " 3. Manually delete: rmdir /s /q C:\\build_dfx"
+        puts " 4. Re-run: scripts\\build.bat"
+        puts "============================================================"
+        close_project
+        exit 1
+    }
+}
+
 create_project -force ${PROJ_NAME} ${PROJ_DIR} -part ${PART}
 set_property target_language Verilog [current_project]
 set_property target_simulator XSim [current_project]
