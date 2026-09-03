@@ -159,66 +159,27 @@ assign_bd_address -offset 0x46000000 -range 0x1000 \
 # ============================================================================
 
 # ============================================================================
-# 4c. XADC Wizard IP — AUDIT-04
+# 4c. XADC — ВАЖНО: НЕ создаём отдельный xadc_wiz IP (BUG-031)
 # ============================================================================
-# u_xadc в xdma_ddr3_core_top.sv получает raw_temp/raw_vccint/raw_valid
-# от XADC Wizard IP. Без него:
-#   .raw_temp(16'h0), .raw_vccint(16'h0), .raw_valid(1'b0)
-# → monitor_temp.py будет читать TEMP=0°C, VCCINT=0V.
+# Artix-7 XC7A200T имеет ТОЛЬКО 1 XADC на кристалле.
+# MIG 7-series IP уже использует XADC (см. xdma_ddr3_dfx_bd.tcl:199:
+#   <XADC_En>Enabled</XADC_En>
+# ). Добавление второго xadc_wiz IP приводит к DRC UTLZ-1:
+#   ERROR: [DRC UTLZ-1] Resource utilization: XADC over-utilized in Top
+#   Level Design (requires 2 of such cell types but only 1 compatible
+#   site is available).
 #
-# Создаём xadc_wiz IP, включаем channel alarms (temp + vccint),
-# подключаем выходы к u_xadc через BD-порты xadc_raw_*.
-# NOTE: XADC Wizard использует внутренний DRP — не требует внешнего pins.
+# monitor_temp.py должен читать температуру через:
+#   (1) AXI GPIO (axi_gpio_0) — уже подключён к mig7_status_concat (MIG status)
+#       в xdma_ddr3_dfx_bd.tcl. MIG экспортирует температуру в status-regs.
+#   (2) ИЛИ через MIG DRP (если нужна точность).
+#
+# u_xadc в xdma_ddr3_core_top.sv остаётся с raw_temp=0/raw_vccint=0/
+# raw_valid=0 — AXI-Lite slave отвечает (для register access tests),
+# но значения TEMP/VCCINT = 0 до подключения к MIG status bus.
 # ============================================================================
 
-puts "=== 4c. XADC Wizard (for monitor_temp.py) ==="
-
-set xadc_wiz_cell [get_bd_cells -quiet xadc_wiz_0]
-if {$xadc_wiz_cell eq ""} {
-    puts "=== Creating xadc_wiz_0 ==="
-    create_bd_cell -type ip -vlnv xilinx.com:ip:xadc_wiz:3.3 xadc_wiz_0
-    # Config: temperature + vccint monitoring only, no alarms
-    set_property -dict [list \
-        CONFIG.STARTUP_CHANNEL_SELECTION {single_channel} \
-        CONFIG.SINGLE_CHANNEL_SELECTION {TEMPERATURE} \
-        CONFIG.CHANNEL_ENABLE_TEMPERATURE {true} \
-        CONFIG.CHANNEL_ENABLE_VCCINT {true} \
-        CONFIG.INTERFACE_SELECTION {Enable_AXI} \
-        CONFIG.ENABLE_DRP {true} \
-        CONFIG.ENABLE_RESET {false} \
-        CONFIG.ENABLE_AXI4STREAM {false} \
-        CONFIG.ENABLE_TEMP_BUS {false} \
-        CONFIG.ENABLE_EXTERNAL_MUX {false} \
-        CONFIG.TEMPERATURE_ALARM_OT_TRIGGER {125.0} \
-        CONFIG.TEMPERATURE_ALARM_TRIGGER {85.0} \
-        CONFIG.VCCINT_ALARM {false} \
-        CONFIG.OT_ALARM {false} \
-        CONFIG.USER_TEMP_ALARM {false} \
-    ] [get_bd_cells xadc_wiz_0]
-}
-
-# BD-порты для передачи raw данных на top-level
-if {[get_bd_ports -quiet xadc_raw_temp] eq ""} {
-    create_bd_port -dir O -from 15 -to 0 xadc_raw_temp
-}
-if {[get_bd_ports -quiet xadc_raw_vccint] eq ""} {
-    create_bd_port -dir O -from 15 -to 0 xadc_raw_vccint
-}
-if {[get_bd_ports -quiet xadc_raw_valid] eq ""} {
-    create_bd_port -dir O xadc_raw_valid
-}
-
-# подключаем тактовый сигнал к xadc_wiz (использует xdma_0/axi_aclk)
-connect_bd_net [get_bd_pins xdma_0/axi_aclk] [get_bd_pins xadc_wiz_0/s_axi_aclk]
-
-# выходы xadc_wiz → BD-порты (названия пинов могут отличаться в Vivado 2025.2)
-# temperature_out, vccint_out — это 12-битные значения в младших битах 16-битного слова
-catch { connect_bd_net [get_bd_pins xadc_wiz_0/temperature_out] [get_bd_ports xadc_raw_temp] }
-catch { connect_bd_net [get_bd_pins xadc_wiz_0/vccint_out]    [get_bd_ports xadc_raw_vccint] }
-# valid — eoc (end-of-conversion) или busy
-catch { connect_bd_net [get_bd_pins xadc_wiz_0/eoc_out] [get_bd_ports xadc_raw_valid] }
-
-puts "=== XADC Wizard connected to xadc_raw_* ports ==="
+puts "=== 4c. XADC Wizard SKIPPED (BUG-031: XADC over-utilized, MIG already uses it) ==="
 
 # ============================================================================
 # 5. Экспорт такта PCIe-домена (axi_aclk_out / axi_aresetn_out / axi_aclk_in)

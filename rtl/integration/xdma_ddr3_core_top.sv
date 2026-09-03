@@ -167,10 +167,12 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   logic        xadc_rvalid, xadc_rready;
   logic [1:0]  xadc_bresp, xadc_rresp;
 
-  // AUDIT-04: XADC raw данные из BD (xadc_wiz IP, см. post_bd_dfx.tcl блок 4c)
-  logic [15:0] xadc_raw_temp;
-  logic [15:0] xadc_raw_vccint;
-  logic        xadc_raw_valid;
+  // NOTE: XADC raw_temp/vccint/valid остаются 0. Artix-7 XC7A200T имеет только
+  // 1 XADC, который занят MIG 7-series IP (XADC_En=Enabled в xdma_ddr3_dfx_bd.tcl:199).
+  // Создание отдельного xadc_wiz IP приводит к DRC UTLZ-1 XADC over-utilized.
+  // monitor_temp.py должен читать температуру через AXI GPIO (axi_gpio_0),
+  // который подключён к mig7_status_concat (MIG status bus) в BD.
+  // См. BUG-031 в docs/ERROR_HISTORY.md.
 
   xadc_temp u_xadc (
       .S_AXI_ACLK(axi_aclk), .S_AXI_ARESETN(axi_aresetn),
@@ -183,8 +185,10 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .S_AXI_ARVALID(xadc_arvalid), .S_AXI_ARREADY(xadc_arready),
       .S_AXI_RDATA(xadc_rdata), .S_AXI_RRESP(xadc_rresp),
       .S_AXI_RVALID(xadc_rvalid), .S_AXI_RREADY(xadc_rready),
-      // AUDIT-04: XADC Wizard IP в BD → xadc_raw_temp/vccint/valid.
-      .raw_temp(xadc_raw_temp), .raw_vccint(xadc_raw_vccint), .raw_valid(xadc_raw_valid)
+      // BUG-031: XADC занят MIG IP — без xadc_wiz, raw_* = 0.
+      // u_xadc AXI-Lite slave отвечает (для register access tests),
+      // но TEMP/VCCINT = 0. monitor_temp.py должен использовать MIG status bus.
+      .raw_temp(16'h0), .raw_vccint(16'h0), .raw_valid(1'b0)
   );
 
   // ======================== BD (DFX variant) ========================
@@ -209,9 +213,6 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .axi_aclk_out(axi_aclk),      // экспорт xdma_0/axi_aclk из BD
       .axi_aresetn_out(axi_aresetn),// экспорт xdma_0/axi_aresetn из BD
       .axi_aclk_in(axi_aclk),       // loopback: та же цепь, что axi_aclk_out
-      .xadc_raw_temp(xadc_raw_temp),           // AUDIT-04: из xadc_wiz IP
-      .xadc_raw_vccint(xadc_raw_vccint),       // AUDIT-04: из xadc_wiz IP
-      .xadc_raw_valid(xadc_raw_valid),         // AUDIT-04: из xadc_wiz IP
       .diff_clock_rtl_0_clk_n(diff_clock_rtl_0_clk_n),
       .diff_clock_rtl_0_clk_p(diff_clock_rtl_0_clk_p),
       .clk50(clk50),

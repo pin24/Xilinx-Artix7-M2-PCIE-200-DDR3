@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-09-04 — Impl DRC UTLZ-1: XADC over-utilized (2 XADC requested, 1 available)
+
+### [BUG-031] XADC over-utilized — два XADC на одном кристалле
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/post_bd_dfx.tcl` (блок 4c), `rtl/integration/xdma_ddr3_core_top.sv` |
+| **Симптом** | `impl_1` → `place_design` падает на DRC: `ERROR: [DRC UTLZ-1] Resource utilization: XADC over-utilized in Top Level Design (requires 2 of such cell types but only 1 compatible site is available)`. Синтез проходит, BD валидируется — падает только place_design |
+| **Причина** | Artix-7 XC7A200T имеет **только 1 XADC** на кристалле. MIG 7-series IP уже использует его (`<XADC_En>Enabled</XADC_En>` в `xdma_ddr3_dfx_bd.tcl:199`). Добавление отдельного `xadc_wiz:3.3` IP (для AUDIT-04, monitor_temp.py) — попытка занять второй XADC, которого нет |
+| **Исправление** | (1) Удалён весь блок 4c из `post_bd_dfx.tcl` — `xadc_wiz_0` больше не создаётся. (2) `xdma_ddr3_core_top.sv` — `u_xadc.raw_temp/vccint/valid` снова привязаны к 0. (3) `monitor_temp.py` должен читать температуру через AXI GPIO (`axi_gpio_0`), который подключён к `mig7_status_concat` (MIG status bus) — MIG экспортирует температуру в status regs |
+| **Статус** | ✅ Исправлено (требует доработки monitor_temp.py для чтения через GPIO, а не через u_xadc) |
+
+---
+
 ## 2026-09-04 — Audit cleanup: AUDIT-01..05 fixes
 
 ### [BUG-026] AUDIT-02 — create_clock mig_refclk before link_design fails
