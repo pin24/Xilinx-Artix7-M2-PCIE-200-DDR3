@@ -177,23 +177,23 @@ set xadc_wiz_cell [get_bd_cells -quiet xadc_wiz_0]
 if {$xadc_wiz_cell eq ""} {
     puts "=== Creating xadc_wiz_0 ==="
     create_bd_cell -type ip -vlnv xilinx.com:ip:xadc_wiz:3.3 xadc_wiz_0
-    # Конфигурация: только temperature + vccint, без alarms
+    # Config: temperature + vccint monitoring only, no alarms
     set_property -dict [list \
-        CONFIG.ENABLE_VCCPD_ALARM {false} \
-        CONFIG.ENABLE_VCCAUX_ALARM {false} \
-        CONFIG.ENABLE_VCCINT_ALARM {false} \
-        CONFIG.ENABLE_TEMP_ALARM {false} \
-        CONFIG.ENABLE_OT_ALARM {false} \
-        CONFIG.ENABLE_SUPPLY_ALARM {0} \
-        CONFIG.ENABLE_TEMPERATURE_ALARM {0} \
-        CONFIG.ENABLE_VBRAM_ALARM {false} \
-        CONFIG.ENABLE_EXTXDCR_CHANNEL {false} \
-        CONFIG.XADC_STARUP_SELECTION {single_channel_mode} \
+        CONFIG.STARTUP_CHANNEL_SELECTION {single_channel} \
+        CONFIG.SINGLE_CHANNEL_SELECTION {TEMPERATURE} \
+        CONFIG.CHANNEL_ENABLE_TEMPERATURE {true} \
         CONFIG.CHANNEL_ENABLE_VCCINT {true} \
-        CONFIG.CHANNEL_ENABLE_TEMP {true} \
-        CONFIG.DUAL_CLOCK {false} \
-        CONFIG.ENABLE_AXI4_LITE {false} \
-        CONFIG.ENABLE_JTAG_DRP {true} \
+        CONFIG.INTERFACE_SELECTION {Enable_AXI} \
+        CONFIG.ENABLE_DRP {true} \
+        CONFIG.ENABLE_RESET {false} \
+        CONFIG.ENABLE_AXI4STREAM {false} \
+        CONFIG.ENABLE_TEMP_BUS {false} \
+        CONFIG.ENABLE_EXTERNAL_MUX {false} \
+        CONFIG.TEMPERATURE_ALARM_OT_TRIGGER {125.0} \
+        CONFIG.TEMPERATURE_ALARM_TRIGGER {85.0} \
+        CONFIG.VCCINT_ALARM {false} \
+        CONFIG.OT_ALARM {false} \
+        CONFIG.USER_TEMP_ALARM {false} \
     ] [get_bd_cells xadc_wiz_0]
 }
 
