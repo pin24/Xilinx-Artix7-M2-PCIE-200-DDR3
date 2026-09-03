@@ -14,12 +14,15 @@ set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]
 set_property BITSTREAM.CONFIG.SPI_FALL_EDGE Yes [current_design]
 
 # --- 50 MHz system clock (BD port clk50 → clk_wiz → 200 MHz for MIG) ---
-set_property -dict {PACKAGE_PIN Y18 IOSTANDARD LVCMOS33} [get_ports clk50]
-# IMPORTANT: clk_wiz IP генерирует внутренний create_clock [get_ports {clk50[0]}].
-# Используем тот же синтаксис {clk50[0]} для согласованности — иначе Vivado
-# пишет CRITICAL WARNING [Constraints 18-1055]: clk50 completely overrides clk50[0].
+# IMPORTANT: clk50 — 1-битный порт (input [0:0]). Vivado различает
+# [get_ports clk50] и [get_ports {clk50[0]}] как разные объекты. clk_wiz IP
+# генерирует внутренний create_clock [get_ports {clk50[0]}].
+# Все 3 строки используют {clk50[0]} для согласованности — иначе Vivado
+# пишет CRITICAL WARNING [Constraints 18-1055]: clk50 completely overrides clk50[0],
+# и IBUF_LOW_PWR не "прилипает" к тому же объекту, на котором создан clock.
+set_property -dict {PACKAGE_PIN Y18 IOSTANDARD LVCMOS33} [get_ports {clk50[0]}]
 create_clock -name clk50 -period 20.000 [get_ports {clk50[0]}]
-set_property IBUF_LOW_PWR TRUE [get_ports clk50]
+set_property IBUF_LOW_PWR TRUE [get_ports {clk50[0]}]
 
 # --- MIG IDELAYCTRL REFCLK: 200 MHz от clk200_clk_wiz ---
 create_clock -name mig_refclk -period 5.000 [get_pins -quiet {*/u_iodelay_ctrl/u_idelayctrl_*/REFCLK}]
