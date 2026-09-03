@@ -42,32 +42,76 @@ puts " JOBS       : ${JOBS}"
 puts " SKIP_SYNTH : ${SKIP_SYNTH}"
 puts "============================================================"
 
-# ---------- 1. Создание проекта ----------
+# ---------- 1. Создание проекта (с полной очисткой кэша) ----------
 puts "=== 1. CREATE PROJECT ==="
 file mkdir [file dirname ${PROJ_DIR}]
 
-# Если каталог проекта уже существует — пробуем удалить его.
-# create_project -force делает то же самое, но если каталог .runs занят
-# другим процессом (открытый Vivado GUI, проводник, антивирус) — Vivado
-# падает с ERROR: [Project 1-161] Failed to remove the directory.
-# Мы удаляем заранее с явным сообщением.
-if {[file exists ${PROJ_DIR}]} {
-    puts "=== Cleaning existing project: ${PROJ_DIR} ==="
-    if {[catch {file delete -force ${PROJ_DIR}} err]} {
-        puts "ERROR: Cannot delete ${PROJ_DIR}"
-        puts "ERROR: $err"
-        puts ""
-        puts "============================================================"
-        puts " RESOLUTION:"
-        puts "============================================================"
-        puts " 1. Close all Vivado instances (Task Manager → End task)"
-        puts " 2. Close Windows Explorer if C:\\build_dfx is open"
-        puts " 3. Manually delete: rmdir /s /q C:\\build_dfx"
-        puts " 4. Re-run: scripts\\build.bat"
-        puts "============================================================"
-        close_project
-        exit 1
+# ============================================================================
+# Полная очистка C:/build_dfx перед create_project.
+# ============================================================================
+# Vivado кэширует IP-генерацию в нескольких местах:
+#   - ${PROJ_DIR}                              (Vivado проект, .xpr + .srcs)
+#   - ${PROJ_DIR}.cache/                       (IP cache — синтез OOC IP)
+#   - ${PROJ_DIR}.gen/                         (сгенерированные HDL/обёртки)
+#   - ${PROJ_DIR}.hw/                          (hardware handoff)
+#   - ${PROJ_DIR}.ip_user_files/               (IP user files)
+#   - ${PROJ_DIR}.sim/                         (simulation outputs)
+#   - ${PROJ_DIR}.runs/                        (synth_1, impl_1 runs)
+#   - ${PROJ_DIR}.srcs/                        (sources, BD, constrs)
+#   - ${PROJ_DIR}.xpr                          (project file)
+#   - C:/build_dfx/.Xil/                       (Vivado global lock directory)
+#
+# После изменений в TCL-скриптах (например, в post_bd_dfx.tcl) или в RTL-файлах
+# старый кэш IP становится несовместимым и приводит к:
+#   - "Generation completed for the IP Integrator block ..." → обрыв без ошибки
+#   - launch_runs synth_1 → Vivado crash
+#   - BD parameter propagation не запускается ("already validated")
+#   - DFX Aperture DRC не совпадает с новыми адресами
+#
+# Полное удаление ${PROJ_DIR} и .Xil/ перед create_project гарантирует
+# чистую сборку. Если удаление не удалось (файлы заняты) — понятная инструкция.
+# ============================================================================
+
+set CLEANUP_DIRS [list \
+    ${PROJ_DIR} \
+    [file normalize "${PROJ_DIR}.cache"] \
+    [file normalize "${PROJ_DIR}.gen"] \
+    [file normalize "${PROJ_DIR}.hw"] \
+    [file normalize "${PROJ_DIR}.ip_user_files"] \
+    [file normalize "${PROJ_DIR}.sim"] \
+    [file normalize "[file dirname ${PROJ_DIR}]/.Xil"] \
+]
+
+set cleanup_failed 0
+foreach dir_to_clean ${CLEANUP_DIRS} {
+    if {[file exists ${dir_to_clean}]} {
+        puts "=== Cleaning: ${dir_to_clean} ==="
+        if {[catch {file delete -force ${dir_to_clean}} err]} {
+            puts "WARNING: Cannot delete ${dir_to_clean}: $err"
+            set cleanup_failed 1
+        }
     }
+}
+
+if {$cleanup_failed} {
+    puts ""
+    puts "============================================================"
+    puts " CLEANUP FAILED — files locked by another process"
+    puts "============================================================"
+    puts " Some directories in C:\\build_dfx could not be deleted."
+    puts " This usually means:"
+    puts "   1. Vivado is still running (Task Manager → End all vivado.exe)"
+    puts "   2. Windows Explorer has C:\\build_dfx open (close it)"
+    puts "   3. Antivirus is scanning (wait or exclude C:\\build_dfx)"
+    puts "   4. Another process locked the files"
+    puts ""
+    puts " MANUAL FIX:"
+    puts "   1. Close all Vivado: taskkill /f /im vivado.exe /im vivado.bat"
+    puts "   2. rmdir /s /q C:\\build_dfx"
+    puts "   3. Re-run: scripts\\build.bat"
+    puts "============================================================"
+    close_project
+    exit 1
 }
 
 create_project -force ${PROJ_NAME} ${PROJ_DIR} -part ${PART}

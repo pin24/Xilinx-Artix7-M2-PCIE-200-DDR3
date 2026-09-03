@@ -51,6 +51,40 @@ echo === Using Vivado: %VIVADO_BIN% ===
 echo === Repository root: %REPO_ROOT% ===
 
 REM ============================================================================
+REM Предварительная очистка C:\build_dfx (на уровне cmd, надёжнее чем TCL)
+REM ============================================================================
+REM TCL file delete -force иногда не может удалить занятые файлы (особенно
+REM .gen/, .cache/ от предыдущей Vivado сессии). Cmd rmdir с retry-логикой
+REM надёжнее. Если не получается — выводим инструкцию и выходим ДО запуска
+REM Vivado (не тратим время пользователя на запуск Vivado чтобы сразу упасть).
+if exist "C:\build_dfx" (
+    echo === Pre-cleaning C:\build_dfx from build.bat ===
+    rd /s /q "C:\build_dfx" 2>nul
+    if exist "C:\build_dfx" (
+        echo.
+        echo ============================================================
+        echo  ERROR: Cannot clean C:\build_dfx
+        echo ============================================================
+        echo  Some files in C:\build_dfx are locked by another process.
+        echo  Possible causes:
+        echo    - Vivado still running (Task Manager ^> End all vivado.exe)
+        echo    - Windows Explorer has C:\build_dfx open
+        echo    - Antivirus scanning
+        echo.
+        echo  MANUAL FIX:
+        echo    1. taskkill /f /im vivado.exe /im vivado.bat 2>nul
+        echo    2. taskkill /f /im vivado-xsim.exe 2>nul
+        echo    3. Close Explorer windows in C:\build_dfx
+        echo    4. rd /s /q C:\build_dfx
+        echo    5. Re-run: scripts\build.bat
+        echo ============================================================
+        popd
+        exit /b 1
+    )
+    echo === C:\build_dfx cleaned ===
+)
+
+REM ============================================================================
 REM Авто-subst: сокращаем путь если он слишком длинный (> 40 символов)
 REM Vivado + MIG IP создают глубокие вложенные пути (260+ символов),
 REM что ломает сборку на Windows с ограничением MAX_PATH.

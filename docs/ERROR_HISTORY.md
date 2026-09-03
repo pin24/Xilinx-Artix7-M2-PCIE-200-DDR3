@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-09-03 — DFX cache cleanup after TCL script changes
+
+### [BUG-024] Stale IP cache in C:/build_dfx — Vivado crash after TCL changes
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/build_dfx.tcl`, `scripts/build.bat` |
+| **Симптом** | После изменений в `post_bd_dfx.tcl` (CLK_DOMAIN, ASSOCIATED_BUSIF) Vivado запускался из старого кэша: `BD 41-1662 The design 'xdma_ddr3_dfx.bd' is already validated. Therefore parameter propagation will not be re-run`. BD генерация доходила до конца, `launch_runs synth_1` запускался, но потом процесс прерывался без ошибок (`INFO: [Project 1-1719] Creating Reconfigurable Module` → мгновенный выход в cmd). Старый IP cache в `.gen/`, `.cache/`, `.Xil/` был несовместим с новыми скриптами |
+| **Исправление** | (1) В `build.bat` добавлена пред-очистка `C:\build_dfx` через `rd /s /q` ДО запуска Vivado — это надёжнее чем TCL `file delete -force`. (2) В `build_dfx.tcl` добавлена расширенная очистка 7 каталогов: `${PROJ_DIR}`, `.cache`, `.gen`, `.hw`, `.ip_user_files`, `.sim`, `.Xil`. Если любой занят — понятная инструкция (taskkill, rmdir, restart) |
+| **Статус** | ✅ Исправлено |
+
+---
+
 ## 2026-09-03 — DFX post-synth DRC: HDPR-8 + MIG warnings
 
 ### [BUG-022] HDPR-8 — 1136 Critical Warnings про INIT without reset в DFX RP
