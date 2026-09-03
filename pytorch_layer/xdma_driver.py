@@ -209,6 +209,20 @@ class TdotCore:
         result = ((res1 & 0xFFFF) << 32) | (res0 & 0xFFFFFFFF)
         return result  # 48 бит
 
+    def read_core_result_reg(self) -> int:
+        """CORE_RES0 = result[31:0], CORE_RES1 = {16'h0, result[47:32]}.
+
+        RTL (tdot_axi4.sv:251-252) — это зеркала core_result БЕЗ защёлок res0_reg/res1_reg.
+        Полезно для отладки: если RES0/RES1 и CORE_RES0/CORE_RES1 совпадают —
+        защёлки работают корректно. Если различаются — race condition в CS_WAIT.
+
+        AUDIT-05 (NOTE): CORE_RES0/1 зарезервированы для debug, не используются
+        в основном потоке dot() — только для верификации.
+        """
+        cres0 = self._reg_r(0x2C) & 0xFFFFFFFF         # CORE_RES0 = result[31:0]
+        cres1 = self._reg_r(0x30) & 0xFFFF             # CORE_RES1 = {16'h0, result[47:32]}
+        return ((cres1 & 0xFFFF) << 32) | (cres0 & 0xFFFFFFFF)
+
     # ---- данные ----
     def write_tf48(self, addr: int, bits_list) -> None:
         """Раскладывает список 48-битных TFloat48 по 8 байт/элемент."""

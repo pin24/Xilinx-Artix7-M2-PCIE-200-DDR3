@@ -281,6 +281,12 @@ puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+
+# AUDIT-02: create_clock mig_refclk на REFCLK pin MIG IODELAYCTRL
+# выполняем в TCL.POST после synth (когда pin существует в netlist).
+# До synth get_pins возвращает пустой список — см. ERROR_HISTORY.md BUG-026.
+set_property STEPS.SYNTH_DESIGN.TCL.POST ${ROOT}/scripts/mig_refclk_post.tcl [get_runs synth_1]
+
 launch_runs synth_1 -jobs ${JOBS}
 wait_on_run synth_1
 set st [get_property STATUS [get_runs synth_1]]

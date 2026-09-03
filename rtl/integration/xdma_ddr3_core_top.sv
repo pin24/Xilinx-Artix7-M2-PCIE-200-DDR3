@@ -148,14 +148,14 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
 
   // ======================== XADC (температура/напряжение, база 0x46000000) ========================
   // FIX-5 RTL-1: инстанцируем xadc_temp.sv, чтобы BD-порт S_AXI_XADC_REGS (создаваемый
-  // scripts/add_icap_xadc_bd.tcl на M03 @ 0x46000000) был подключён к реальному
+  // scripts/post_bd_dfx.tcl на M05 @ 0x46000000) был подключён к реальному
   // AXI-Lite slave. Без этого wrapper-порт остаётся floating, monitor_temp.py
   // получает decoder error / undefined. Соответствует ANALYSIS_AND_SPEC_FIX.md B-5.
   //
-  // TODO: raw_temp/raw_vccint/raw_valid пока привязаны к 0 — нужен отдельный XADC
-  // Wizard IP в BD (xilinx.com:ip:xadc_wiz, режим Temperature/VCCINT monitoring),
-  // выходы .ip_temperature/~.ip_vccint/~.eoc вывести на top и подключить сюда.
-  // Пока slave отвечает (BVALID/RVALID формируются), но TEMP/VCCINT читаются как 0.
+  // AUDIT-04: raw_temp/raw_vccint/raw_valid приходят из xadc_wiz IP в BD
+  // (см. scripts/post_bd_dfx.tcl, блок 4c). BD-порты xadc_raw_temp/vccint/valid
+  // проводятся на top-level и подключаются к u_xadc. Ранее были привязаны к 0
+  // → monitor_temp.py читал TEMP=0°C, VCCINT=0V.
   logic [7:0]  xadc_awaddr, xadc_araddr;
   logic        xadc_awvalid, xadc_awready;
   logic [31:0] xadc_wdata;
@@ -166,6 +166,11 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   logic [31:0] xadc_rdata;
   logic        xadc_rvalid, xadc_rready;
   logic [1:0]  xadc_bresp, xadc_rresp;
+
+  // AUDIT-04: XADC raw данные из BD (xadc_wiz IP, см. post_bd_dfx.tcl блок 4c)
+  logic [15:0] xadc_raw_temp;
+  logic [15:0] xadc_raw_vccint;
+  logic        xadc_raw_valid;
 
   xadc_temp u_xadc (
       .S_AXI_ACLK(axi_aclk), .S_AXI_ARESETN(axi_aresetn),
@@ -178,8 +183,8 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .S_AXI_ARVALID(xadc_arvalid), .S_AXI_ARREADY(xadc_arready),
       .S_AXI_RDATA(xadc_rdata), .S_AXI_RRESP(xadc_rresp),
       .S_AXI_RVALID(xadc_rvalid), .S_AXI_RREADY(xadc_rready),
-      // Источник сырых данных XADC: пока 0 (XADC Wizard IP не заведён в BD).
-      .raw_temp(16'h0), .raw_vccint(16'h0), .raw_valid(1'b0)
+      // AUDIT-04: XADC Wizard IP в BD → xadc_raw_temp/vccint/valid.
+      .raw_temp(xadc_raw_temp), .raw_vccint(xadc_raw_vccint), .raw_valid(xadc_raw_valid)
   );
 
   // ======================== BD (DFX variant) ========================
@@ -204,6 +209,9 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .axi_aclk_out(axi_aclk),      // экспорт xdma_0/axi_aclk из BD
       .axi_aresetn_out(axi_aresetn),// экспорт xdma_0/axi_aresetn из BD
       .axi_aclk_in(axi_aclk),       // loopback: та же цепь, что axi_aclk_out
+      .xadc_raw_temp(xadc_raw_temp),           // AUDIT-04: из xadc_wiz IP
+      .xadc_raw_vccint(xadc_raw_vccint),       // AUDIT-04: из xadc_wiz IP
+      .xadc_raw_valid(xadc_raw_valid),         // AUDIT-04: из xadc_wiz IP
       .diff_clock_rtl_0_clk_n(diff_clock_rtl_0_clk_n),
       .diff_clock_rtl_0_clk_p(diff_clock_rtl_0_clk_p),
       .clk50(clk50),
@@ -226,35 +234,35 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .M_AXI_TDOT_rdata(m_axi_rdata), .M_AXI_TDOT_rresp(m_axi_rresp),
       .M_AXI_TDOT_rlast(m_axi_rlast), .M_AXI_TDOT_rvalid(m_axi_rvalid),
       .M_AXI_TDOT_rready(m_axi_rready),
-      .S_AXI_TDOT_REGS_awaddr(s_axil_awaddr), .S_AXI_TDOT_REGS_awprot(),
+      .S_AXI_TDOT_REGS_awaddr(s_axil_awaddr), .S_AXI_TDOT_REGS_awprot(1'b0),
       .S_AXI_TDOT_REGS_awvalid(s_axil_awvalid), .S_AXI_TDOT_REGS_awready(s_axil_awready),
       .S_AXI_TDOT_REGS_wdata(s_axil_wdata), .S_AXI_TDOT_REGS_wstrb(s_axil_wstrb),
       .S_AXI_TDOT_REGS_wvalid(s_axil_wvalid), .S_AXI_TDOT_REGS_wready(s_axil_wready),
       .S_AXI_TDOT_REGS_bresp(s_axil_bresp), .S_AXI_TDOT_REGS_bvalid(s_axil_bvalid),
       .S_AXI_TDOT_REGS_bready(s_axil_bready),
-      .S_AXI_TDOT_REGS_araddr(s_axil_araddr), .S_AXI_TDOT_REGS_arprot(),
+      .S_AXI_TDOT_REGS_araddr(s_axil_araddr), .S_AXI_TDOT_REGS_arprot(1'b0),
       .S_AXI_TDOT_REGS_arvalid(s_axil_arvalid), .S_AXI_TDOT_REGS_arready(s_axil_arready),
       .S_AXI_TDOT_REGS_rdata(s_axil_rdata), .S_AXI_TDOT_REGS_rresp(s_axil_rresp),
       .S_AXI_TDOT_REGS_rvalid(s_axil_rvalid), .S_AXI_TDOT_REGS_rready(s_axil_rready),
-      .S_AXI_ICAP_REGS_awaddr(icap_awaddr), .S_AXI_ICAP_REGS_awprot(),
+      .S_AXI_ICAP_REGS_awaddr(icap_awaddr), .S_AXI_ICAP_REGS_awprot(1'b0),
       .S_AXI_ICAP_REGS_awvalid(icap_awvalid), .S_AXI_ICAP_REGS_awready(icap_awready),
       .S_AXI_ICAP_REGS_wdata(icap_wdata), .S_AXI_ICAP_REGS_wstrb(icap_wstrb),
       .S_AXI_ICAP_REGS_wvalid(icap_wvalid), .S_AXI_ICAP_REGS_wready(icap_wready),
       .S_AXI_ICAP_REGS_bresp(icap_bresp), .S_AXI_ICAP_REGS_bvalid(icap_bvalid),
       .S_AXI_ICAP_REGS_bready(icap_bready),
-      .S_AXI_ICAP_REGS_araddr(icap_araddr), .S_AXI_ICAP_REGS_arprot(),
+      .S_AXI_ICAP_REGS_araddr(icap_araddr), .S_AXI_ICAP_REGS_arprot(1'b0),
       .S_AXI_ICAP_REGS_arvalid(icap_arvalid), .S_AXI_ICAP_REGS_arready(icap_arready),
       .S_AXI_ICAP_REGS_rdata(icap_rdata), .S_AXI_ICAP_REGS_rresp(icap_rresp),
       .S_AXI_ICAP_REGS_rvalid(icap_rvalid), .S_AXI_ICAP_REGS_rready(icap_rready),
       // FIX-5 RTL-1: S_AXI_XADC_REGS подключается к u_xadc (раньше floating).
       // Канонический адрес 0x46000000 (см. docs/ADDRESS_MAP.md §2.1, resize_bar0.tcl).
-      .S_AXI_XADC_REGS_awaddr(xadc_awaddr), .S_AXI_XADC_REGS_awprot(),
+      .S_AXI_XADC_REGS_awaddr(xadc_awaddr), .S_AXI_XADC_REGS_awprot(1'b0),
       .S_AXI_XADC_REGS_awvalid(xadc_awvalid), .S_AXI_XADC_REGS_awready(xadc_awready),
       .S_AXI_XADC_REGS_wdata(xadc_wdata), .S_AXI_XADC_REGS_wstrb(xadc_wstrb),
       .S_AXI_XADC_REGS_wvalid(xadc_wvalid), .S_AXI_XADC_REGS_wready(xadc_wready),
       .S_AXI_XADC_REGS_bresp(xadc_bresp), .S_AXI_XADC_REGS_bvalid(xadc_bvalid),
       .S_AXI_XADC_REGS_bready(xadc_bready),
-      .S_AXI_XADC_REGS_araddr(xadc_araddr), .S_AXI_XADC_REGS_arprot(),
+      .S_AXI_XADC_REGS_araddr(xadc_araddr), .S_AXI_XADC_REGS_arprot(1'b0),
       .S_AXI_XADC_REGS_arvalid(xadc_arvalid), .S_AXI_XADC_REGS_arready(xadc_arready),
       .S_AXI_XADC_REGS_rdata(xadc_rdata), .S_AXI_XADC_REGS_rresp(xadc_rresp),
       .S_AXI_XADC_REGS_rvalid(xadc_rvalid), .S_AXI_XADC_REGS_rready(xadc_rready),

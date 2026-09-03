@@ -25,7 +25,11 @@ create_clock -name clk50 -period 20.000 [get_ports {clk50[0]}]
 set_property IBUF_LOW_PWR TRUE [get_ports {clk50[0]}]
 
 # --- MIG IDELAYCTRL REFCLK: 200 MHz от clk200_clk_wiz ---
-create_clock -name mig_refclk -period 5.000 [get_pins -quiet {*/u_iodelay_ctrl/u_idelayctrl_*/REFCLK}]
+# NOTE: create_clock на REFCLK pin можно выполнить ТОЛЬКО после link_design
+# (когда MIG IP развёрнут и pin существует). Здесь он не сработает —
+# Vivado пишет CRITICAL WARNING [Vivado 12-4739] No valid object(s) found.
+# Реальное создание mig_refclk выполняется в scripts/build_dfx.tcl
+# в TCL.POST шага synth_1 (после link_design). См. AUDIT-02 в ERROR_HISTORY.md.
 
 # --- Vivado 2025.2: demote REQP-123 to Warning (FP on clk_wiz MMCM CLKINSEL=VCC) ---
 set_property SEVERITY {Warning} [get_drc_checks REQP-123]

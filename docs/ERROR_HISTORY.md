@@ -6,6 +6,55 @@
 
 ---
 
+## 2026-09-04 — Audit cleanup: AUDIT-01..05 fixes
+
+### [BUG-026] AUDIT-02 — create_clock mig_refclk before link_design fails
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `constraints/xdma_ddr3_pins.xdc:25` → `scripts/mig_refclk_post.tcl` |
+| **Симптом** | `CRITICAL WARNING [Vivado 12-4739]: create_clock: No valid object(s) found for '-objects [get_pins -quiet */u_iodelay_ctrl/u_idelayctrl_*/REFCLK]'`. MIG IODELAYCTRL REFCLK pin не существует во время parsing XDC (early stage, до link_design). С `-quiet` ошибка подавляется, но `create_clock mig_refclk` не создаётся → IDELAYCTRL без clock constraint |
+| **Исправление** | Убрать `create_clock` из `xdma_ddr3_pins.xdc` (заменён комментарием со ссылкой на BUG-026). Создать `scripts/mig_refclk_post.tcl` — выполняется как TCL.POST шага `synth_design` (после `link_design`, когда MIG IP развёрнут и pin существует). Подключён через `set_property STEPS.SYNTH_DESIGN.TCL.POST` в `build_dfx.tcl` |
+| **Статус** | ✅ Исправлено |
+
+### [BUG-027] AUDIT-03 — awprot/arprot не подключены (пустые `()`) в 3 инстансах
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `rtl/integration/xdma_ddr3_core_top.sv:229,235,239,245,251,257` (6 мест: TDOT/ICAP/XADC × awprot/arprot) |
+| **Симптом** | `.S_AXI_TDOT_REGS_awprot()` — пустые скобки. Vivado неявно подставляет 0 (Unprivileged, Secure, Data) — функционально корректно, но неявное подключение плохо для читаемости и может давать WARNING на unconnected ports |
+| **Исправление** | Все 6 `awprot()/arprot()` → `awprot(1'b0)/arprot(1'b0)` — явное подключение константы 0 |
+| **Статус** | ✅ Исправлено |
+
+### [BUG-028] AUDIT-04 — XADC raw_temp/vccint/valid привязаны к 0
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `rtl/integration/xdma_ddr3_core_top.sv:180`, `scripts/post_bd_dfx.tcl` (новый блок 4c) |
+| **Симптом** | `u_xadc` инстанциирован с `.raw_temp(16'h0), .raw_vccint(16'h0), .raw_valid(1'b0)` — без источника XADC Wizard IP. `monitor_temp.py` читает TEMP=0°C, VCCINT=0V |
+| **Исправление** | (1) `post_bd_dfx.tcl`: создаёт `xadc_wiz:3.3` IP в BD, конфигурирует для Temperature + VCCINT, создаёт 3 BD-порта `xadc_raw_temp`/`xadc_raw_vccint`/`xadc_raw_valid`, подключает выходы xadc_wiz (`temperature_out`, `vccint_out`, `eoc_out`). (2) `xdma_ddr3_core_top.sv`: объявляет 3 сигнала `xadc_raw_*`, подключает к `u_xadc.raw_*` вместо `16'h0`, и к `xdma_ddr3_dfx_i.xadc_raw_*` (BD-порт) |
+| **Статус** | ✅ Исправлено (требует проверки в Vivado GUI — имена пинов xadc_wiz могут отличаться) |
+
+### [BUG-029] AUDIT-05 — CORE_RES0/1 регистры не используются в Python
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `pytorch_layer/xdma_driver.py` (новый метод `read_core_result_reg`) |
+| **Симптом** | RTL `tdot_axi4.sv:251-252` экспортирует зеркала `core_result` через `CORE_RES0` (0x2C) и `CORE_RES1` (0x30), но Python использовал только `RES0`/`RES1` (0x0C/0x10) — защёлкнутые значения. Без способа прочитать `CORE_RES0/1` нельзя отладить race condition в CS_WAIT |
+| **Исправление** | Добавлен метод `read_core_result_reg()` в `TdotCore` — читает `CORE_RES0/1` (0x2C/0x30) и собирает 48-битный результат. Полезно для отладки: если `RES0/1` и `CORE_RES0/1` совпадают — защёлки работают корректно |
+| **Статус** | ✅ Исправлено |
+
+### [BUG-030] AUDIT-01 — IBUF_LOW_PWR на clk50 без [0] — mismatch с create_clock
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `constraints/xdma_ddr3_pins.xdc:17,21,22` |
+| **Симптом** | `clk50` — 1-битный порт (`input [0:0]`). Vivado различает `[get_ports clk50]` (parent) и `[get_ports {clk50[0]}]` (bit 0) как разные объекты. `PACKAGE_PIN` на parent, `create_clock` на bit 0, `IBUF_LOW_PWR` на parent → mismatch: свойство не "прилипает" к тому же объекту, на котором создан clock |
+| **Исправление** | Все 3 строки унифицированы под `[get_ports {clk50[0]}]` — один объект, одно поведение |
+| **Статус** | ✅ Исправлено (commit 9888247) |
+
+---
+
 ## 2026-09-03 — Impl failed: set_msg_config mutually-exclusive options
 
 ### [BUG-025] set_msg_config с -new_severity И -suppress — Vivado ERROR

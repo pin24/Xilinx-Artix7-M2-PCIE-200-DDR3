@@ -159,6 +159,68 @@ assign_bd_address -offset 0x46000000 -range 0x1000 \
 # ============================================================================
 
 # ============================================================================
+# 4c. XADC Wizard IP — AUDIT-04
+# ============================================================================
+# u_xadc в xdma_ddr3_core_top.sv получает raw_temp/raw_vccint/raw_valid
+# от XADC Wizard IP. Без него:
+#   .raw_temp(16'h0), .raw_vccint(16'h0), .raw_valid(1'b0)
+# → monitor_temp.py будет читать TEMP=0°C, VCCINT=0V.
+#
+# Создаём xadc_wiz IP, включаем channel alarms (temp + vccint),
+# подключаем выходы к u_xadc через BD-порты xadc_raw_*.
+# NOTE: XADC Wizard использует внутренний DRP — не требует внешнего pins.
+# ============================================================================
+
+puts "=== 4c. XADC Wizard (for monitor_temp.py) ==="
+
+set xadc_wiz_cell [get_bd_cells -quiet xadc_wiz_0]
+if {$xadc_wiz_cell eq ""} {
+    puts "=== Creating xadc_wiz_0 ==="
+    create_bd_cell -type ip -vlnv xilinx.com:ip:xadc_wiz:3.3 xadc_wiz_0
+    # Конфигурация: только temperature + vccint, без alarms
+    set_property -dict [list \
+        CONFIG.ENABLE_VCCPD_ALARM {false} \
+        CONFIG.ENABLE_VCCAUX_ALARM {false} \
+        CONFIG.ENABLE_VCCINT_ALARM {false} \
+        CONFIG.ENABLE_TEMP_ALARM {false} \
+        CONFIG.ENABLE_OT_ALARM {false} \
+        CONFIG.ENABLE_SUPPLY_ALARM {0} \
+        CONFIG.ENABLE_TEMPERATURE_ALARM {0} \
+        CONFIG.ENABLE_VBRAM_ALARM {false} \
+        CONFIG.ENABLE_EXTXDCR_CHANNEL {false} \
+        CONFIG.XADC_STARUP_SELECTION {single_channel_mode} \
+        CONFIG.CHANNEL_ENABLE_VCCINT {true} \
+        CONFIG.CHANNEL_ENABLE_TEMP {true} \
+        CONFIG.DUAL_CLOCK {false} \
+        CONFIG.ENABLE_AXI4_LITE {false} \
+        CONFIG.ENABLE_JTAG_DRP {true} \
+    ] [get_bd_cells xadc_wiz_0]
+}
+
+# BD-порты для передачи raw данных на top-level
+if {[get_bd_ports -quiet xadc_raw_temp] eq ""} {
+    create_bd_port -dir O -from 15 -to 0 xadc_raw_temp
+}
+if {[get_bd_ports -quiet xadc_raw_vccint] eq ""} {
+    create_bd_port -dir O -from 15 -to 0 xadc_raw_vccint
+}
+if {[get_bd_ports -quiet xadc_raw_valid] eq ""} {
+    create_bd_port -dir O xadc_raw_valid
+}
+
+# подключаем тактовый сигнал к xadc_wiz (использует xdma_0/axi_aclk)
+connect_bd_net [get_bd_pins xdma_0/axi_aclk] [get_bd_pins xadc_wiz_0/s_axi_aclk]
+
+# выходы xadc_wiz → BD-порты (названия пинов могут отличаться в Vivado 2025.2)
+# temperature_out, vccint_out — это 12-битные значения в младших битах 16-битного слова
+catch { connect_bd_net [get_bd_pins xadc_wiz_0/temperature_out] [get_bd_ports xadc_raw_temp] }
+catch { connect_bd_net [get_bd_pins xadc_wiz_0/vccint_out]    [get_bd_ports xadc_raw_vccint] }
+# valid — eoc (end-of-conversion) или busy
+catch { connect_bd_net [get_bd_pins xadc_wiz_0/eoc_out] [get_bd_ports xadc_raw_valid] }
+
+puts "=== XADC Wizard connected to xadc_raw_* ports ==="
+
+# ============================================================================
 # 5. Экспорт такта PCIe-домена (axi_aclk_out / axi_aresetn_out / axi_aclk_in)
 # ============================================================================
 puts "=== 5. Экспорт такта (axi_aclk_out / axi_aresetn_out / axi_aclk_in) ==="
