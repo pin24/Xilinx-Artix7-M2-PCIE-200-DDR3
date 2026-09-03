@@ -15,7 +15,10 @@ set_property BITSTREAM.CONFIG.SPI_FALL_EDGE Yes [current_design]
 
 # --- 50 MHz system clock (BD port clk50 → clk_wiz → 200 MHz for MIG) ---
 set_property -dict {PACKAGE_PIN Y18 IOSTANDARD LVCMOS33} [get_ports clk50]
-create_clock -name clk50 -period 20.000 [get_ports clk50]
+# IMPORTANT: clk_wiz IP генерирует внутренний create_clock [get_ports {clk50[0]}].
+# Используем тот же синтаксис {clk50[0]} для согласованности — иначе Vivado
+# пишет CRITICAL WARNING [Constraints 18-1055]: clk50 completely overrides clk50[0].
+create_clock -name clk50 -period 20.000 [get_ports {clk50[0]}]
 set_property IBUF_LOW_PWR TRUE [get_ports clk50]
 
 # --- MIG IDELAYCTRL REFCLK: 200 MHz от clk200_clk_wiz ---
