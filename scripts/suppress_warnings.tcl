@@ -5,6 +5,16 @@
 # REQP-123: ложное на clk_wiz MMCM CLKINSEL=VCC (Vivado 2025.2 баг)
 catch { set_property SEVERITY {Warning} [get_drc_checks REQP-123] }
 
+# BUFC-1: MIG DQS IBUFDS без loads — MIG internal, ожидаемо для инверсных DQS
+catch { set_property SEVERITY {Warning} [get_drc_checks BUFC-1] }
+
+# REQP-1709: MIG PLL CLKOUT3 не на том же BUFFER — MIG internal, не критично
+catch { set_property SEVERITY {Warning} [get_drc_checks REQP-1709] }
+
+# REQP-165, REQP-181: DataMover BRAM WRITE_FIRST advisories — информационное
+catch { set_property SEVERITY {Warning} [get_drc_checks REQP-165] }
+catch { set_property SEVERITY {Warning} [get_drc_checks REQP-181] }
+
 # --- Message suppression (по ID) ---
 # Timing 38-472: IDELAYCTRL REFCLK — MIG internal, ложное (REFCLK подводится через PLL)
 set_msg_config -id {Timing 38-472} -new_severity WARNING -suppress

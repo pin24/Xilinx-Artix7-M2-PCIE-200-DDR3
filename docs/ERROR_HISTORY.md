@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-09-03 — DFX post-synth DRC: HDPR-8 + MIG warnings
+
+### [BUG-022] HDPR-8 — 1136 Critical Warnings про INIT without reset в DFX RP
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `constraints/pblock.xdc` |
+| **Симптом** | DRC после synth: 1136 Critical Warnings `HDPR-8 Reconfigurable logic that may need initialization`. Все про FIFO-регистры внутри DataMover в DFX partition: `xdma_ddr3_dfx_i/dfx_partition/axi_datamover_0/.../xpm_fifo_base_inst/...`. Cell has INIT value '1'b1' but without reset. Без reset INIT не загружается после Dynamic Function eXchange → DataMover после reconfig в неизвестном состоянии |
+| **Исправление** | `set_property RESET_AFTER_RECONFIG TRUE [get_pblocks pblock_rm]` в `pblock.xdc`. Vivado гарантирует загрузку INIT после reconfig (требует frame-aligned pblock ranges — выполнено) |
+| **Статус** | ✅ Исправлено |
+
+### [BUG-023] BUFC-1, REQP-1709, REQP-165, REQP-181 — MIG/DataMover DRC advisories
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/suppress_warnings.tcl` |
+| **Симптом** | DRC warnings/advisories от MIG IP (DQS IBUFDS без loads, PLL CLKOUT3 phase alignment) и DataMover BRAM (WRITE_FIRST address collision advisories). Не блокируют имплементацию, но засоряют отчёт |
+| **Исправление** | Понижение severity через `set_property SEVERITY {Warning} [get_drc_checks <ID>]` для BUFC-1, REQP-1709, REQP-165, REQP-181 |
+| **Статус** | ✅ Исправлено |
+
+---
+
 ## 2026-09-02 — Аудит перед финальной сборкой (циклический аудит)
 
 ### [BUG-015] shift_t signed overflow — потеря старшего байта результата
