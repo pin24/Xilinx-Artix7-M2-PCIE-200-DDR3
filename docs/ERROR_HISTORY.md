@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-03 — Impl failed: set_msg_config mutually-exclusive options
+
+### [BUG-025] set_msg_config с -new_severity И -suppress — Vivado ERROR
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/suppress_warnings.tcl` |
+| **Симптом** | Синтез прошёл успешно, impl_1 стартовал, дошёл до `place_design` (TCL.PRE = `suppress_warnings.tcl`). Vivado упал с `ERROR: [Common 17-447] -limit, -filter, and -new_severity options are mutually-exclusive. Please use only one at a time.` и `ERROR: [Common 17-39] 'set_msg_config' failed due to earlier errors.` → `ERROR: [Vivado 12-13638] Failed runs(s): 'impl_1'`. Checkpoint `xdma_ddr3_core_top_opt.dcp` был успешно сохранён — упало только на TCL.PRE hook |
+| **Причина** | `set_msg_config -id {X} -new_severity WARNING -suppress` — две взаимоисключающие опции. В Vivado 2025.2 это ERROR (раньше был warning, теперь строгое) |
+| **Исправление** | Убрать `-suppress` из всех `set_msg_config`. Использовать только `-new_severity WARNING` (меньшая severity). Все сообщения видны в логе как WARNING, не как CRITICAL WARNING |
+| **Доп.** | Все `set_msg_config` обёрнуты в `catch` — TCL-скрипт не упадёт даже если одно правило не существует. Добавлены 2 новых правила: `Vivado 12-2285` (PCIe GT lane BEL conflict) и `Vivado 12-4739` (create_clock no valid objects) |
+| **Статус** | ✅ Исправлено |
+
+---
+
 ## 2026-09-03 — DFX cache cleanup after TCL script changes
 
 ### [BUG-024] Stale IP cache in C:/build_dfx — Vivado crash after TCL changes
