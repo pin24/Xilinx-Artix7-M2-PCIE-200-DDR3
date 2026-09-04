@@ -40,7 +40,8 @@ catch { set_msg_config -id {Vivado 12-1411} -new_severity WARNING }
 # Constraints 18-550: IBUF_LOW_PWR на clk200_clk_wiz/clk_in1 (net не на top-level порту)
 catch { set_msg_config -id {Constraints 18-550} -new_severity WARNING }
 
-# Vivado 12-584: "No ports matched 'clk50'" на синтезе (clk50 как BD-порт, не top-level)
+# Vivado 12-584: "No ports matched 'clk50'" — clk50 объявлен как [0:0], а
+# get_ports ищет скаляр; до появления wrapper порт не резолвится на синтезе
 catch { set_msg_config -id {Vivado 12-584} -new_severity WARNING }
 
 # Common 17-55: "set_property expects at least one object" — следствие Vivado 12-584

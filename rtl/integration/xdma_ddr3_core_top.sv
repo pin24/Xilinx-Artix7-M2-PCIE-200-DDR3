@@ -48,12 +48,12 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   output [3:0]pcie_7x_mgt_rtl_0_txp;
   input reset_rtl_0;
 
-  // ---- Такт/сброс PCIe-домена: экспортируются из BD (fix_bd_clock_export.tcl) ----
+  // ---- Такт/сброс PCIe-домена: экспортируются из BD (post_bd_dfx.tcl:step 5) ----
   // BD выводит axi_aclk_out (xdma_0/axi_aclk, 125 МГц) и axi_aresetn_out
-  // (xdma_0/axi_aresetn); top замыкает axi_aclk_out обратно на axi_aclk_in
-  // (loopback, одна цепь), чтобы BD мог привязать внешний slave-интерфейс
-  // M_AXI_TDOT к домену 125 МГц (CONFIG.ASSOCIATED_BUSIF) — иначе SmartConnect
-  // даёт DRC "S01_AXI do not share a common clock domain".
+  // (xdma_0/axi_aresetn); top замыкает axi_aclk_out -> axi_aclk_in (loopback)
+  // для привязки slave-интерфейса M_AXI_TDOT к тому же тактовому домену.
+  // ASSOCIATED_BUSIF на axi_aclk_in НЕ ставится (BUG-017: Vivado 2025.2
+  // выводит CLK_DOMAIN автоматически из SmartConnect).
   logic axi_aclk;
   logic axi_aresetn;
 
@@ -152,10 +152,11 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   // AXI-Lite slave. Без этого wrapper-порт остаётся floating, monitor_temp.py
   // получает decoder error / undefined. Соответствует ANALYSIS_AND_SPEC_FIX.md B-5.
   //
-  // AUDIT-04: raw_temp/raw_vccint/raw_valid приходят из xadc_wiz IP в BD
-  // (см. scripts/post_bd_dfx.tcl, блок 4c). BD-порты xadc_raw_temp/vccint/valid
-  // проводятся на top-level и подключаются к u_xadc. Ранее были привязаны к 0
-  // → monitor_temp.py читал TEMP=0°C, VCCINT=0V.
+  // BUG-031: Artix-7 имеет только 1 XADC. MIG 7-series IP в DFX-варианте
+  // отключил XADC (XADC_En=Off в xdma_ddr3_dfx_bd.tcl:199 — отключён ради
+  // избежания UTLZ-1). xadc_wiz IP НЕ создаётся (создал бы 2-й виртуальный
+  // XADC → UTLZ-1). raw_temp/raw_vccint/raw_valid = 0 — monitor_temp.py
+  // читает 0°C / 0V. См. BUG-031, scripts/post_bd_dfx.tcl блок 4c.
   logic [7:0]  xadc_awaddr, xadc_araddr;
   logic        xadc_awvalid, xadc_awready;
   logic [31:0] xadc_wdata;
@@ -167,12 +168,9 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   logic        xadc_rvalid, xadc_rready;
   logic [1:0]  xadc_bresp, xadc_rresp;
 
-  // NOTE: XADC raw_temp/vccint/valid остаются 0. Artix-7 XC7A200T имеет только
-  // 1 XADC, который занят MIG 7-series IP (XADC_En=Enabled в xdma_ddr3_dfx_bd.tcl:199).
-  // Создание отдельного xadc_wiz IP приводит к DRC UTLZ-1 XADC over-utilized.
-  // monitor_temp.py должен читать температуру через AXI GPIO (axi_gpio_0),
-  // который подключён к mig7_status_concat (MIG status bus) в BD.
-  // См. BUG-031 в docs/ERROR_HISTORY.md.
+  // NOTE: XADC raw_temp/vccint/valid = 0 (без xadc_wiz, BUG-031).
+  // MIG 7-series IP в DFX-варианте: XADC_En=Off (см. xdma_ddr3_dfx_bd.tcl:199).
+  // monitor_temp.py читает 0°C/0V — данные XADC недоступны в этой сборке.
 
   xadc_temp u_xadc (
       .S_AXI_ACLK(axi_aclk), .S_AXI_ARESETN(axi_aresetn),
@@ -267,13 +265,8 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .S_AXI_XADC_REGS_arvalid(xadc_arvalid), .S_AXI_XADC_REGS_arready(xadc_arready),
       .S_AXI_XADC_REGS_rdata(xadc_rdata), .S_AXI_XADC_REGS_rresp(xadc_rresp),
       .S_AXI_XADC_REGS_rvalid(xadc_rvalid), .S_AXI_XADC_REGS_rready(xadc_rready),
-      // FIX-5 RTL-3 (TODO, ANALYSIS_AND_SPEC_FIX.md B-3): в BD wrapper всё ещё есть
-      // legacy-порт M_AXI_ICAP (64-бит мастер от старой схемы «ICAP как мастер»). На
-      // top он НЕ подключён (ICAP теперь AXI-Lite slave), что даёт CRITICAL WARNING
-      // в impl. Удалять через TCL: `delete_bd_objs [get_bd_intf_ports M_AXI_ICAP]`
-      // (см. scripts/post_bd_dfx.tcl, блок «Очистка legacy M_AXI_ICAP»), затем
-      // `make_wrapper -force`. Если порт уже удалён — warning исчезнет после
-      // регенерации wrapper.
+      // legacy-порт M_AXI_ICAP очищается в scripts/post_bd_dfx.tcl step 6.
+      // Если warning в impl остаётся — запустить make_wrapper -force.
       .pcie_7x_mgt_rtl_0_rxn(pcie_7x_mgt_rtl_0_rxn),
       .pcie_7x_mgt_rtl_0_rxp(pcie_7x_mgt_rtl_0_rxp),
       .pcie_7x_mgt_rtl_0_txn(pcie_7x_mgt_rtl_0_txn),

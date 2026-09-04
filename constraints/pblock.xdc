@@ -14,6 +14,7 @@
 
 create_pblock pblock_rm
 set_property SNAPPING_MODE ON [get_pblocks pblock_rm]
+set_property RESET_AFTER_RECONFIG TRUE [get_pblocks pblock_rm]
 add_cells_to_pblock [get_pblocks pblock_rm] [get_cells -quiet [list xdma_ddr3_dfx_i/dfx_partition]]
 resize_pblock [get_pblocks pblock_rm] -add {SLICE_X62Y50:SLICE_X81Y249}
 resize_pblock [get_pblocks pblock_rm] -add {DSP48_X3Y20:DSP48_X6Y99}

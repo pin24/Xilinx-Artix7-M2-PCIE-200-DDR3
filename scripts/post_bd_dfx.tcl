@@ -87,7 +87,9 @@ set tdot_port [get_bd_intf_ports -quiet S_AXI_TDOT_REGS]
 if {$tdot_port eq ""} {
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_TDOT_REGS
 }
-# НЕ задаём CLK_DOMAIN — SmartConnect в Low-Area Mode использует единый aclk.
+# НЕ задаём CLK_DOMAIN — SmartConnect с единым aclk; Vivado 2025.2 выводит
+# домен автоматически из подключенного SmartConnect (явная установка
+# приводила к BUG-017: wrapper-name mismatch).
 set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE \
     CONFIG.DATA_WIDTH 32 \
@@ -162,11 +164,10 @@ assign_bd_address -offset 0x46000000 -range 0x1000 \
 # 4c. XADC — ВАЖНО: НЕ создаём отдельный xadc_wiz IP (BUG-031)
 # ============================================================================
 # Artix-7 XC7A200T имеет ТОЛЬКО 1 XADC на кристалле.
-# MIG 7-series IP уже использует XADC (см. xdma_ddr3_dfx_bd.tcl:199:
-#   <XADC_En>Enabled</XADC_En>
-# ). Добавление второго xadc_wiz IP приводит к DRC UTLZ-1:
-#   ERROR: [DRC UTLZ-1] Resource utilization: XADC over-utilized in Top
-#   Level Design (requires 2 of such cell types but only 1 compatible
+# MIG 7-series IP в DFX-варианте отключил XADC (см. xdma_ddr3_dfx_bd.tcl:199:
+#   <XADC_En>Off</XADC_En>
+# — чтобы избежать UTLZ-1 при добавлении хост-доступа к XADC через xadc_temp.sv).
+# Если добавить xadc_wiz, то UTLZ-1 снова появится (2 XADC на 1 кристалл).
 #   site is available).
 #
 # monitor_temp.py должен читать температуру через:
