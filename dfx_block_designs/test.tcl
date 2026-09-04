@@ -486,7 +486,7 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x00000000 -range 0x10000000 -target_address_space [get_bd_addr_spaces axi_datamover_0/Data_MM2S] [get_bd_addr_segs rp_M_AXI/Reg] -force
   assign_bd_address -offset 0x00000000 -range 0x10000000 -target_address_space [get_bd_addr_spaces axi_datamover_1/Data_S2MM] [get_bd_addr_segs rp_M_AXI/Reg] -force
   assign_bd_address -offset 0x40010000 -range 0x00001000 -target_address_space [get_bd_addr_spaces rp_S_AXI] [get_bd_addr_segs axi_datamover_mm2s_c_0/s_axi/reg0] -force
-  assign_bd_address -offset 0x40011000 -range 0x00001000 -target_address_space [get_bd_addr_spaces rp_S_AXI] [get_bd_addr_segs axi_datamover_s2mm_c_0/s_axi/reg0] -force
+  assign_bd_address -offset 0x40018000 -range 0x00001000 -target_address_space [get_bd_addr_spaces rp_S_AXI] [get_bd_addr_segs axi_datamover_s2mm_c_0/s_axi/reg0] -force
   assign_bd_address -offset 0x40012000 -range 0x00001000 -target_address_space [get_bd_addr_spaces rp_S_AXI] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
 
 

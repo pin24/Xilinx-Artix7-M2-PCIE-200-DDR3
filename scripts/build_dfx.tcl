@@ -17,7 +17,22 @@
 set SCRIPT_DIR [file dirname [file normalize [info script]]]
 set ROOT       [file normalize "${SCRIPT_DIR}/.."]
 set PROJ_NAME  "m2_artix7_xdma_ddr3_dfx"
-set PROJ_DIR   "C:/build_dfx"
+# Каталог проекта (переносимый):
+#   1) переменная окружения PROJ_DIR — наивысший приоритет;
+#   2) Windows: C:/build_dfx (короткий корень диска — обход лимита MAX_PATH 260,
+#      на который наступает генерация MIG IP; build.bat дополнительно делает
+#      subst репозитория);
+#   3) Linux/macOS: ${ROOT}/build/dfx_proj (внутри репозитория).
+# Выбранный каталог экспортируется дочерним скриптам (mig_refclk_post.tcl,
+# post_bd_dfx.tcl) через переменную окружения PROJ_DIR_BUILD.
+if {[info exists ::env(PROJ_DIR)] && ${::env(PROJ_DIR)} ne ""} {
+    set PROJ_DIR [file normalize ${::env(PROJ_DIR)}]
+} elseif {$tcl_platform(platform) eq "windows"} {
+    set PROJ_DIR "C:/build_dfx"
+} else {
+    set PROJ_DIR [file normalize "${ROOT}/build/dfx_proj"]
+}
+set ::env(PROJ_DIR_BUILD) ${PROJ_DIR}
 set PART       "xc7a200tfbg484-2"
 set TOP_NAME   "xdma_ddr3_core_top"
 
@@ -47,7 +62,7 @@ puts "=== 1. CREATE PROJECT ==="
 file mkdir [file dirname ${PROJ_DIR}]
 
 # ============================================================================
-# Полная очистка C:/build_dfx перед create_project.
+# Полная очистка ${PROJ_DIR} перед create_project.
 # ============================================================================
 # Vivado кэширует IP-генерацию в нескольких местах:
 #   - ${PROJ_DIR}                              (Vivado проект, .xpr + .srcs)
@@ -59,7 +74,7 @@ file mkdir [file dirname ${PROJ_DIR}]
 #   - ${PROJ_DIR}.runs/                        (synth_1, impl_1 runs)
 #   - ${PROJ_DIR}.srcs/                        (sources, BD, constrs)
 #   - ${PROJ_DIR}.xpr                          (project file)
-#   - C:/build_dfx/.Xil/                       (Vivado global lock directory)
+#   - <parent of PROJ_DIR>/.Xil/               (Vivado global lock directory)
 #
 # После изменений в TCL-скриптах (например, в post_bd_dfx.tcl) или в RTL-файлах
 # старый кэш IP становится несовместимым и приводит к:
@@ -98,19 +113,19 @@ if {$cleanup_failed} {
     puts "============================================================"
     puts " CLEANUP FAILED — files locked by another process"
     puts "============================================================"
-    puts " Some directories in C:\\build_dfx could not be deleted."
+    puts " Some directories in ${PROJ_DIR} could not be deleted."
     puts " This usually means:"
     puts "   1. Vivado is still running (Task Manager → End all vivado.exe)"
-    puts "   2. Windows Explorer has C:\\build_dfx open (close it)"
-    puts "   3. Antivirus is scanning (wait or exclude C:\\build_dfx)"
+    puts "   2. Windows Explorer has ${PROJ_DIR} open (close it)"
+    puts "   3. Antivirus is scanning (wait or exclude ${PROJ_DIR})"
     puts "   4. Another process locked the files"
     puts ""
     puts " MANUAL FIX:"
     puts "   1. Close all Vivado: taskkill /f /im vivado.exe /im vivado.bat"
-    puts "   2. rmdir /s /q C:\\build_dfx"
+    puts "   2. rmdir /s /q ${PROJ_DIR}"
     puts "   3. Re-run: scripts\\build.bat"
     puts "============================================================"
-    close_project
+    catch {close_project}
     exit 1
 }
 
@@ -161,11 +176,43 @@ source ${ROOT}/scripts/post_bd_dfx.tcl
 puts "=== 2d. CONFIGURE BD: BAR0=128MB, ADDRESSES ==="
 open_bd_design [get_files xdma_ddr3_dfx.bd]
 
-# BAR0 = 128 MB
+# BAR0 = 128 MB (покрывает всё AXI-Lite окно 0x40000000-0x47FFFFFF,
+# включая XADC @ 0x46000000)
 set_property -dict [list \
     CONFIG.pf0_bar0_scale {Megabytes} \
     CONFIG.pf0_bar0_size {128} \
 ] [get_bd_cells xdma_0]
+
+# ---- Отчёт PCIe BAR / MSI-X (контроль PCIe-видимости до сборки) ----
+# BAR0 — единственный хост-доступ к AXI-Lite. Таблица MSI-X размещается на
+# 64-битном BAR2 (pf0_msix_cap_table_bir = BAR_3:2): проверяем, что BAR2
+# включён, иначе хост не увидит таблицу MSI-X. Все чтения — в catch:
+# изменение имён параметров в новых версиях IP не должно ломать сборку.
+if {[catch {
+    set xdma_cell [get_bd_cells xdma_0]
+    puts "=== PCIe BAR REPORT (xdma_0) ==="
+    foreach _bar {0 1 2 3 4 5} {
+        set _sc ""; set _sz ""
+        catch { set _sc [get_property CONFIG.pf0_bar${_bar}_scale $xdma_cell] }
+        catch { set _sz [get_property CONFIG.pf0_bar${_bar}_size $xdma_cell] }
+        if {${_sz} ne "" && ${_sz} ne "0"} {
+            puts "    BAR${_bar}: scale=${_sc} size=${_sz}"
+        }
+    }
+    set _msix ""; catch { set _msix [get_property CONFIG.pf0_msix_enabled $xdma_cell] }
+    set _bir "";  catch { set _bir  [get_property CONFIG.pf0_msix_cap_table_bir $xdma_cell] }
+    puts "    MSI-X: enabled=${_msix} table_bir=${_bir}"
+    if {${_msix} eq "true" && [string first "3:2" ${_bir}] != -1} {
+        set _b2 ""; catch { set _b2 [get_property CONFIG.pf0_bar2_size $xdma_cell] }
+        if {${_b2} eq "" || ${_b2} eq "0"} {
+            puts "    WARNING: MSI-X table на BAR2, но pf0_bar2_size не задан —"
+            puts "             хост не увидит таблицу MSI-X (проверьте конфиг XDMA)."
+        }
+    }
+    puts "=== PCIe BAR REPORT: END ==="
+} err_bar]} {
+    puts "    (BAR report skipped: $err_bar)"
+}
 
 # Адреса (уже назначены в xdma_ddr3_dfx_bd.tcl + post_bd_dfx.tcl, но перепроверяем)
 # перебиваем адреса финально с canonical картой
@@ -201,14 +248,16 @@ assign_bd_address -offset 0x46000000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs S_AXI_XADC_REGS/Reg] -force
 
-# DFX Partition MM2S/S2MM control: 0x40010000 / 0x40018000
+# DFX Partition MM2S/S2MM control: 0x40010000 / 0x40018000 (4K на сегмент —
+# остальное окно апертуры RP 64K свободно для дополнительных IP внутри RP,
+# например GPIO в dfx_block_designs/test.tcl @ 0x40012000)
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_axi_datamover_mm2s_c_0_reg0}]
-assign_bd_address -offset 0x40010000 -range 0x8000 \
+assign_bd_address -offset 0x40010000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs dfx_partition/axi_datamover_mm2s_c_0/s_axi/reg0] -force
 
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_axi_datamover_s2mm_c_0_reg0}]
-assign_bd_address -offset 0x40018000 -range 0x8000 \
+assign_bd_address -offset 0x40018000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs dfx_partition/axi_datamover_s2mm_c_0/s_axi/reg0] -force
 
@@ -310,6 +359,9 @@ if {$pcie_ip_xdc ne ""} {
 puts "=== 8. IMPLEMENTATION + BITSTREAM ==="
 current_run [get_runs impl_1]
 set_property STEPS.PLACE_DESIGN.TCL.PRE ${ROOT}/scripts/suppress_warnings.tcl [get_runs impl_1]
+# Генерировать .bin вместе с .bit и в дочерних конфигурациях RP (частичные
+# битстримы понадобятся для горячей замены через ICAP — pytorch_layer/icap_load.py)
+catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}
 launch_runs impl_1 -to_step write_bitstream -jobs ${JOBS}
 wait_on_run impl_1
 set st2 [get_property STATUS [get_runs impl_1]]
@@ -343,6 +395,26 @@ foreach rpt {utilization.txt timing_summary.rpt} {
     }
 }
 
+# ---------- 9b. Экспорт PARTIAL битстримов (горячая замена RP) ----------
+# В DFX-потоке Vivado создаёт дочерние имплементации для каждой конфигурации
+# RP; их write_bitstream производит частичные битстримы (*partial*). Именно
+# эти файлы загружаются через PCIe (icap_ctrl @ 0x40004000, icap_load.py /
+# dfx_swap.py) — без JTAG, статическая область и PCIe-линк не сбрасываются.
+puts "=== 9b. EXPORT PARTIAL BITSTREAMS ==="
+set partial_files [glob -nocomplain \
+    ${PROJ_DIR}.runs/*/*partial*.bit \
+    ${PROJ_DIR}.runs/*/*partial*.bin]
+if {[llength ${partial_files}] == 0} {
+    puts " WARNING: частичные битстримы не найдены в ${PROJ_DIR}.runs/"
+    puts " Дочерние конфигурации RP должны завершить write_bitstream;"
+    puts " проверьте дерево запусков (impl_1 и дочерние runs)."
+} else {
+    foreach pfile ${partial_files} {
+        file copy -force ${pfile} ${ARTIFACTS_DIR}/
+        puts " PARTIAL: [file tail ${pfile}] -> ${ARTIFACTS_DIR}/"
+    }
+}
+
 close_project
 
 puts "============================================================"
@@ -351,5 +423,6 @@ puts "============================================================"
 puts " Bitstream : ${bit_file}"
 puts " Binary    : ${bin_file}"
 puts " MCS       : ${mcs_file}"
+puts " Partials  : ${ARTIFACTS_DIR}/*partial*.bit|.bin (горячая замена RP)"
 puts " Artifacts : ${ARTIFACTS_DIR}"
 puts "============================================================"

@@ -18,10 +18,14 @@
 - **Reconfigurable Partition (RP)** — `dfx_partition` Block Design Container (BDC)
 - **DFX Socket** — shutdown/decouple менеджеры для безопасной перезагрузки RP
 
-Перезагрузка RP через PCIe:
+Перезагрузка RP через PCIe (без JTAG):
 1. Хост пишет в DFX Socket (0x40002000) → shutdown AXI buses + decouple reset
-2. Хост пишет partial bitstream в HWICAP (0x40001000)
+2. Хост пишет partial bitstream в HWICAP (0x40001000) или icap_ctrl (0x40004000)
 3. Хост очищает DFX Socket → RP запускается с новой логикой
+
+Всё одной командой: `python pytorch_layer/dfx_swap.py build/artifacts_dfx/*partial*.bit`
+(статус сокета: `python pytorch_layer/dfx_swap.py --status`). Частичные
+битстримы экспортирует сборка (build_dfx.tcl шаг 9b / gen_bitstream.tcl).
 
 Подробности: [`xdma_ddr3_dfx_README.md`](xdma_ddr3_dfx_README.md).
 
@@ -34,7 +38,7 @@
 | `scripts/` | `build_dfx.tcl` — главная сборка DFX, `post_bd_dfx.tcl` — постобработка BD, `build.bat` — Windows wrapper |
 | `dfx_block_designs/` | `default.tcl` (DataMover loopback demo), `test.tcl` (GPIO test) — DFX Partition BDC |
 | `third_party/m2-artix7-accelerator-card/` | Встроенные HDL из [rigoorozco/m2-artix7-accelerator-card](https://github.com/rigoorozco/m2-artix7-accelerator-card) (up_axi.v, datamover_ctrl.v, DataMover wrappers) |
-| `pytorch_layer/` | Хост-софт: `fpga_backend.py`, `xdma_driver.py`, `icap_load.py`, `ternary_dot_layer.py` |
+| `pytorch_layer/` | Хост-софт: `fpga_backend.py`, `xdma_driver.py`, `icap_load.py`, `dfx_swap.py` (горячая замена RP), `ternary_dot_layer.py` |
 | `ternary_sw/` | Python-эталон арифметики TFloat48 (arith48) и тесты |
 | `driver/`, `xdma_driver_win_src_2017/` | Windows KMDF-драйвер XDMA + test_xdma.exe |
 | `docs/` | `ADDRESS_MAP.md` (карта адресов), `ERROR_HISTORY.md` (хронология багов) |
@@ -50,10 +54,10 @@
 | DFX Socket | 0x4000_2000 | 4K | shutdown/decouple GPIO |
 | **TDOT registers** | **0x4000_3000** | 4K | Регистры троичного ускорителя |
 | **ICAP registers** | **0x4000_4000** | 4K | icap_ctrl (кастомный, не HWICAP) |
-| DFX Partition MM2S | 0x4001_0000 | 32K | DataMover MM2S |
-| DFX Partition S2MM | 0x4001_8000 | 32K | DataMover S2MM |
-| XADC | 0x4600_0000 | 4K | Температура/напряжение |
-| DDR3 (через BAR2) | 0x8000_0000 | 256 MB | Доступ хоста |
+| DFX Partition MM2S | 0x4001_0000 | 4K | DataMover MM2S (окно RP 64K, остаток свободен) |
+| DFX Partition S2MM | 0x4001_8000 | 4K | DataMover S2MM (окно RP 64K, остаток свободен) |
+| XADC | 0x4600_0000 | 4K | Температура/напряжение (BUG-031: читаются 0, XADC занят MIG) |
+| DDR3 (DMA XDMA) | 0x8000_0000 | 256 MB | Доступ хоста через DMA-каналы H2C/C2H (BAR-моста к DDR3 нет) |
 | DDR3 (M_AXI_TDOT) | 0x8000_0000 | 256 MB | Доступ ядра tdot_axi4 |
 
 Данные в DDR3: `data[i]`, `weights[i]` — TFloat48 в младших 48 битах 64-битного слова; результат dot — по `result_addr`.
@@ -84,15 +88,15 @@ scripts\build.bat
 4. После сборки (успех или fail) отключает виртуальный диск
 
 `build_dfx.tcl` выполняет:
-1. Создаёт проект в `C:\build_dfx` (хардкод — см. замечание ниже)
+1. Создаёт проект (`C:\build_dfx` на Windows — обход MAX_PATH; на Linux — `build/dfx_proj`; переопределяется переменной окружения `PROJ_DIR`)
 2. Добавляет HDL DFX Partition (из `third_party/m2-artix7-accelerator-card/hdl/`)
 3. Создаёт BDC `dfx_partition` (из `dfx_block_designs/default.tcl`)
 4. Создаёт DFX BD `xdma_ddr3_dfx.bd` (из `scripts/xdma_ddr3_dfx_bd.tcl`)
 5. Постобработка BD (из `scripts/post_bd_dfx.tcl`) — добавляет TDOT/ICAP/XADC порты, экспорт клока
-6. Настраивает BAR0=128MB и карту адресов
+6. Настраивает BAR0=128MB и карту адресов; печатает PCIe BAR REPORT (контроль MSI-X/BAR2)
 7. Добавляет RTL троичного ядра
 8. Запускает synth + impl + write_bitstream
-9. Экспортирует `.bit` / `.bin` / `.mcs` в `build/artifacts_dfx/`
+9. Экспортирует `.bit` / `.bin` / `.mcs` **и частичные битстримы RP** (`*partial*`) в `build/artifacts_dfx/`
 
 ### Опции сборки
 
@@ -119,19 +123,22 @@ scripts\build.bat NUM_MAC=32 JOBS=12
 ### Структура после сборки
 
 ```
-C:\build_dfx\                                     — Vivado проект (хардкод)
+<CATALOG ПРОЕКТА>                                  — см. п.1 выше (Windows: C:\build_dfx,
+                                                     Linux: build/dfx_proj, env: PROJ_DIR)
 ├── m2_artix7_xdma_ddr3_dfx.xpr
 ├── m2_artix7_xdma_ddr3_dfx.srcs/
 │   ├── sources_1/bd/xdma_ddr3_dfx/                — DFX Block Design
 │   └── constrs_1/                                  — констрейны
 └── m2_artix7_xdma_ddr3_dfx.runs/
     ├── synth_1/                                    — результаты синтеза
-    └── impl_1/                                     — результаты имплементации
+    └── impl_1/ (+ дочерние конфигурации RP)        — имплементация и partial-битстримы
 
-build/artifacts_dfx/                                — финальные битстримы
+build/artifacts_dfx/                                — финальные артефакты
 ├── xdma_ddr3_core_top.bit                          — для JTAG загрузки
-├── xdma_ddr3_core_top.bin                          — для ICAP загрузки
-└── xdma_ddr3_core_top.mcs                          — для SPI flash
+├── xdma_ddr3_core_top.bin                          — для ICAP загрузки (full)
+├── xdma_ddr3_core_top.mcs                          — для SPI flash
+└── *partial*.bit / *partial*.bin                   — частичные битстримы RP
+                                                     (горячая замена: pytorch_layer/dfx_swap.py)
 ```
 
 ### Верификация (опционально, перед сборкой)

@@ -1,3 +1,11 @@
+# ============================================================================
+# [DEPRECATED — легаси не-DFX Block Design]
+# Устаревший генератор не-DFX варианта BD (XDMA 4.1, DDR3 base 0x00000000,
+# HWICAP/DFX Socket/TDOT/ICAP/XADC адресация не соответствует DFX-карте).
+# Активный DFX-вариант: scripts/build_dfx.tcl + scripts/xdma_ddr3_dfx_bd.tcl
+# + scripts/post_bd_dfx.tcl + dfx_block_designs/default.tcl.
+# Карта адресов: docs/ADDRESS_MAP.md. Оставлен для истории.
+# ============================================================================
 
 ################################################################
 # This is a generated script based on design: xdma_ddr3_dfx
