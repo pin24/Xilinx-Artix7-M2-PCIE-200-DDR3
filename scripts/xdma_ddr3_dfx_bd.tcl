@@ -196,7 +196,7 @@ proc write_mig_file_xdma_ddr3_dfx_mig_7series_0_0 { str_mig_prj_filepath } {
    puts $mig_prj_file {  <Debug_En>OFF</Debug_En>}
    puts $mig_prj_file {  <DataDepth_En>1024</DataDepth_En>}
    puts $mig_prj_file {  <LowPower_En>ON</LowPower_En>}
-   puts $mig_prj_file {  <XADC_En>Enabled</XADC_En>}
+   puts $mig_prj_file {  <XADC_En>Off</XADC_En>}
    puts $mig_prj_file {  <TargetFPGA>xc7a200t-fbg484/-2</TargetFPGA>}
    puts $mig_prj_file {  <Version>4.2</Version>}
    puts $mig_prj_file {  <SystemClock>No Buffer</SystemClock>}
