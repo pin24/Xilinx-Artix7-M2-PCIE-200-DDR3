@@ -452,9 +452,6 @@ module tdot_axi4 #(
     logic [$clog2(2*NUM_MAC):0] load_idx;
     logic load_active;
     logic [31:0] n_in_eff;
-    logic [47:0] res_cap;  // TODO: dead code — res_cap записывается, но не читается.
-                           // res0_reg/res1_reg хранят тот же результат. Удалить
-                           // в отдельном коммите после проверки симуляции.
 
     always_comb begin
         if (n_in_reg == 0 || n_in_reg > NUM_MAC)
@@ -472,7 +469,6 @@ module tdot_axi4 #(
             rd_addr <= 0; rd_total <= 0;
             wr_addr <= 0; wr_data <= 0;
             load_idx <= 0; load_active <= 0;
-            res_cap <= 0;
             core_data <= 0; core_weights <= 0;
             res0_reg <= 0; res1_reg <= 0;
             busy_q <= 0; done_q <= 0;
@@ -529,7 +525,6 @@ module tdot_axi4 #(
                 end
                 CS_WAIT: begin
                     if (core_valid_out) begin
-                        res_cap <= core_result;
                         res0_reg <= core_result[31:0];              // результат [31:0]
                         res1_reg <= {16'h0, core_result[47:32]};    // результат [47:32]
                         cstate <= CS_WR;
@@ -551,11 +546,18 @@ module tdot_axi4 #(
         end
     end
 
-    // fifo_pop в фазе загрузки
+    // fifo_pop в фазе загрузки: pop ТОЛЬКО в такты, когда элемент реально
+    // потребляется из FIFO (слот заполняется из fifo_q). При n_in_eff < NUM_MAC
+    // слоты-заглушки заполняются нулём БЕЗ pop — иначе fifo_rd уходит за
+    // пределы загруженных данных и weights читаются со смещением (мусор).
     always_comb begin
         fifo_pop = 1'b0;
-        if (cstate == CS_LOAD && load_active &&
-            (load_idx < 2*NUM_MAC)) fifo_pop = 1'b1;
+        if (cstate == CS_LOAD && load_active && (load_idx < 2*NUM_MAC)) begin
+            if (load_idx < NUM_MAC)
+                fifo_pop = (load_idx < n_in_eff);              // data-фаза
+            else
+                fifo_pop = ((load_idx - NUM_MAC) < n_in_eff);  // weights-фаза
+        end
     end
 
 endmodule

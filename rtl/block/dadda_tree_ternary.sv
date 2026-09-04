@@ -181,6 +181,7 @@ module dadda_tree_ternary #(
             logic [1:0] new_col [0:31];
             int n_curr;
             int n_next;
+            logic [1:0] final_sum, final_carry;
 
             // Инициализация
             for (int k = 0; k < 32; k++) col[k] = 2'b00;
@@ -205,7 +206,6 @@ module dadda_tree_ternary #(
             // Продолжаем пока > 2 тритов
 
             // После редукции — 2 трита: sum (остаётся) + carry (→ j+1)
-            logic [1:0] final_sum, final_carry;
             final_sum = 2'b00;
             final_carry = 2'b00;
 
@@ -228,8 +228,8 @@ module dadda_tree_ternary #(
 
             // Делаем простую итеративную редукцию:
             while (n_curr > 2) begin
-                n_next = 0;
                 int i;
+                n_next = 0;
                 i = 0;
                 while (i + 2 < n_curr) begin
                     // 3 трита → TFA → (sum, carry)

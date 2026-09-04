@@ -82,7 +82,6 @@ module tfmul_kbd (
 
     // Разделение Karatsuba: A = A_hi · 3^HALF + A_lo
     logic [2*HALF-1:0] a_lo, a_hi, b_lo, b_hi;  // 20 бит = 10 тритов
-    logic [2*HALF+1:0] a_sum, b_sum;            // a_hi+a_lo, b_hi+b_lo (возможно переполнение на 1 трит)
 
     // ============================================================================
     // 2. Подмодуль: троичный умножитель 10×10 (Booth + Dadda + CPA)
@@ -115,6 +114,10 @@ module tfmul_kbd (
 
         // CPA: sum + carry → результат
         logic [2*(PP_WIDTH+1)-1:0] result_w;
+
+        // Dadda-редукция (столбцовая): суммы и перенос
+        logic [1:0] sum_col [0:PP_WIDTH-1];
+        logic signed [1:0] carry_val;
 
         // --- Реализация (упрощённая, без Booth на первой итерации) ---
 
@@ -155,10 +158,6 @@ module tfmul_kbd (
         // === УПРОЩЁННАЯ Dadda-редукция (для прототипа) ===
         // Идём столбец за столбцом, накапливая carry в следующий столбец.
         // Это даёт линейную сложность O(N*W), но для прототипа достаточно.
-
-        logic [1:0] sum_col [0:PP_WIDTH-1];
-        logic [1:0] carry_col [0:PP_WIDTH];
-        logic signed [1:0] carry_val;
 
         carry_val = 2'sd0;
         for (int j = 0; j < PP_WIDTH; j++) begin
@@ -217,6 +216,10 @@ module tfmul_kbd (
     logic prod_neg;
 
     always_comb begin
+        // Локальные переменные суммы Karatsuba
+        logic [2*HALF+1:0] a_sum_local, b_sum_local;
+        logic [2*HALF-1:0] a_sum_short, b_sum_short;
+
         // --- 1. Разбор входа ---
         a_mant = a[2*N-1:0];   // 40 бит мантиссы = 20 тритов
         b_mant = b[2*N-1:0];
@@ -237,7 +240,6 @@ module tfmul_kbd (
         // Аналогично b_sum
         // Реализуем как сумму двух массивов тритов
         // (упрощённо — через прямой сумматор)
-        logic [2*HALF+1:0] a_sum_local, b_sum_local;
         a_sum_local = '0;
         b_sum_local = '0;
         begin
@@ -275,7 +277,6 @@ module tfmul_kbd (
         // NOTE: правильнее — mul_sum должна быть 11×11, но для прототипа берём 10 тритов.
         // Это потенциально теряет точность, но упрощает код.
         // В финальной версии нужно mul_11x11.
-        logic [2*HALF-1:0] a_sum_short, b_sum_short;
         a_sum_short = a_sum_local[2*HALF-1:0];
         b_sum_short = b_sum_local[2*HALF-1:0];
         mul_sum = mul_10x10(a_sum_short, b_sum_short);
