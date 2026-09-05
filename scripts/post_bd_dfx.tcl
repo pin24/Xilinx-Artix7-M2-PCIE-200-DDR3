@@ -68,24 +68,24 @@ if {$tdot_m_port eq ""} {
 }
 # НЕ задаём CLK_DOMAIN — Vivado auto-derive из подключённого SmartConnect.
 # Задание CLK_DOMAIN={xdma_0/axi_aclk} приводило к mismatch (BUG-017).
+# BUG-035: FREQ_HZ на внешнем порту НЕ задаём — SmartConnect (250 МГц по
+# умолчанию) расходится с фактическим клоком 125 МГц. Вместо этого задаём
+# CLK_DOMAIN на интерфейсном пине SmartConnect ниже.
 set_property -dict [list \
     CONFIG.PROTOCOL AXI4 \
     CONFIG.DATA_WIDTH 64 \
     CONFIG.ADDR_WIDTH 32 \
     CONFIG.NUM_READ_OUTSTANDING 2 \
     CONFIG.NUM_WRITE_OUTSTANDING 2 \
-    CONFIG.FREQ_HZ 125000000 \
 ] [get_bd_intf_ports M_AXI_TDOT]
 
 # xdma_axi_smc: 3 slave порта (S00=XDMA, S01=DFX socket, S02=M_AXI_TDOT)
 set_property -dict [list CONFIG.NUM_SI 3] [get_bd_cells xdma_axi_smc]
 connect_bd_intf_net [get_bd_intf_pins xdma_axi_smc/S02_AXI] [get_bd_intf_ports M_AXI_TDOT]
-# BUG-034: S01/S02 в fabric-домене 125 МГц (aclk2). Явно FREQ_HZ на пинах —
-# иначе SmartConnect считает по дефолту 250 МГц (aclk) и validate падает
-# с BD 41-237 FREQ_HZ mismatch.
-set_property CONFIG.FREQ_HZ 125000000 [get_bd_pins xdma_axi_smc/aclk2]
-set_property CONFIG.ASSOCIATED_BUSIF {S01_AXI:S02_AXI} [get_bd_pins xdma_axi_smc/aclk2]
-set_property FREQ_HZ 125000000 [get_bd_intf_pins xdma_axi_smc/S02_AXI]
+# BUG-035: CLK_DOMAIN на интерфейсном пине (а не ASSOCIATED_BUSIF/FREQ_HZ
+# на clock-пине — read-only в 2025.2). fabric-домен 125 МГц = clk125_core_wiz/clk_out1.
+set_property CLK_DOMAIN {clk125_core_wiz/clk_out1} [get_bd_intf_pins xdma_axi_smc/S01_AXI]
+set_property CLK_DOMAIN {clk125_core_wiz/clk_out1} [get_bd_intf_pins xdma_axi_smc/S02_AXI]
 
 # адрес: DDR3 0x80000000 (256 MB)
 assign_bd_address -offset 0x80000000 -range 0x10000000 \
@@ -106,11 +106,11 @@ if {$tdot_port eq ""} {
 # НЕ задаём CLK_DOMAIN — SmartConnect с единым aclk; Vivado 2025.2 выводит
 # домен автоматически из подключенного SmartConnect (явная установка
 # приводила к BUG-017: wrapper-name mismatch).
+# BUG-035: FREQ_HZ на внешнем порту НЕ задаём (см. M_AXI_TDOT).
 set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE \
     CONFIG.DATA_WIDTH 32 \
     CONFIG.ADDR_WIDTH 8 \
-    CONFIG.FREQ_HZ 125000000 \
 ] [get_bd_intf_ports S_AXI_TDOT_REGS]
 
 # расширяем lite SMC до 6 мастеров
@@ -122,10 +122,8 @@ assign_bd_address -offset 0x40003000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] \
     [get_bd_addr_segs S_AXI_TDOT_REGS/Reg] -force
 
-# BUG-034: M03-M05 — экспортируемые порты без локального клока-соседа,
-# домен по инференсу не определить — расширяем ассоциацию aclk1 (fabric 125 МГц).
-set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
-set_property FREQ_HZ 125000000 [get_bd_intf_pins xdma_axi_lite_smc/M03_AXI]
+# BUG-035: CLK_DOMAIN на интерфейсных пинах lite-SMC (fabric 125 МГц).
+set_property CLK_DOMAIN {clk125_core_wiz/clk_out1} [get_bd_intf_pins xdma_axi_lite_smc/M03_AXI]
 
 # ============================================================================
 # 3. S_AXI_ICAP_REGS — регистры ICAP
@@ -136,11 +134,11 @@ set icap_port [get_bd_intf_ports -quiet S_AXI_ICAP_REGS]
 if {$icap_port eq ""} {
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_ICAP_REGS
 }
+# BUG-035: FREQ_HZ на внешнем порту НЕ задаём (см. M_AXI_TDOT).
 set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE \
     CONFIG.DATA_WIDTH 32 \
     CONFIG.ADDR_WIDTH 8 \
-    CONFIG.FREQ_HZ 125000000 \
 ] [get_bd_intf_ports S_AXI_ICAP_REGS]
 
 connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M04_AXI] [get_bd_intf_ports S_AXI_ICAP_REGS]
@@ -150,8 +148,8 @@ assign_bd_address -offset 0x40004000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] \
     [get_bd_addr_segs S_AXI_ICAP_REGS/Reg] -force
 
-set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI:M04_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
-set_property FREQ_HZ 125000000 [get_bd_intf_pins xdma_axi_lite_smc/M04_AXI]
+# BUG-035: CLK_DOMAIN на интерфейсных пинах lite-SMC (fabric 125 МГц).
+set_property CLK_DOMAIN {clk125_core_wiz/clk_out1} [get_bd_intf_pins xdma_axi_lite_smc/M04_AXI]
 
 # ============================================================================
 # 4. S_AXI_XADC_REGS — регистры XADC
@@ -162,11 +160,11 @@ set xadc_port [get_bd_intf_ports -quiet S_AXI_XADC_REGS]
 if {$xadc_port eq ""} {
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_XADC_REGS
 }
+# BUG-035: FREQ_HZ на внешнем порту НЕ задаём (см. M_AXI_TDOT).
 set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE \
     CONFIG.DATA_WIDTH 32 \
     CONFIG.ADDR_WIDTH 8 \
-    CONFIG.FREQ_HZ 125000000 \
 ] [get_bd_intf_ports S_AXI_XADC_REGS]
 
 connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M05_AXI] [get_bd_intf_ports S_AXI_XADC_REGS]
@@ -176,8 +174,8 @@ assign_bd_address -offset 0x46000000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] \
     [get_bd_addr_segs S_AXI_XADC_REGS/Reg] -force
 
-set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI:M04_AXI:M05_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
-set_property FREQ_HZ 125000000 [get_bd_intf_pins xdma_axi_lite_smc/M05_AXI]
+# BUG-035: CLK_DOMAIN на интерфейсных пинах lite-SMC (fabric 125 МГц).
+set_property CLK_DOMAIN {clk125_core_wiz/clk_out1} [get_bd_intf_pins xdma_axi_lite_smc/M05_AXI]
 
 # ============================================================================
 # 4b. ASSOCIATED_BUSIF для axi_aclk — ВНИМАНИЕ (BUG-017 follow-up):

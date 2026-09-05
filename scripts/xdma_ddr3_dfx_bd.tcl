@@ -717,28 +717,27 @@ set_property -dict [list \
   set xdma_axi_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_smc ]
   # 3 домена (BUG-034): aclk=XDMA 250 (S00), aclk1=ui_clk 100 (M00→MIG),
   # aclk2=fabric 125 (S01=dfx_socket, S02=M_AXI_TDOT — добавляется в post_bd_dfx).
+  # Важно: CONFIG.FREQ_HZ и CONFIG.ASSOCIATED_BUSIF на clock-пинах SmartConnect
+  # read-only в Vivado 2025.2 (BD 41-737). Вместо этого используем CLK_DOMAIN
+  # на интерфейсных пинах (см. ниже + post_bd_dfx.tcl).
   set_property CONFIG.NUM_CLKS {3} [get_bd_cells xdma_axi_smc]
-  set_property CONFIG.FREQ_HZ 100000000 [get_bd_pins xdma_axi_smc/aclk1]
-  set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI} [get_bd_pins xdma_axi_smc/aclk1]
-  set_property CONFIG.FREQ_HZ 125000000 [get_bd_pins xdma_axi_smc/aclk2]
-  set_property CONFIG.ASSOCIATED_BUSIF {S01_AXI} [get_bd_pins xdma_axi_smc/aclk2]
 
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
-  # 2 домена (BUG-034): aclk=XDMA 250 (S00), aclk1=fabric 125 (M00..M02;
-  # M03..M05 добавляет post_bd_dfx и расширяет ASSOCIATED_BUSIF).
+  # 2 домена (BUG-034): aclk=XDMA 250 (S00), aclk1=fabric 125 (M00..M05;
+  # ассоциация через CLK_DOMAIN на интерфейсных пинах — см. post_bd_dfx.tcl).
   set_property -dict [list \
     CONFIG.NUM_MI {3} \
     CONFIG.NUM_SI {1} \
     CONFIG.NUM_CLKS {2} \
   ] $xdma_axi_lite_smc
-  set_property CONFIG.FREQ_HZ 125000000 [get_bd_pins xdma_axi_lite_smc/aclk1]
-  set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
 
   set mig7_status_concat [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 mig7_status_concat ]
 
   connect_bd_intf_net -intf_net axi_gpio_0_GPIO [get_bd_intf_ports gpio_rtl_0] [get_bd_intf_pins axi_gpio_0/GPIO]
   connect_bd_intf_net -intf_net dfx_partition_rp_M_AXI [get_bd_intf_pins dfx_partition/rp_M_AXI] [get_bd_intf_pins dfx_socket/rp_M_AXI]
   connect_bd_intf_net -intf_net dfx_socket_M_AXI [get_bd_intf_pins dfx_socket/M_AXI] [get_bd_intf_pins xdma_axi_smc/S01_AXI]
+  # BUG-035: CLK_DOMAIN на S01 (fabric 125 МГц, как S02 в post_bd_dfx).
+  set_property CLK_DOMAIN {clk125_core_wiz/clk_out1} [get_bd_intf_pins xdma_axi_smc/S01_AXI]
   connect_bd_intf_net -intf_net diff_clock_rtl_0_1 [get_bd_intf_ports diff_clock_rtl_0] [get_bd_intf_pins util_ds_buf/CLK_IN_D]
   connect_bd_intf_net -intf_net mig_7series_0_DDR3 [get_bd_intf_ports DDR3_0] [get_bd_intf_pins mig_7series_0/DDR3]
   connect_bd_intf_net -intf_net rp_S_AXI_1 [get_bd_intf_pins dfx_partition/rp_S_AXI] [get_bd_intf_pins dfx_socket/rp_S_AXI]
