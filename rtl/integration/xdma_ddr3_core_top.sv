@@ -1,30 +1,28 @@
 module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
    (DDR3_0_addr,
-    DDR3_0_ba,
-    DDR3_0_cas_n,
-    DDR3_0_ck_n,
-    DDR3_0_ck_p,
-    DDR3_0_cke,
-    DDR3_0_cs_n,
-    DDR3_0_dm,
-    DDR3_0_dq,
-    DDR3_0_dqs_n,
-    DDR3_0_dqs_p,
-    DDR3_0_odt,
-    DDR3_0_ras_n,
-    DDR3_0_reset_n,
-    DDR3_0_we_n,
-    clk50,
-    diff_clock_rtl_0_clk_n,
-    diff_clock_rtl_0_clk_p,
-    gpio_rtl_0_tri_o,
-    pcie_7x_mgt_rtl_0_rxn,
-    pcie_7x_mgt_rtl_0_rxp,
-    pcie_7x_mgt_rtl_0_txn,
-    pcie_7x_mgt_rtl_0_txp,
-    reset_rtl_0,
-    core_clk,
-    core_resetn);
+     DDR3_0_ba,
+     DDR3_0_cas_n,
+     DDR3_0_ck_n,
+     DDR3_0_ck_p,
+     DDR3_0_cke,
+     DDR3_0_cs_n,
+     DDR3_0_dm,
+     DDR3_0_dq,
+     DDR3_0_dqs_n,
+     DDR3_0_dqs_p,
+     DDR3_0_odt,
+     DDR3_0_ras_n,
+     DDR3_0_reset_n,
+     DDR3_0_we_n,
+     clk50,
+     diff_clock_rtl_0_clk_n,
+     diff_clock_rtl_0_clk_p,
+     gpio_rtl_0_tri_o,
+     pcie_7x_mgt_rtl_0_rxn,
+     pcie_7x_mgt_rtl_0_rxp,
+     pcie_7x_mgt_rtl_0_txn,
+     pcie_7x_mgt_rtl_0_txp,
+     reset_rtl_0);
   output [13:0]DDR3_0_addr;
   output [2:0]DDR3_0_ba;
   output DDR3_0_cas_n;
@@ -50,16 +48,16 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   output [3:0]pcie_7x_mgt_rtl_0_txp;
   input reset_rtl_0;
 
-  // ---- Такт/сброс fabric-домена 125 МГц (BUG-034) ----
+  // ---- Такт/сброс fabric-домена 125 МГц (BUG-034, BUG-036) ----
   // XDMA в 64-битном варианте (Gen2 x4) тактирует axi_aclk частотой 250 МГц.
   // Тернарное ядро (tfmul_raw: 40-тритовая последовательная цепочка сложения)
-  // и RP (DataMover 128 бит) закрывают тайминг только при 125 МГц
-  // (WNS 0.370 нс @ 125 МГц → путь ~7.6 нс; 4 нс @ 250 МГц недостижим).
-  // Поэтому BD генерирует отдельный такт 125 МГц (clk125_core_wiz из clk50)
-  // и его сброс (rst_core_125M). XDMA работает в своём домене 250 МГц,
-  // все переходы между доменами идут через асинхронные мосты SmartConnect.
-  input core_clk;
-  input core_resetn;
+  // и RP (DataMover 128 бит) закрывают тайминг только при 125 МГц.
+  // BD генерирует такт 125 МГц (clk125_core_wiz из clk50) и сброс (rst_core_125M),
+  // экспортирует их через clk_core_out/core_resetn_out. НЕ объявляем core_clk/
+  // core_resetn входными портами топа — иначе на сети будет 2 драйвера
+  // (выход clk125_core_wiz внутри BD + IBUF от input-порта) → DRC MDRV-1.
+  logic core_clk;
+  logic core_resetn;
 
   // ---- Такт/сброс PCIe-домена: экспортируются из BD (post_bd_dfx.tcl:step 5) ----
   // BD выводит axi_aclk_out (xdma_0/axi_aclk, 250 МГц в 64-битном варианте)

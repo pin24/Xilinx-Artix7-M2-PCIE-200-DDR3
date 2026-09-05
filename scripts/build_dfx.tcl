@@ -355,7 +355,6 @@ if {$pcie_ip_xdc ne ""} {
 
 if {${SKIP_SYNTH}} {
     puts "=== SKIP_SYNTH=1 — exiting before synth ==="
-    save_project_as ${PROJ_DIR}/${PROJ_NAME}.xpr -force
     close_project
     exit 0
 }

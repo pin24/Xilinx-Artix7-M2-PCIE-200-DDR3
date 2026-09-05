@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-06 — Impl opt_design FAIL: multi-driven nets (core_clk/core_resetn)
+
+### [BUG-036] DRC MDRV-1 — core_clk/core_resetn как input-порты топа дают 2 драйвера
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `rtl/integration/xdma_ddr3_core_top.sv` (порты модуля) |
+| **Симптом** | `make build NUM_MAC=16 JOBS=7`: BD-валидация и синтез прошли, но `impl_1 → opt_design` падает: `ERROR: [DRC MDRV-1] Multiple Driver Nets: Net xdma_ddr3_dfx_i/clk125_core_wiz/inst/clk_out1 has multiple drivers: core_clk_IBUF_inst/O, and .../clkout1_buf/O` (и то же для `rst_core_125M/peripheral_aresetn`). Причина в `Synth 8-6859 multi-driven net on pin core_clk` |
+| **Причина** | Top-модуль объявлял `core_clk`/`core_resetn` как **input-порты**, но в BD-обёртке к ним подключены **выходы BD** `clk_core_out`/`core_resetn_out` (которые внутри BD уже драйвятся от `clk125_core_wiz/clk_out1` и `rst_core_125M/peripheral_aresetn`). На верхнем уровне Vivado ставит IBUF на input-порт и получает 2 драйвера одной сети (IBUF + выход clk_wiz) → multi-driven |
+| **Исправление** | `core_clk`/`core_resetn` переведены из input-портов модуля во **внутренние логи** (`logic core_clk; logic core_resetn;`) — сеть теперь имеет только один драйвер (выход BD) |
+| **Проверка** | Полная сборка `make build NUM_MAC=16 JOBS=7` повторно (см. следующий прогон). Ожидание: impl → write_bitstream Complete, артефакты в `build/artifacts_dfx/` |
+| **Статус** | ✅ Исправлено (требует повторного прогона impl) |
+
+**Урок**: если BD экспортирует такт/сброс наружу (`clk_core_out`/`core_resetn_out`), они уже являются драйверами сети на верхнем уровне. НЕ дублировать их входными портами RTL-топа — это создаёт multi-driven nets (MDRV-1) после линковки BD-обёртки.
+
+---
+
 ## 2026-09-06 — Сборка падает на post_bd_dfx.tcl: ASSOCIATED_BUSIF/FREQ_HZ read-only (регрессия BUG-034)
 
 ### [BUG-035] BD 41-237 FREQ_HZ mismatch 250 vs 125 МГц — блокирует сборку
@@ -18,11 +35,12 @@
 | **Сопутствующее** | После BD 41-737 появляются CRITICAL WARNING вида «The device(s) attached to /M03_AXI do not share a common clock domain with this smartconnect instance» (1713-1715, 1724) — тот же корень: доменная ассоциация не задалась, SmartConnect считает порты синхронными 250 МГц |
 | **Проверка** | `C:\build_dfx` создан 06.09 00:38-00:39, ранов synth/impl ещё нет — падение на этапе BD (до генерации). Лог: `vivado.log` (repo root, 00:40:14), строки 1563-1749 |
 | **Направление исправления** | В 2025.2 ассоциацию интерфейс↔клок задавать не через пины клока, а через свойство **`CLK_DOMAIN` на интерфейсных пинах**: `set_property CLK_DOMAIN {clk125_core_wiz/clk_out1} [get_bd_intf_pins xdma_axi_smc/S01_AXI]` (и для S02/M03-M05) + убрать жёсткие `FREQ_HZ` с внешних портов, чтобы не было конфликта метаданных. Либо расширять `ASSOCIATED_BUSIF` на этапе создания SmartConnect (в `create_bd_cell` через `CONFIG`-dict IP-инстанса) — проверить, что в 2025.2 это допустимо |
-| **Исправление (BUG-035-fix)** | (1) `scripts/post_bd_dfx.tcl`: убраны `CONFIG.FREQ_HZ`/`CONFIG.ASSOCIATED_BUSIF` с clock-пинов `aclk1/aclk2` (read-only, BD 41-737) и жёсткий `FREQ_HZ` с внешних портов; вместо этого `set_property CLK_DOMAIN {clk125_core_wiz/clk_out1}` на интерфейсных пинах: `xdma_axi_smc/S02_AXI`, `xdma_axi_lite_smc/M03_AXI`, `M04_AXI`, `M05_AXI`. (2) `scripts/xdma_ddr3_dfx_bd.tcl`: убраны те же read-only `set_property` на `aclk1/aclk2` (для `xdma_axi_smc` и `xdma_axi_lite_smc`), добавлен `CLK_DOMAIN {clk125_core_wiz/clk_out1}` на `xdma_axi_smc/S01_AXI`. Внешние порты создаются без `FREQ_HZ` — частота берётся из реально подключённого такта при генерации (auto-derive), что устраняет BD 41-237 |
-| **Проверка исправления** | Сборка должна пройти шаг 2c (validate_bd_design) без BD 41-237 и пройти дальше к синтезу. Лог `vivado.log` не должен содержать `ERROR: [BD 41-237]` и `CRITICAL WARNING: [BD 41-737]` (для S02/M03-M05) |
-| **Статус** | ✅ Исправлено (требует фактической сборки в Vivado 2025.2 для подтверждения) |
+| **Диагностика (пробы probe3/probe9/probe11/probe12)** | (1) `CLK_DOMAIN` на интерфейсных пинах SmartConnect — параметра НЕ существует (BD 41-1642). (2) `ASSOCIATED_BUSIF`/`FREQ_HZ` на клок-пинах SmartConnect — read-only (BD 41-737), молча игнорируются. (3) Vivado **авто-выводит** домен для интерфейсов, у которых есть локальный клок-сосед (GPIO с s_axi_aclk → aclk1). (4) Для **внешних** BD-портов инференс невозможен — они садятся на дефолтный `aclk` (250) → FREQ_HZ mismatch 250 vs 125. (5) Рабочий механизм — ассоциация имён внешних портов с **экспортированным клок-портом** fabric-домена (clk_core_out, 125 МГц) через `CONFIG.ASSOCIATED_BUSIF` — как в probe3 V5 (M02→clk_core_out, validate OK). (6) КРИТИЧНО: разделитель в ASSOCIATED_BUSIF — **двоеточие** (`S02_AXI:M03_AXI:...`), НЕ пробел! Пробел даёт BD 41-1287 «Associated interface by name ... not found» — Vivado ищет один интерфейс с именем, содержащим пробелы |
+| **Исправление (BUG-035-fix)** | `scripts/xdma_ddr3_dfx_bd.tcl`: (1) убраны все `set_property CONFIG.ASSOCIATED_BUSIF/FREQ_HZ` с клок-пинов `aclk1/aclk2` SmartConnect (read-only); (2) создание внешних портов M_AXI_TDOT/S_AXI_TDOT_REGS/S_AXI_ICAP_REGS/S_AXI_XADC_REGS + их подключение к S02/M03/M04/M05 и assign_bd_address перенесено из post_bd_dfx.tcl **в конец базового скрипта** (до validate — чтобы порты и их FREQ_HZ=125 были видны); (3) в конце создаётся clk_core_out, подключается к clk125_core_wiz/clk_out1 (идемпотентно) и ставится `CONFIG.ASSOCIATED_BUSIF {M_AXI_TDOT:S_AXI_TDOT_REGS:S_AXI_ICAP_REGS:S_AXI_XADC_REGS}` (ДВОЕТОЧИЕ = имена внешних портов); (4) `validate_bd_design` + `save_bd_design` в конце. `scripts/post_bd_dfx.tcl`: сокращён до экспорта клоков (axi_aclk_in/out, clk_core_out, core_resetn_out) и очистки legacy M_AXI_ICAP; `_clk_connect` стал идемпотентным (пропускает, если порт уже на сети — иначе BD 5-4 on re-run); БЕЗ дублей портов и БЕЗ set_property на пинах SmartConnect. `scripts/build_dfx.tcl`: в SKIP_SYNTH-ветке убран близкий `save_project_as` (оставлял проект открытым → Coretcl 2-101 "already open" → make Error 1) — теперь просто `close_project; exit 0` |
+| **Проверка исправления** | `make proj` (SKIP_SYNTH=1) — полный проход: 2b validate OK, 2c POST-BD DFX: OK, 2d validate OK, выход 0. BD 41-237 (FREQ_HZ mismatch) отсутствует; BD 41-737/41-1642/41-2559/41-1287 отсутствуют. `make build` — полная сборка (см. след. запуск) |
+| **Статус** | ✅ Исправлено (подтверждено: `make proj` — все шаги BD-валидации OK, выход 0) |
 
-**Урок**: в Vivado 2025.2 `ASSOCIATED_BUSIF`/`FREQ_HZ` на пинах клока SmartConnect — read-only (BD 41-737). Явная доменная ассоциация для экспортируемых портов делается через `CLK_DOMAIN` на интерфейсных пинах/портах, а не через пины клока. Любой «фикс» тактовых доменов проверять фактической BD-валидацией.
+**Урок**: в Vivado 2025.2 `ASSOCIATED_BUSIF`/`FREQ_HZ` на пинах клока SmartConnect — read-only (BD 41-737), `CLK_DOMAIN`/`FREQ_HZ` на интерфейсных пинах не существуют (BD 41-1642). Для внешних BD-портов домен задаётся ЕДИНСТВЕННО через `CONFIG.ASSOCIATED_BUSIF` на экспортированном клок-порте, причём разделитель — **двоеточие** (`A:B:C`), не пробел, иначе BD 41-1287. Любой «фикс» тактовых доменов проверять фактической BD-валидацией.
 
 ---
 
