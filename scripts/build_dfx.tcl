@@ -12,6 +12,11 @@
 #   NUM_MAC=<16|32|64>   (по умолчанию 32)
 #   JOBS=<N>             (по умолчанию 8)
 #   SKIP_SYNTH=1         (только создать проект, без сборки)
+#
+# BUG-033: оболочка может разрезать '=' — тогда NUM_MAC=16 приходит как ДВА
+# аргумента: "NUM_MAC" "16". Поэтому дополнительно поддерживается:
+#   NUM_MAC 16           — позиционный fallback (ключ + значение соседним словом)
+#   -NUM_MAC 16          — с дефисом (некоторые shell-обёртки)
 # ============================================================================
 
 set SCRIPT_DIR [file dirname [file normalize [info script]]]
@@ -39,10 +44,39 @@ set TOP_NAME   "xdma_ddr3_core_top"
 set NUM_MAC     32
 set JOBS        8
 set SKIP_SYNTH  0
-foreach arg $argv {
-    if {[regexp {^NUM_MAC=(\d+)$} $arg -> v]}     { set NUM_MAC $v }
-    if {[regexp {^JOBS=(\d+)$} $arg -> v]}         { set JOBS $v }
-    if {[regexp {^SKIP_SYNTH=(\d+)$} $arg -> v]}   { set SKIP_SYNTH $v }
+
+# ----------------------------------------------------------------------------
+# Парсинг аргументов, устойчивый к "срезанию" '=' оболочкой (BUG-033).
+#
+# Диагноз (подтверждён на реальной сборке): shell/обёртка разрезает
+# NUM_MAC=16 на два отдельных аргумента — "NUM_MAC" и "16". Регэксп
+# {^NUM_MAC=(\d+)$} не совпадает ни с одним из них, и сборка МОЛЧА идёт
+# с дефолтом NUM_MAC=32 (обе сборки Run1/Run2 получались NUM_MAC=32 —
+# утилизация совпадала до статистического шума в ~100 LUT).
+#
+# Поддерживаемые формы (для NUM_MAC / JOBS / SKIP_SYNTH):
+#   1) KEY=VALUE       — каноническая, одним аргументом;
+#   2) KEY VALUE       — позиционный fallback: ключ отдельным словом,
+#                        числовое значение — следующим аргументом;
+#   3) -KEY VALUE      — с дефисом (string trimleft '-')
+# Значение обязано быть чисто числовым ({^\d+$}) — иначе игнорируется.
+# ----------------------------------------------------------------------------
+set _nargs [llength $argv]
+for {set _i 0} {$_i < $_nargs} {incr _i} {
+    set _arg  [lindex $argv $_i]
+    set _argn [string trimleft $_arg -]
+    set _next [lindex $argv [expr {$_i + 1}]]
+    # 1) каноническая форма KEY=VALUE одним словом (дефис перед KEY допустим)
+    if {[regexp {^(NUM_MAC|JOBS|SKIP_SYNTH)=(\d+)$} $_argn -> _k _v]} {
+        set $_k $_v
+        continue
+    }
+    # 2)+3) позиционный fallback: ключ отдельным словом, значение следом
+    if {[lsearch -exact {NUM_MAC JOBS SKIP_SYNTH} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
+        set $_argn $_next
+        incr _i
+        continue
+    }
 }
 
 puts "============================================================"
@@ -52,6 +86,7 @@ puts " ROOT       : ${ROOT}"
 puts " PROJ_DIR   : ${PROJ_DIR}"
 puts " PART       : ${PART}"
 puts " TOP        : ${TOP_NAME}"
+puts " ARGS (raw) : ${argv}"
 puts " NUM_MAC    : ${NUM_MAC}"
 puts " JOBS       : ${JOBS}"
 puts " SKIP_SYNTH : ${SKIP_SYNTH}"
