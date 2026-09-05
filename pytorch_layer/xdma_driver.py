@@ -58,13 +58,29 @@ class XdmaError(RuntimeError):
 
 
 class XdmaDevice:
-    """Абстракция над конкретным драйвером: read/write по байтовому адресу."""
+    """Абстракция над конкретным драйвером: read/write по байтовому адресу.
+
+    Данные в DDR3 передаются через DMA-каналы h2c/c2h: write_dma/read_dma
+    принимают СМЕЩЕНИЕ внутри окна DDR3 (от 0x8000_0000), т.к. в DFX-сборке
+    MMIO-моста к DDR3 нет (docs/ADDRESS_MAP.md §1.2). Базовая реализация
+    маршрутизирует через MMIO read/write — этим пользуется mock-устройство
+    в verify_fpga_backend.py; XdmaLinux/XdmaWindows переопределяют методы
+    настоящими DMA-каналами.
+    """
 
     def read(self, addr: int, length: int) -> bytes:
         raise NotImplementedError
 
     def write(self, addr: int, data: bytes) -> None:
         raise NotImplementedError
+
+    def write_dma(self, ddr_off: int, data: bytes) -> None:
+        """DMA-запись data в DDR3 по смещению ddr_off (от 0x8000_0000)."""
+        self.write(DDR3_BASE + ddr_off, data)
+
+    def read_dma(self, ddr_off: int, length: int) -> bytes:
+        """DMA-чтение length байт из DDR3 по смещению ddr_off."""
+        return self.read(DDR3_BASE + ddr_off, length)
 
 
 class XdmaLinux(XdmaDevice):
@@ -76,17 +92,24 @@ class XdmaLinux(XdmaDevice):
       addr >= DDR3_BASE                  →  /dev/xdma0_user,     offset = addr - DDR3_BASE
     """
 
+    # Один syscall в DMA-узел — до 1 МиБ; драйвер сам делит трансфер на
+    # дескрипторы (адрес в дескрипторе кратен 4 байтам).
+    DMA_CHUNK = 1 << 20
+
     def __init__(self, base: str = "/dev/xdma0"):
         self.ctl = base + "_control"
         self.usr = base + "_user"
+        self.h2c = base + "_h2c_0"
+        self.c2h = base + "_c2h_0"
         # usr ОПЦИОНАЛЕН: в DFX-сборке второй PCIe BAR не сконфигурирован,
-        # весь AXI-Lite (0x4000_0000+) доступен через _control. usr нужен
-        # только для MMIO-доступа к DDR3 (0x8000_0000+), которого в DFX-сборке
-        # нет — данные в DDR3 передаются DMA-каналами h2c/c2h
-        # (см. docs/ADDRESS_MAP.md §1.2).
+        # весь AXI-Lite (0x4000_0000+) доступен через _control. usr — только
+        # MMIO-доступ к DDR3 легаси-сборки. Канонический путь данных в DDR3 —
+        # DMA-каналы h2c_0/c2h_0 (см. docs/ADDRESS_MAP.md §1.2).
         if not os.path.exists(self.ctl):
             raise XdmaError(f"XDMA-устройство не найдено: {self.ctl}")
         self.has_usr = os.path.exists(self.usr)
+        self.has_h2c = os.path.exists(self.h2c)
+        self.has_c2h = os.path.exists(self.c2h)
 
     def _route(self, addr: int) -> tuple[str, int]:
         """Вернуть (devpath, bar_offset) по полному AXI-адресу."""
@@ -114,6 +137,59 @@ class XdmaLinux(XdmaDevice):
         with open(dev, "wb", buffering=0) as f:
             f.seek(offset)
             f.write(data)
+
+    def _dma_dev(self, devpath: str, present: bool, what: str) -> str:
+        """Вернуть путь DMA-узла или падение на usr-MMIO (легаси-сборка).
+
+        Приоритет: h2c/c2h (канонический DMA-режим) → usr (BAR2 легаси) →
+        понятная ошибка с подсказкой.
+        """
+        if present:
+            return devpath
+        if self.has_usr:
+            return self.usr          # легаси-сборка с BAR2: MMIO-фолбэк
+        raise XdmaError(
+            f"DMA-узел {devpath} не найден, а usr ({self.usr}) отсутствует "
+            f"(DFX-сборка без BAR2). Загрузите модуль xdma и проверьте, что "
+            f"устройство создало узлы h2c_0/c2h_0: ls /dev/xdma0_* ({what})")
+
+    def write_dma(self, ddr_off: int, data: bytes) -> None:
+        """DMA-запись в DDR3 через /dev/xdma0_h2c_0 (host → card).
+
+        Смещение ddr_off — внутри окна DDR3 (0x8000_0000); lseek задаёт
+        стартовый адрес в DDR, драйвер сам режет трансфер на дескрипторы.
+        Трансферы кратны 4 байтам (ограничение адресации дескриптора),
+        хвост дополняется нулями. Фолбэк легаси-сборки: usr-узел (BAR2),
+        offset в нём равен ddr_off — тот же цикл корректен.
+        """
+        if not (self.has_h2c or self.has_usr):
+            self._dma_dev(self.h2c, False, "h2c write")   # -> XdmaError
+        dev = self.h2c if self.has_h2c else self.usr
+        with open(dev, "wb", buffering=0) as f:
+            for off in range(0, len(data), self.DMA_CHUNK):
+                chunk = data[off:off + self.DMA_CHUNK]
+                pad = (-len(chunk)) % 4
+                if pad:
+                    chunk += b"\x00" * pad
+                f.seek(ddr_off + off)
+                f.write(chunk)
+
+    def read_dma(self, ddr_off: int, length: int) -> bytes:
+        """DMA-чтение из DDR3 через /dev/xdma0_c2h_0 (card → host).
+
+        Фолбэк легаси-сборки — usr-узел (BAR2) тем же циклом.
+        """
+        if not (self.has_c2h or self.has_usr):
+            self._dma_dev(self.c2h, False, "c2h read")    # -> XdmaError
+        dev = self.c2h if self.has_c2h else self.usr
+        out = bytearray()
+        with open(dev, "rb", buffering=0) as f:
+            for off in range(0, length, self.DMA_CHUNK):
+                n = min(self.DMA_CHUNK, length - off)
+                rd = n + ((-n) % 4)
+                f.seek(ddr_off + off)
+                out += f.read(rd)[:n]
+        return bytes(out)
 
 
 class XdmaWindows(XdmaDevice):
@@ -152,6 +228,42 @@ class XdmaWindows(XdmaDevice):
         r = subprocess.run(cmd, capture_output=True)
         if r.returncode != 0:
             raise XdmaError(f"xdma_rw write не выполнился: {r.stderr.decode(errors='replace')}")
+
+    def _run_channel(self, channel: str, op: str, off: int, length: int,
+                     data: bytes | None = None) -> bytes:
+        """Вызов xdma_rw.exe в DMA-канал (h2c_N/c2h_N).
+
+        Синтаксис (windows_xdma): xdma_rw.exe <devnode> <h2c_N|c2h_N>
+        <read|write> <hex_offset> [-l N | -f file]. Запись больших буферов
+        идёт через временный файл (-f), чтение возвращает stdout инструмента.
+        """
+        cmd = [self.tool, self.devnode, channel, op, f"0x{off:X}"]
+        path = None
+        if data is not None:
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tf:
+                tf.write(data)
+                path = tf.name
+            cmd += ["-f", path]
+        else:
+            cmd += ["-l", str(length or 4)]
+        try:
+            r = subprocess.run(cmd, capture_output=True)
+        finally:
+            if path:
+                os.unlink(path)
+        if r.returncode != 0:
+            raise XdmaError(f"xdma_rw {channel} {op} не выполнился: "
+                            f"{r.stderr.decode(errors='replace')}")
+        return r.stdout
+
+    def write_dma(self, ddr_off: int, data: bytes) -> None:
+        """DMA-запись в DDR3 через канал h2c_0 (offset — от 0x8000_0000)."""
+        self._run_channel("h2c_0", "write", ddr_off, len(data), data=data)
+
+    def read_dma(self, ddr_off: int, length: int) -> bytes:
+        """DMA-чтение из DDR3 через канал c2h_0 (offset — от 0x8000_0000)."""
+        return self._run_channel("c2h_0", "read", ddr_off, length)
 
 
 class TdotCore:
@@ -240,10 +352,12 @@ class TdotCore:
         buf = bytearray()
         for b in bits_list:
             buf += struct.pack("<Q", b & 0xFFFFFFFFFFFF)
-        self.dev.write(self.ddr + addr, bytes(buf))
+        # DMA-путь (h2c_0): в DFX-сборке MMIO-моста к DDR3 нет; mock-устройство
+        # наследует базовую реализацию write_dma поверх MMIO — verify работает.
+        self.dev.write_dma(addr, bytes(buf))
 
     def read_tf48(self, addr: int) -> int:
-        return struct.unpack("<Q", self.dev.read(self.ddr + addr, 8))[0] & 0xFFFFFFFFFFFF
+        return struct.unpack("<Q", self.dev.read_dma(addr, 8))[0] & 0xFFFFFFFFFFFF
 
     # ---- высокоуровневый вызов ----
     def dot(self, data_bits, weights_bits, data_addr: int = 0x0,
@@ -262,3 +376,70 @@ class TdotCore:
         self.start()
         self.wait_done()
         return self.read_tf48(result_addr)
+
+
+# ---------------------------------------------------------------------------
+# Самопроверка DMA-пути на железе:
+#   python xdma_driver.py --selftest            # паттерн h2c/c2h + замер МБ/с
+#   python xdma_driver.py --selftest --dot      # + один вызов TdotCore.dot
+# ---------------------------------------------------------------------------
+def _selftest(argv=None) -> int:
+    import argparse
+    import time as _time
+
+    ap = argparse.ArgumentParser(
+        description="Самопроверка DMA-пути (h2c/c2h) XDMA → DDR3")
+    ap.add_argument("--size", type=lambda x: int(x, 0), default=4 << 20,
+                    help="объём тестового буфера (по умолчанию 4 МиБ)")
+    ap.add_argument("--off", type=lambda x: int(x, 0), default=0x01000000,
+                    help="смещение в DDR3 в стороне от данных ядра "
+                         "(по умолчанию 0x01000000 = 16 МиБ)")
+    ap.add_argument("--dot", action="store_true",
+                    help="дополнительно выполнить один вызов TdotCore.dot")
+    args = ap.parse_args(argv)
+
+    try:
+        dev = XdmaLinux()
+    except (XdmaError, NameError):
+        dev = XdmaWindows()
+    kind = type(dev).__name__
+    print(f"устройство: {kind}; h2c={getattr(dev, 'has_h2c', '-')} "
+          f"c2h={getattr(dev, 'has_c2h', '-')} usr={getattr(dev, 'has_usr', '-')}")
+
+    # 1. Паттерн: запись → чтение → сверка (детерминированный LCG-паттерн)
+    buf = bytes(((i * 2654435761) >> 24) & 0xFF for i in range(args.size))
+    t0 = _time.monotonic()
+    dev.write_dma(args.off, buf)
+    t1 = _time.monotonic()
+    rb = dev.read_dma(args.off, args.size)
+    t2 = _time.monotonic()
+    if rb != buf:
+        # показать первый рассинхрон
+        i = next((k for k, (x, y) in enumerate(zip(buf, rb)) if x != y),
+                 min(len(buf), len(rb)))
+        raise XdmaError(f"паттерн не сошёлся: первый расход на смещении "
+                        f"0x{i:X} (write=0x{buf[i]:02X} read=0x{rb[i]:02X})")
+    h2c_mbs = args.size / (t1 - t0) / (1 << 20)
+    c2h_mbs = args.size / (t2 - t1) / (1 << 20)
+    print(f"паттерн {args.size >> 20} МиБ: OK; h2c {h2c_mbs:.0f} МиБ/с, "
+          f"c2h {c2h_mbs:.0f} МиБ/с")
+
+    # 2. (опционально) Один dot через ядро: 8 пар 1.0*1.0 -> 8.0
+    if args.dot:
+        from fpga_backend import FpgaBackend, DDR_DATA, DDR_WEIGHTS, DDR_RESULT
+        fb = FpgaBackend(mode="cpu", n=8)
+        bits = [fb._to_bits48(v) for v in [1.0] * 8]
+        core = TdotCore(dev, num_mac=32)
+        res_bits = core.dot(bits, bits,
+                            data_addr=DDR_DATA, weights_addr=DDR_WEIGHTS,
+                            result_addr=DDR_RESULT)
+        got = fb._bits_to_float(res_bits)
+        if abs(got - 8.0) > 0.05:
+            raise XdmaError(f"dot(1.0 x 8) = {got!r}, ожидалось 8.0")
+        print(f"dot(1.0 × 8) = {got:.4f}: OK")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    _sys.exit(_selftest())

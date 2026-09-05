@@ -273,13 +273,16 @@ proc create_root_design { parentCell } {
   set rp_resetn [ create_bd_port -dir I rp_resetn ]
 
   # Create instance: axi_datamover_0, and set properties
+  # AXIS-сторона расширена 32→64 бита (128b×125 МГц AXI → 64b×125 МГц AXIS =
+  # 1,0 ГБ/с вместо 500 МБ/с): снимает узкое место потокового тракта RP;
+  # ширина CMD/STS-интерфейсов (104/8 бит) не зависит от ширины данных.
   set axi_datamover_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_datamover:5.1 axi_datamover_0 ]
   set_property -dict [list \
     CONFIG.c_addr_width {64} \
     CONFIG.c_dummy {1} \
     CONFIG.c_enable_s2mm {0} \
     CONFIG.c_m_axi_mm2s_data_width {128} \
-    CONFIG.c_m_axis_mm2s_tdata_width {32} \
+    CONFIG.c_m_axis_mm2s_tdata_width {64} \
   ] $axi_datamover_0
 
 
@@ -295,7 +298,7 @@ proc create_root_design { parentCell } {
     CONFIG.c_m_axi_s2mm_awid {1} \
     CONFIG.c_m_axi_s2mm_data_width {128} \
     CONFIG.c_s2mm_addr_pipe_depth {3} \
-    CONFIG.c_s_axis_s2mm_tdata_width {32} \
+    CONFIG.c_s_axis_s2mm_tdata_width {64} \
   ] $axi_datamover_1
 
 

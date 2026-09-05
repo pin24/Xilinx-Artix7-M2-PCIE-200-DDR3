@@ -42,11 +42,15 @@
 H2C/C2H-каналы (SmartConnect → MIG `0x80000000` и RP). Второй BAR-мост к
 DDR3 **не сконфигурирован**, поэтому:
 
-- MMIO-чтение/запись DDR3 с хоста (например, `TdotCore.write_tf48()` через
-  `/dev/xdma0_user` / BAR2) в DFX-сборке **не работает** — `XdmaLinux`
-  возвращает понятную ошибку (`has_usr == False`);
+- MMIO-чтение/запись DDR3 с хоста (через `/dev/xdma0_user` / BAR2) в DFX-сборке
+  **не работает** — второго BAR-моста нет;
 - поток данных хост↔DDR3: **DMA-каналы** (`/dev/xdma0_h2c_0`,
-  `/dev/xdma0_c2h_0` на Linux; `xdma_rw.exe h2c_0 ...` на Windows);
+  `/dev/xdma0_c2h_0` на Linux; `xdma_rw.exe h2c_0 ...` на Windows).
+  Python DMA-API реализована в `xdma_driver.py`: `XdmaDevice.write_dma/
+  read_dma` (смещения от `0x8000_0000`, чанки 1 МиБ, кратность 4 байта);
+  `TdotCore.write_tf48/read_tf48` идут через неё автоматически; на Linux при
+  наличии usr-узла (легаси-сборка с BAR2) — прозрачный MMIO-фолбэк.
+  Самопроверка на железе: `python xdma_driver.py --selftest [--dot]`;
 - ядро `tdot_axi4` читает/пишет DDR3 самостоятельно (M_AXI_TDOT → SmartConnect
   → MIG), хост лишь программирует адреса в регистрах (§3);
 - DataMover'ы внутри RP ходят в DDR3 по **RP-локальным** адресам
@@ -252,6 +256,13 @@ RP-локальная карта (адреса идентичны host-виду,
 > Диапазоны всех сегментов DataMover унифицированы до 4 KB (и на стороне
 > статики: `build_dfx.tcl`, `xdma_ddr3_dfx_bd.tcl`), чтобы оставлять место
 > для дополнительных IP внутри апертуры RP.
+
+> WIDENED 2026-09-06: AXIS-сторона DataMover'ов расширена 32→64 бита
+> (`c_m_axis_mm2s_tdata_width`/`c_s_axis_s2mm_tdata_width` = 64) в обоих
+> вариантах RP (`default.tcl`, `test.tcl`). Потоковый тракт RP: 64b×125 МГц =
+> 1,0 ГБ/с (было 500 МБ/с). AXI-сторона (128b), CMD/STS-интерфейсы
+> (104/8 бит) и адреса не изменялись; `axis_data_fifo` наследует ширину
+> автоматически.
 
 ---
 
