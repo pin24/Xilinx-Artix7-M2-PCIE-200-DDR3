@@ -16,9 +16,24 @@
 NUM_MAC ?= 32
 JOBS    ?= 8
 
+# Auto-detect Vivado on Windows
 VIVADO ?= vivado
 ifeq ($(OS),Windows_NT)
-  VIVADO ?= vivado.bat
+  ifeq ($(wildcard $(VIVADO)),)
+    _VIVADO_SEARCH := $(wildcard \
+      C:/AMDDesignTools/2025.2/Vivado/bin/vivado.bat \
+      C:/Xilinx/Vivado/2025.2/bin/vivado.bat \
+      C:/AMDDesignTools/*/Vivado/bin/vivado.bat \
+      C:/Xilinx/Vivado/*/bin/vivado.bat)
+    ifneq ($(strip $(_VIVADO_SEARCH)),)
+      _VIVADO := $(firstword $(_VIVADO_SEARCH))
+      $(info Auto-detected Vivado: $(_VIVADO))
+      VIVADO := $(_VIVADO)
+    else
+      VIVADO := vivado.bat
+      $(warning Vivado not found in common paths; set VIVADO= explicitly)
+    endif
+  endif
 endif
 
 BUILD_DFX      := scripts/build_dfx.tcl
