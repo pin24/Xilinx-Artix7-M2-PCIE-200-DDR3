@@ -366,11 +366,6 @@ reset_run synth_1 -quiet
 reset_run impl_1 -quiet
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
 
-# AUDIT-02: create_clock mig_refclk на REFCLK pin MIG IODELAYCTRL
-# выполняем в TCL.POST после synth (когда pin существует в netlist).
-# До synth get_pins возвращает пустой список — см. ERROR_HISTORY.md BUG-026.
-set_property STEPS.SYNTH_DESIGN.TCL.POST ${ROOT}/scripts/mig_refclk_post.tcl [get_runs synth_1]
-
 launch_runs synth_1 -jobs ${JOBS}
 wait_on_run synth_1
 set st [get_property STATUS [get_runs synth_1]]
@@ -393,7 +388,6 @@ if {$pcie_ip_xdc ne ""} {
 # ---------- 8. Implementation + Bitstream ----------
 puts "=== 8. IMPLEMENTATION + BITSTREAM ==="
 current_run [get_runs impl_1]
-set_property STEPS.PLACE_DESIGN.TCL.PRE ${ROOT}/scripts/suppress_warnings.tcl [get_runs impl_1]
 # Генерировать .bin вместе с .bit и в дочерних конфигурациях RP (частичные
 # битстримы понадобятся для горячей замены через ICAP — pytorch_layer/icap_load.py)
 catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}

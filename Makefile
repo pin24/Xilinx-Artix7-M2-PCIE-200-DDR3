@@ -13,8 +13,8 @@
 #   make clean            # удалить каталог проекта и артефакты
 # ============================================================================
 
-NUM_MAC ?= 32
-JOBS    ?= 8
+NUM_MAC ?= 16
+JOBS    ?= 7
 
 # Auto-detect Vivado on Windows
 VIVADO ?= vivado
