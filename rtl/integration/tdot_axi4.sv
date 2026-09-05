@@ -264,7 +264,17 @@ module tdot_axi4 #(
     assign S_AXI_RDATA   = rdata;
 
     // ==================== FIFO собранных TFloat48 (из чтений) ====================
-    logic [47:0] fifo_mem [0:FIFO_DEPTH-1];
+    // LUTRAM→BRAM (выбранный вариант оптимизации): fifo_mem вынесен в BRAM
+    // (ram_style="block", 64x48 укладывается в 1x RAMB36 / 2x RAMB18).
+    // Чтение BRAM синхронное: fifo_q отстаёт от адреса fifo_rd на 1 такт.
+    // Контроллер CS_LOAD переведён на 2-стадийный конвейер:
+    //   стадия 1 (rd_idx): pop + выдача BRAM-чтения слова для слота rd_idx;
+    //   стадия 2 (load_idx = rd_idx-1): потребление fifo_q в слот load_idx.
+    // Эквивалентность прежней (LUTRAM, асинхронное чтение) и новой логики
+    // проверена моделью scripts/check_tdot_load.py (колонка BRAM) для
+    // NUM_MAC=8/16/32 × N_IN=0..NUM_MAC, включая N_IN<NUM_MAC (фикс CS_LOAD,
+    // commit a86ef65).
+    (* ram_style = "block" *) logic [47:0] fifo_mem [0:FIFO_DEPTH-1];
     logic [FIFO_PTRW:0] fifo_wr, fifo_rd;
     logic fifo_push, fifo_pop;
     logic [47:0] fifo_q;
@@ -287,7 +297,11 @@ module tdot_axi4 #(
     always_ff @(posedge clk) begin
         if (fifo_push) fifo_mem[fifo_wr[FIFO_PTRW-1:0]] <= M_AXI_RDATA[47:0];
     end
-    assign fifo_q = fifo_mem[fifo_rd[FIFO_PTRW-1:0]];
+    // синхронное чтение BRAM. Без сброса fifo_q: выходной регистр BRAM
+    // аппаратного сброса не имеет, лишний reset сломал бы маппинг в BRAM.
+    always_ff @(posedge clk) begin
+        fifo_q <= fifo_mem[fifo_rd[FIFO_PTRW-1:0]];
+    end
 
     // ==================== read-мастер (INCR-burst) ====================
     logic [AW-1:0] ar_addr_r;
@@ -450,6 +464,7 @@ module tdot_axi4 #(
     wire go_accept = go_pulse && !busy_q;
     assign fifo_clr = go_accept;   // на новом запуске сбрасываем указатели FIFO
     logic [$clog2(2*NUM_MAC):0] load_idx;
+    logic [$clog2(2*NUM_MAC):0] rd_idx;    // стадия 1 конвейера: слот, читаемый из BRAM сейчас
     logic load_active;
     logic [31:0] n_in_eff;
 
@@ -468,7 +483,7 @@ module tdot_axi4 #(
             rd_start <= 0; wr_start <= 0;
             rd_addr <= 0; rd_total <= 0;
             wr_addr <= 0; wr_data <= 0;
-            load_idx <= 0; load_active <= 0;
+            load_idx <= 0; rd_idx <= 0; load_active <= 0;
             core_data <= 0; core_weights <= 0;
             res0_reg <= 0; res1_reg <= 0;
             busy_q <= 0; done_q <= 0;
@@ -496,24 +511,30 @@ module tdot_axi4 #(
                     if (rd_done) begin
                         cstate <= CS_LOAD;
                         load_idx <= 0;
+                        rd_idx <= 0;
                         load_active <= 1;
                     end
                 end
+                // 2-стадийный конвейер загрузки (BRAM: синхронное чтение).
+                // Инвариант: во время такта X BRAM читает mem[fifo_rd] = слово
+                // слота rd_idx, а fifo_q в такте X содержит слово слота
+                // load_idx = rd_idx-1 (прочитано в такте X-1).
                 CS_LOAD: begin
                     if (load_active) begin
-                        if (load_idx < NUM_MAC) begin
-                            if (load_idx < n_in_eff)
-                                core_data[48*load_idx +: 48] <= fifo_q;
+                        // стадия 1: pop + выдача чтения слова для слота rd_idx
+                        if (rd_idx < 2*NUM_MAC)
+                            rd_idx <= rd_idx + 1;
+                        // стадия 2: потребление fifo_q в слот load_idx
+                        if (rd_idx > load_idx) begin
+                            if (load_idx < NUM_MAC)
+                                core_data[48*load_idx +: 48] <=
+                                    (load_idx < n_in_eff) ? fifo_q : 48'h0;
                             else
-                                core_data[48*load_idx +: 48] <= 0;
+                                core_weights[48*(load_idx-NUM_MAC) +: 48] <=
+                                    ((load_idx-NUM_MAC) < n_in_eff) ? fifo_q : 48'h0;
                             load_idx <= load_idx + 1;
-                        end else if (load_idx < 2*NUM_MAC) begin
-                            if (load_idx - NUM_MAC < n_in_eff)
-                                core_weights[48*(load_idx-NUM_MAC) +: 48] <= fifo_q;
-                            else
-                                core_weights[48*(load_idx-NUM_MAC) +: 48] <= 0;
-                            load_idx <= load_idx + 1;
-                        end else begin
+                        end else if ((rd_idx == 2*NUM_MAC) && (load_idx == 2*NUM_MAC)) begin
+                            // всё выдано и всё потреблено
                             load_active <= 0;
                             cstate <= CS_RUN;
                         end
@@ -546,17 +567,19 @@ module tdot_axi4 #(
         end
     end
 
-    // fifo_pop в фазе загрузки: pop ТОЛЬКО в такты, когда элемент реально
-    // потребляется из FIFO (слот заполняется из fifo_q). При n_in_eff < NUM_MAC
-    // слоты-заглушки заполняются нулём БЕЗ pop — иначе fifo_rd уходит за
-    // пределы загруженных данных и weights читаются со смещением (мусор).
+    // fifo_pop в фазе загрузки: pop ТОЛЬКО в такт выдачи BRAM-чтения
+    // (стадия 1, слот rd_idx) и только когда слово реально есть в FIFO.
+    // При n_in_eff < NUM_MAC слоты-заглушки заполняются нулём БЕЗ pop —
+    // иначе fifo_rd уходит за пределы загруженных данных и weights
+    // читаются со смещением (мусор). См. фикс CS_LOAD (commit a86ef65)
+    // и модель check_tdot_load.py.
     always_comb begin
         fifo_pop = 1'b0;
-        if (cstate == CS_LOAD && load_active && (load_idx < 2*NUM_MAC)) begin
-            if (load_idx < NUM_MAC)
-                fifo_pop = (load_idx < n_in_eff);              // data-фаза
+        if (cstate == CS_LOAD && load_active && (rd_idx < 2*NUM_MAC)) begin
+            if (rd_idx < NUM_MAC)
+                fifo_pop = (rd_idx < n_in_eff);              // data-фаза
             else
-                fifo_pop = ((load_idx - NUM_MAC) < n_in_eff);  // weights-фаза
+                fifo_pop = ((rd_idx - NUM_MAC) < n_in_eff);  // weights-фаза
         end
     end
 

@@ -7,6 +7,7 @@
 #   S_AXI_ICAP_REGS (icap_ctrl AXI-Lite slave → xdma_axi_lite_smc/M04)
 #   S_AXI_XADC_REGS (xadc_temp AXI-Lite slave → xdma_axi_lite_smc/M05)
 #   axi_aclk_out / axi_aresetn_out / axi_aclk_in (экспорт такта PCIe-домена)
+#   clk_core_out / core_resetn_out (экспорт fabric-домена 125 МГц, BUG-034)
 #   Апертуры DFX Partition + карта адресов
 #
 # Идемпотентно: можно вызывать многократно.
@@ -79,6 +80,9 @@ set_property -dict [list \
 # xdma_axi_smc: 3 slave порта (S00=XDMA, S01=DFX socket, S02=M_AXI_TDOT)
 set_property -dict [list CONFIG.NUM_SI 3] [get_bd_cells xdma_axi_smc]
 connect_bd_intf_net [get_bd_intf_pins xdma_axi_smc/S02_AXI] [get_bd_intf_ports M_AXI_TDOT]
+# BUG-034: S02 в fabric-домене 125 МГц (вместе с S01) — расширяем ассоциацию
+# aclk2 (база ставила только S01_AXI; порта S02 тогда ещё не было).
+set_property CONFIG.ASSOCIATED_BUSIF {S01_AXI:S02_AXI} [get_bd_pins xdma_axi_smc/aclk2]
 
 # адрес: DDR3 0x80000000 (256 MB)
 assign_bd_address -offset 0x80000000 -range 0x10000000 \
@@ -115,6 +119,10 @@ assign_bd_address -offset 0x40003000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] \
     [get_bd_addr_segs S_AXI_TDOT_REGS/Reg] -force
 
+# BUG-034: M03-M05 — экспортируемые порты без локального клока-соседа,
+# домен по инференсу не определить — расширяем ассоциацию aclk1 (fabric 125 МГц).
+set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
+
 # ============================================================================
 # 3. S_AXI_ICAP_REGS — регистры ICAP
 # ============================================================================
@@ -138,6 +146,8 @@ assign_bd_address -offset 0x40004000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] \
     [get_bd_addr_segs S_AXI_ICAP_REGS/Reg] -force
 
+set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI:M04_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
+
 # ============================================================================
 # 4. S_AXI_XADC_REGS — регистры XADC
 # ============================================================================
@@ -160,6 +170,8 @@ delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_XADC
 assign_bd_address -offset 0x46000000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] \
     [get_bd_addr_segs S_AXI_XADC_REGS/Reg] -force
+
+set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI:M04_AXI:M05_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
 
 # ============================================================================
 # 4b. ASSOCIATED_BUSIF для axi_aclk — ВНИМАНИЕ (BUG-017 follow-up):
@@ -205,7 +217,8 @@ if {[get_bd_ports -quiet axi_aresetn_out] eq ""} {
 if {[get_bd_ports -quiet axi_aclk_in] eq ""} {
     create_bd_port -dir I -type clk axi_aclk_in
 }
-set_property -dict [list CONFIG.FREQ_HZ 125000000] [get_bd_ports axi_aclk_in]
+# loopback от axi_aclk_out: при XDMA 64-бит это 250 МГц (BUG-034)
+set_property -dict [list CONFIG.FREQ_HZ 250000000] [get_bd_ports axi_aclk_in]
 
 proc _clk_connect {port_name pin_name} {
     set port [get_bd_ports -quiet $port_name]
@@ -223,6 +236,23 @@ proc _clk_connect {port_name pin_name} {
 }
 _clk_connect axi_aclk_out    xdma_0/axi_aclk
 _clk_connect axi_aresetn_out xdma_0/axi_aresetn
+
+# ============================================================================
+# 5b. Экспорт fabric-домена 125 МГц (BUG-034)
+# ============================================================================
+# XDMA 64-бит тактирует axi_aclk частотой 250 МГц; ядро/RP/периферия
+# остаются на 125 МГц (clk125_core_wiz, создан в xdma_ddr3_dfx_bd.tcl).
+# Топ (xdma_ddr3_core_top.sv) получает их как core_clk/core_resetn.
+puts "=== 5b. Экспорт fabric-домена (clk_core_out / core_resetn_out) ==="
+
+if {[get_bd_ports -quiet clk_core_out] eq ""} {
+    create_bd_port -dir O clk_core_out
+}
+if {[get_bd_ports -quiet core_resetn_out] eq ""} {
+    create_bd_port -dir O core_resetn_out
+}
+_clk_connect clk_core_out    clk125_core_wiz/clk_out1
+_clk_connect core_resetn_out rst_core_125M/peripheral_aresetn
 
 # ============================================================================
 # 6. Очистка legacy M_AXI_ICAP (если есть)
@@ -248,11 +278,12 @@ save_bd_design
 puts "============================================"
 puts " POST-BD DFX: OK"
 puts "============================================"
-puts " xdma_axi_smc.S02 → M_AXI_TDOT @ DDR3 0x80000000"
+puts " xdma_axi_smc.S02 → M_AXI_TDOT @ DDR3 0x80000000 (fabric 125 МГц, BUG-034)"
 puts " xdma_axi_lite_smc.M03 → S_AXI_TDOT_REGS @ 0x40003000"
 puts " xdma_axi_lite_smc.M04 → S_AXI_ICAP_REGS @ 0x40004000"
 puts " xdma_axi_lite_smc.M05 → S_AXI_XADC_REGS @ 0x46000000"
-puts " clock: axi_aclk_out/aresetn_out (O), axi_aclk_in (I)"
+puts " clock: axi_aclk_out/aresetn_out (O, XDMA 250), axi_aclk_in (I)"
+puts " clock: clk_core_out/core_resetn_out (O, fabric 125 МГц, BUG-034)"
 puts "============================================"
 
 if {$opened_here} { close_project }

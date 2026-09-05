@@ -22,7 +22,9 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
     pcie_7x_mgt_rtl_0_rxp,
     pcie_7x_mgt_rtl_0_txn,
     pcie_7x_mgt_rtl_0_txp,
-    reset_rtl_0);
+    reset_rtl_0,
+    core_clk,
+    core_resetn);
   output [13:0]DDR3_0_addr;
   output [2:0]DDR3_0_ba;
   output DDR3_0_cas_n;
@@ -48,12 +50,21 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   output [3:0]pcie_7x_mgt_rtl_0_txp;
   input reset_rtl_0;
 
+  // ---- Такт/сброс fabric-домена 125 МГц (BUG-034) ----
+  // XDMA в 64-битном варианте (Gen2 x4) тактирует axi_aclk частотой 250 МГц.
+  // Тернарное ядро (tfmul_raw: 40-тритовая последовательная цепочка сложения)
+  // и RP (DataMover 128 бит) закрывают тайминг только при 125 МГц
+  // (WNS 0.370 нс @ 125 МГц → путь ~7.6 нс; 4 нс @ 250 МГц недостижим).
+  // Поэтому BD генерирует отдельный такт 125 МГц (clk125_core_wiz из clk50)
+  // и его сброс (rst_core_125M). XDMA работает в своём домене 250 МГц,
+  // все переходы между доменами идут через асинхронные мосты SmartConnect.
+  input core_clk;
+  input core_resetn;
+
   // ---- Такт/сброс PCIe-домена: экспортируются из BD (post_bd_dfx.tcl:step 5) ----
-  // BD выводит axi_aclk_out (xdma_0/axi_aclk, 125 МГц) и axi_aresetn_out
-  // (xdma_0/axi_aresetn); top замыкает axi_aclk_out -> axi_aclk_in (loopback)
-  // для привязки slave-интерфейса M_AXI_TDOT к тому же тактовому домену.
-  // ASSOCIATED_BUSIF на axi_aclk_in НЕ ставится (BUG-017: Vivado 2025.2
-  // выводит CLK_DOMAIN автоматически из SmartConnect).
+  // BD выводит axi_aclk_out (xdma_0/axi_aclk, 250 МГц в 64-битном варианте)
+  // и axi_aresetn_out (xdma_0/axi_aresetn); используется только
+  // PCIe-доменом (SmartConnect S-стороны). Периферия и ядро — в core_clk.
   logic axi_aclk;
   logic axi_aresetn;
 
@@ -91,7 +102,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   logic [1:0]  m_axi_rresp;
 
   tdot_axi4 #(.NUM_MAC(NUM_MAC)) u_tdot (
-      .S_AXI_ACLK(axi_aclk), .S_AXI_ARESETN(axi_aresetn),
+      .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
       .S_AXI_AWADDR(s_axil_awaddr), .S_AXI_AWPROT(1'b0),
       .S_AXI_AWVALID(s_axil_awvalid), .S_AXI_AWREADY(s_axil_awready),
       .S_AXI_WDATA(s_axil_wdata), .S_AXI_WSTRB(s_axil_wstrb),
@@ -101,7 +112,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .S_AXI_ARVALID(s_axil_arvalid), .S_AXI_ARREADY(s_axil_arready),
       .S_AXI_RDATA(s_axil_rdata), .S_AXI_RRESP(),
       .S_AXI_RVALID(s_axil_rvalid), .S_AXI_RREADY(s_axil_rready),
-      .M_AXI_ACLK(axi_aclk), .M_AXI_ARESETN(axi_aresetn),
+      .M_AXI_ACLK(core_clk), .M_AXI_ARESETN(core_resetn),
       .M_AXI_AWID(), .M_AXI_AWADDR(m_axi_awaddr), .M_AXI_AWLEN(m_axi_awlen),
       .M_AXI_AWSIZE(m_axi_awsize), .M_AXI_AWBURST(m_axi_awburst),
       .M_AXI_AWLOCK(m_axi_awlock), .M_AXI_AWCACHE(m_axi_awcache),
@@ -134,7 +145,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   logic [1:0]  icap_rresp;
 
   icap_ctrl u_icap (
-      .S_AXI_ACLK(axi_aclk), .S_AXI_ARESETN(axi_aresetn),
+      .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
       .S_AXI_AWADDR(icap_awaddr), .S_AXI_AWPROT(1'b0),
       .S_AXI_AWVALID(icap_awvalid), .S_AXI_AWREADY(icap_awready),
       .S_AXI_WDATA(icap_wdata), .S_AXI_WSTRB(icap_wstrb),
@@ -173,7 +184,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   // monitor_temp.py читает 0°C/0V — данные XADC недоступны в этой сборке.
 
   xadc_temp u_xadc (
-      .S_AXI_ACLK(axi_aclk), .S_AXI_ARESETN(axi_aresetn),
+      .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
       .S_AXI_AWADDR(xadc_awaddr), .S_AXI_AWPROT(1'b0),
       .S_AXI_AWVALID(xadc_awvalid), .S_AXI_AWREADY(xadc_awready),
       .S_AXI_WDATA(xadc_wdata), .S_AXI_WSTRB(xadc_wstrb),
@@ -208,9 +219,11 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .DDR3_0_ras_n(DDR3_0_ras_n),
       .DDR3_0_reset_n(DDR3_0_reset_n),
       .DDR3_0_we_n(DDR3_0_we_n),
-      .axi_aclk_out(axi_aclk),      // экспорт xdma_0/axi_aclk из BD
+      .axi_aclk_out(axi_aclk),      // экспорт xdma_0/axi_aclk из BD (250 МГц, 64-бит)
       .axi_aresetn_out(axi_aresetn),// экспорт xdma_0/axi_aresetn из BD
       .axi_aclk_in(axi_aclk),       // loopback: та же цепь, что axi_aclk_out
+      .clk_core_out(core_clk),      // 125 МГц fabric/ядро (BUG-034, clk125_core_wiz)
+      .core_resetn_out(core_resetn),// сброс fabric-домена (rst_core_125M)
       .diff_clock_rtl_0_clk_n(diff_clock_rtl_0_clk_n),
       .diff_clock_rtl_0_clk_p(diff_clock_rtl_0_clk_p),
       .clk50(clk50),

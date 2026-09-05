@@ -644,18 +644,28 @@ proc create_root_design { parentCell } {
 
   set rst_mig_7series_0_100M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_mig_7series_0_100M ]
 
+  # BUG-034: сброс fabric-домена 125 МГц (ядро/RP/периферия).
+  # ext_reset = платный reset_rtl_0 (активный низкий, полярность по умолчанию
+  # ACTIVE_LOW соответствует), locked = клок-wizard 125 МГц.
+  set rst_core_125M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_core_125M ]
+
   set util_ds_buf [ create_bd_cell -type ip -vlnv xilinx.com:ip:util_ds_buf:2.2 util_ds_buf ]
   set_property CONFIG.C_BUF_TYPE {IBUFDSGTE} $util_ds_buf
 
   set xdma_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xdma:4.2 xdma_0 ]
+  # Выбранный вариант (просчёт LUT): XDMA 128→64 бит @ 250 МГц.
+  # Полоса НЕ режется: 64 бит × 250 МГц = 128 бит × 125 МГц = 2,0 ГБ/с.
+  # Каналы DMA 2+2 СОХРАНЕНЫ (xdma_rnum_chnl/xdma_wnum_chnl не тронуты).
+  # axi_aclk автоматически станет 250 МГц — вся периферия/ядро/RP выведены
+  # в отдельный домен 125 МГц (clk125_core_wiz, см. ниже; BUG-034).
   set_property -dict [list \
     CONFIG.PF0_DEVICE_ID_mqdma {9024} \
     CONFIG.PF0_SRIOV_VF_DEVICE_ID {A034} \
     CONFIG.PF2_DEVICE_ID_mqdma {9224} \
     CONFIG.PF3_DEVICE_ID_mqdma {9324} \
-    CONFIG.axi_data_width {128_bit} \
+    CONFIG.axi_data_width {64_bit} \
     CONFIG.axilite_master_en {true} \
-    CONFIG.axisten_freq {125} \
+    CONFIG.axisten_freq {250} \
     CONFIG.cfg_mgmt_if {false} \
     CONFIG.pciebar2axibar_axil_master {0x40000000} \
     CONFIG.pf0_Use_Class_Code_Lookup_Assistant {true} \
@@ -691,14 +701,39 @@ set_property -dict [list \
     CONFIG.RESET_TYPE {ACTIVE_LOW} \
   ] $clk200_clk_wiz
 
+  # BUG-034: отдельный домен 125 МГц для fabric/ядра/RP.
+  # При XDMA 64-бит axi_aclk = 250 МГц; тернарное ядро и RP DataMover 128-бит
+  # закрывают тайминг только при 125 МГц (WNS 0.370 нс @ 125 МГц).
+  # 50 МГц × 20 = VCO 1000 МГц, /8 = 125 МГц (IP сам считает делители).
+  set clk125_core_wiz [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk125_core_wiz ]
+set_property -dict [list \
+    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {125.000} \
+    CONFIG.PRIM_IN_FREQ {50.000} \
+    CONFIG.MMCM_CLKIN1_PERIOD {20.000} \
+    CONFIG.USE_RESET {true} \
+    CONFIG.RESET_TYPE {ACTIVE_LOW} \
+  ] $clk125_core_wiz
+
   set xdma_axi_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_smc ]
-  set_property CONFIG.NUM_CLKS {2} $xdma_axi_smc
+  # 3 домена (BUG-034): aclk=XDMA 250 (S00), aclk1=ui_clk 100 (M00→MIG),
+  # aclk2=fabric 125 (S01=dfx_socket, S02=M_AXI_TDOT — добавляется в post_bd_dfx).
+  set_property -dict [list \
+    CONFIG.NUM_CLKS {3} \
+    CONFIG.ASSOCIATED_BUSIF {S00_AXI} \
+  ] [get_bd_pins xdma_axi_smc/aclk]
+  set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI} [get_bd_pins xdma_axi_smc/aclk1]
+  set_property CONFIG.ASSOCIATED_BUSIF {S01_AXI} [get_bd_pins xdma_axi_smc/aclk2]
 
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
+  # 2 домена (BUG-034): aclk=XDMA 250 (S00), aclk1=fabric 125 (M00..M02;
+  # M03..M05 добавляет post_bd_dfx и расширяет ASSOCIATED_BUSIF).
   set_property -dict [list \
     CONFIG.NUM_MI {3} \
     CONFIG.NUM_SI {1} \
+    CONFIG.NUM_CLKS {2} \
   ] $xdma_axi_lite_smc
+  set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_pins xdma_axi_lite_smc/aclk]
+  set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
 
   set mig7_status_concat [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 mig7_status_concat ]
 
@@ -722,7 +757,24 @@ set_property -dict [list \
 
   connect_bd_net -net clk50_buf_IBUF_OUT [get_bd_ports clk50] \
   [get_bd_pins axi_hwicap_0/icap_clk] \
-  [get_bd_pins clk200_clk_wiz/clk_in1]
+  [get_bd_pins clk200_clk_wiz/clk_in1] \
+  [get_bd_pins clk125_core_wiz/clk_in1]
+
+  # Домен fabric/ядра 125 МГц (BUG-034): dfx_socket, dfx_partition (RP),
+  # GPIO, HWICAP S_AXI, M-сторона xdma_axi_lite_smc, S01/S02-сторона
+  # xdma_axi_smc (S02 добавляет post_bd_dfx). Частота СТАРАЯ (125) —
+  # тайминг ядра/RP не меняется; меняется только домен XDMA (250).
+  connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins clk125_core_wiz/clk_out1] \
+  [get_bd_pins dfx_socket/clk] \
+  [get_bd_pins dfx_partition/clk] \
+  [get_bd_pins axi_gpio_0/s_axi_aclk] \
+  [get_bd_pins axi_hwicap_0/s_axi_aclk] \
+  [get_bd_pins xdma_axi_lite_smc/aclk1] \
+  [get_bd_pins xdma_axi_smc/aclk2] \
+  [get_bd_pins rst_core_125M/slowest_sync_clk]
+
+  connect_bd_net -net clk125_core_wiz_locked [get_bd_pins clk125_core_wiz/locked] \
+  [get_bd_pins rst_core_125M/dcm_locked]
 
   connect_bd_net -net mig7_status_concat_dout [get_bd_pins mig7_status_concat/dout] \
   [get_bd_pins axi_gpio_0/gpio2_io_i]
@@ -744,7 +796,9 @@ set_property -dict [list \
   connect_bd_net -net reset_rtl_0_1 [get_bd_ports reset_rtl_0] \
   [get_bd_pins xdma_0/sys_rst_n] \
   [get_bd_pins mig_7series_0/sys_rst] \
-  [get_bd_pins clk200_clk_wiz/resetn]
+  [get_bd_pins clk200_clk_wiz/resetn] \
+  [get_bd_pins clk125_core_wiz/resetn] \
+  [get_bd_pins rst_core_125M/ext_reset_in]
 
   connect_bd_net -net rp_resetn_1 [get_bd_pins dfx_socket/rp_resetn] \
   [get_bd_pins dfx_partition/rp_resetn]
@@ -752,21 +806,21 @@ set_property -dict [list \
   connect_bd_net -net rst_mig_7series_0_100M_peripheral_aresetn [get_bd_pins rst_mig_7series_0_100M/peripheral_aresetn] \
   [get_bd_pins mig_7series_0/aresetn]
 
+  connect_bd_net -net rst_core_125M_peripheral_aresetn [get_bd_pins rst_core_125M/peripheral_aresetn] \
+  [get_bd_pins dfx_socket/resetn] \
+  [get_bd_pins axi_gpio_0/s_axi_aresetn] \
+  [get_bd_pins axi_hwicap_0/s_axi_aresetn]
+
   connect_bd_net -net util_ds_buf_IBUF_OUT [get_bd_pins util_ds_buf/IBUF_OUT] \
   [get_bd_pins xdma_0/sys_clk]
 
+  # PCIe-домен XDMA (250 МГц при 64-бит, BUG-034): только XDMA и
+  # S-стороны SmartConnect. Периферия/ядро/RP — в домене clk125_core_wiz.
   connect_bd_net -net xdma_0_axi_aclk [get_bd_pins xdma_0/axi_aclk] \
-  [get_bd_pins dfx_socket/clk] \
-  [get_bd_pins axi_gpio_0/s_axi_aclk] \
-  [get_bd_pins axi_hwicap_0/s_axi_aclk] \
   [get_bd_pins xdma_axi_lite_smc/aclk] \
-  [get_bd_pins xdma_axi_smc/aclk] \
-  [get_bd_pins dfx_partition/clk]
+  [get_bd_pins xdma_axi_smc/aclk]
 
   connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
-  [get_bd_pins dfx_socket/resetn] \
-  [get_bd_pins axi_gpio_0/s_axi_aresetn] \
-  [get_bd_pins axi_hwicap_0/s_axi_aresetn] \
   [get_bd_pins xdma_axi_lite_smc/aresetn] \
   [get_bd_pins xdma_axi_smc/aresetn]
 
