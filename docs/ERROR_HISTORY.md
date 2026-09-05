@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-06 — Сборка падает на post_bd_dfx.tcl: ASSOCIATED_BUSIF/FREQ_HZ read-only (регрессия BUG-034)
+
+### [BUG-035] BD 41-237 FREQ_HZ mismatch 250 vs 125 МГц — блокирует сборку
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/xdma_ddr3_dfx_bd.tcl:723-725,735-736`, `scripts/post_bd_dfx.tcl:86-88,127-128,153-154,179` |
+| **Симптом** | `make build NUM_MAC=16 JOBS=7` падает на шаге 2c (source post_bd_dfx.tcl, строки 281 `validate_bd_design`). В логе: `ERROR: [BD 41-237] Bus Interface property FREQ_HZ does not match between /xdma_axi_smc/S02_AXI(250000000) and /M_AXI_TDOT(125000000)` + аналогично по `S_AXI_TDOT_REGS/M03`, `S_AXI_ICAP_REGS/M04`, `S_AXI_XADC_REGS/M05`. Перед этим: `CRITICAL WARNING: [BD 41-737] Cannot set the parameter FREQ_HZ/ASSOCIATED_BUSIF on /xdma_axi_smc/aclk2. It is read-only.` (и `aclk1`) → сборка останавливается до синтеза |
+| **Причина** | Исправление BUG-034 построено на явной установке `CONFIG.ASSOCIATED_BUSIF` и `CONFIG.FREQ_HZ` на тактовых пинах SmartConnect (`aclk1`/`aclk2`, команды `set_property` на `get_bd_pins`). В Vivado 2025.2 оба свойства на пинах клока SmartConnect **read-only** (BD 41-737) — `set_property` молча игнорируется. Без ассоциации порты `S02_AXI`, `M03/M04/M05_AXI` остаются на дефолтном клоке `aclk` = `xdma_0/axi_aclk` (250 МГц при 64-бит XDMA), в то время как `post_bd_dfx.tcl` задаёт внешним BD-портам `FREQ_HZ=125 МГц` → несоответствие 250 vs 125 → BD 41-237 → `validate_bd_design` ERROR |
+| **Сопутствующее** | После BD 41-737 появляются CRITICAL WARNING вида «The device(s) attached to /M03_AXI do not share a common clock domain with this smartconnect instance» (1713-1715, 1724) — тот же корень: доменная ассоциация не задалась, SmartConnect считает порты синхронными 250 МГц |
+| **Проверка** | `C:\build_dfx` создан 06.09 00:38-00:39, ранов synth/impl ещё нет — падение на этапе BD (до генерации). Лог: `vivado.log` (repo root, 00:40:14), строки 1563-1749 |
+| **Направление исправления** | В 2025.2 ассоциацию интерфейс↔клок задавать не через пины клока, а через свойство **`CLK_DOMAIN` на интерфейсных пинах**: `set_property CLK_DOMAIN {xdma_axi_smc/aclk2} [get_bd_intf_pins xdma_axi_smc/S01_AXI]` (и для S02/M03-M05) + убрать жёсткие `FREQ_HZ` с внешних портов, чтобы не было конфликта метаданных. Либо расширять `ASSOCIATED_BUSIF` на этапе создания SmartConnect (в `create_bd_cell` через `CONFIG`-dict IP-инстанса) — проверить, что в 2025.2 это допустимо |
+| **Статус** | 🔴 НЕ исправлено — сборка заблокирована на BD-валидации. Требуется переработка доменной ассоциации (см. направление выше) |
+
+**Урок**: в Vivado 2025.2 `ASSOCIATED_BUSIF`/`FREQ_HZ` на пинах клока SmartConnect — read-only (BD 41-737). Явная доменная ассоциация для экспортируемых портов делается через `CLK_DOMAIN` на интерфейсных пинах/портах, а не через пины клока. Любой «фикс» тактовых доменов проверять фактической BD-валидацией.
+
+---
+
 ## 2026-09-06 — XDMA 64 бит @ 250 МГц: ядро/RP обязаны остаться на 125 МГц; LUTRAM→BRAM
 
 ### [BUG-034] Выбранный вариант оптимизации: XDMA 128→64 @ 250 МГц без потери полосы + разделение доменов
