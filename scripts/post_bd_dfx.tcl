@@ -80,9 +80,12 @@ set_property -dict [list \
 # xdma_axi_smc: 3 slave порта (S00=XDMA, S01=DFX socket, S02=M_AXI_TDOT)
 set_property -dict [list CONFIG.NUM_SI 3] [get_bd_cells xdma_axi_smc]
 connect_bd_intf_net [get_bd_intf_pins xdma_axi_smc/S02_AXI] [get_bd_intf_ports M_AXI_TDOT]
-# BUG-034: S02 в fabric-домене 125 МГц (вместе с S01) — расширяем ассоциацию
-# aclk2 (база ставила только S01_AXI; порта S02 тогда ещё не было).
+# BUG-034: S01/S02 в fabric-домене 125 МГц (aclk2). Явно FREQ_HZ на пинах —
+# иначе SmartConnect считает по дефолту 250 МГц (aclk) и validate падает
+# с BD 41-237 FREQ_HZ mismatch.
+set_property CONFIG.FREQ_HZ 125000000 [get_bd_pins xdma_axi_smc/aclk2]
 set_property CONFIG.ASSOCIATED_BUSIF {S01_AXI:S02_AXI} [get_bd_pins xdma_axi_smc/aclk2]
+set_property FREQ_HZ 125000000 [get_bd_intf_pins xdma_axi_smc/S02_AXI]
 
 # адрес: DDR3 0x80000000 (256 MB)
 assign_bd_address -offset 0x80000000 -range 0x10000000 \
@@ -122,6 +125,7 @@ assign_bd_address -offset 0x40003000 -range 0x1000 \
 # BUG-034: M03-M05 — экспортируемые порты без локального клока-соседа,
 # домен по инференсу не определить — расширяем ассоциацию aclk1 (fabric 125 МГц).
 set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
+set_property FREQ_HZ 125000000 [get_bd_intf_pins xdma_axi_lite_smc/M03_AXI]
 
 # ============================================================================
 # 3. S_AXI_ICAP_REGS — регистры ICAP
@@ -147,6 +151,7 @@ assign_bd_address -offset 0x40004000 -range 0x1000 \
     [get_bd_addr_segs S_AXI_ICAP_REGS/Reg] -force
 
 set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI:M04_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
+set_property FREQ_HZ 125000000 [get_bd_intf_pins xdma_axi_lite_smc/M04_AXI]
 
 # ============================================================================
 # 4. S_AXI_XADC_REGS — регистры XADC
@@ -172,6 +177,7 @@ assign_bd_address -offset 0x46000000 -range 0x1000 \
     [get_bd_addr_segs S_AXI_XADC_REGS/Reg] -force
 
 set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI:M04_AXI:M05_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
+set_property FREQ_HZ 125000000 [get_bd_intf_pins xdma_axi_lite_smc/M05_AXI]
 
 # ============================================================================
 # 4b. ASSOCIATED_BUSIF для axi_aclk — ВНИМАНИЕ (BUG-017 follow-up):

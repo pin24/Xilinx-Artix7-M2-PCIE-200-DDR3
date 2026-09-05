@@ -718,7 +718,9 @@ set_property -dict [list \
   # 3 домена (BUG-034): aclk=XDMA 250 (S00), aclk1=ui_clk 100 (M00→MIG),
   # aclk2=fabric 125 (S01=dfx_socket, S02=M_AXI_TDOT — добавляется в post_bd_dfx).
   set_property CONFIG.NUM_CLKS {3} [get_bd_cells xdma_axi_smc]
+  set_property CONFIG.FREQ_HZ 100000000 [get_bd_pins xdma_axi_smc/aclk1]
   set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI} [get_bd_pins xdma_axi_smc/aclk1]
+  set_property CONFIG.FREQ_HZ 125000000 [get_bd_pins xdma_axi_smc/aclk2]
   set_property CONFIG.ASSOCIATED_BUSIF {S01_AXI} [get_bd_pins xdma_axi_smc/aclk2]
 
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
@@ -729,6 +731,7 @@ set_property -dict [list \
     CONFIG.NUM_SI {1} \
     CONFIG.NUM_CLKS {2} \
   ] $xdma_axi_lite_smc
+  set_property CONFIG.FREQ_HZ 125000000 [get_bd_pins xdma_axi_lite_smc/aclk1]
   set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
 
   set mig7_status_concat [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 mig7_status_concat ]
