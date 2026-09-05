@@ -86,11 +86,17 @@ def iter_words_le(body: bytes):
 
 
 class IcapLoader:
-    def __init__(self, device: str = "xdma0"):
-        try:
-            self._dev = XdmaLinux(f"/dev/{device}")
-        except XdmaError:
-            self._dev = XdmaWindows()
+    def __init__(self, device: str = "xdma0", dev=None):
+        # dev: уже открытое устройство (XdmaDevice) — переиспользуется
+        # вызывающим кодом (например dfx_swap.py), чтобы не открывать
+        # повторное соединение. Иначе открываем своё (Linux -> Windows).
+        if dev is not None:
+            self._dev = dev
+        else:
+            try:
+                self._dev = XdmaLinux(f"/dev/{device}")
+            except XdmaError:
+                self._dev = XdmaWindows()
         self._base = ICAP_BASE
 
     def _reg_w(self, off: int, val: int):

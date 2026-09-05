@@ -7,6 +7,16 @@
 build/
 .images/
 
+# xsim бинарные журналы (бинарные логи xelab/xvlog)
+*.pb
+
+# Генерируемые verify-скриптами TB-копии с параметризованным NUM_MAC
+# (создаются при каждом запуске verify_*.py: open(tb_use,"w").write(tb_src))
+*_use.sv
+
+# Бэкап-копии
+*.bak
+
 # Vivado HD Visual — генерируемые скрипты визуализации pblock (21K-27K строк каждый).
 # Если нужны — сгенерировать через Vivado GUI: Tools → HD Visual.
 # В репозитории не отслеживаются.

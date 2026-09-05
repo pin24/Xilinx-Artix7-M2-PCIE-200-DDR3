@@ -24,9 +24,18 @@ set SCRIPT_DIR [file dirname [file normalize [info script]]]
 # ---------- 0. Открыть проект/BD (идемпотентно) ----------
 set opened_here 0
 if {[catch {current_project}] != 0} {
-    set proj_list [glob -nocomplain ${SCRIPT_DIR}/../build/*/m2_artix7_xdma_ddr3_dfx.xpr]
+    # Поиск .xpr в порядке приоритета:
+    #   1) $::env(PROJ_DIR_BUILD) — выставляется build_dfx.tcl;
+    #   2) ${SCRIPT_DIR}/../build/ (Linux-дефолт build_dfx.tcl);
+    #   3) C:/build_dfx (Windows-дефолт build_dfx.tcl, легаси-совместимость).
+    set proj_list ""
+    if {[info exists ::env(PROJ_DIR_BUILD)]} {
+        set proj_list [glob -nocomplain ${::env(PROJ_DIR_BUILD)}/*.xpr]
+    }
     if {$proj_list eq ""} {
-        # fallback: ищем в C:/build_dfx (хардкод из build_dfx.tcl)
+        set proj_list [glob -nocomplain ${SCRIPT_DIR}/../build/*/*.xpr]
+    }
+    if {$proj_list eq ""} {
         set proj_list [glob -nocomplain C:/build_dfx/*.xpr]
     }
     if {$proj_list eq ""} {

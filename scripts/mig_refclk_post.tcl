@@ -16,9 +16,28 @@
 # открыть синтезированный дизайн (если ещё не открыт)
 set opened_here 0
 if {[catch {current_design} cur] != 0 || $cur eq ""} {
-    set synth_dcp [glob -nocomplain C:/build_dfx/m2_artix7_xdma_ddr3_dfx.runs/synth_1/*.dcp]
+    # Каталог проекта: $::env(PROJ_DIR_BUILD) (выставляет build_dfx.tcl);
+    # легаси-совместимость: C:/build_dfx на Windows, build/ внутри репозитория.
+    set proj_dir ""
+    if {[info exists ::env(PROJ_DIR_BUILD)]} {
+        set proj_dir ${::env(PROJ_DIR_BUILD)}
+    } elseif {[info exists ::env(PROJ_DIR)]} {
+        set proj_dir ${::env(PROJ_DIR)}
+    } else {
+        set _here [file dirname [file normalize [info script]]]
+        set _cand [glob -nocomplain ${_here}/../build/*/*.xpr]
+        if {[llength ${_cand}] > 0} {
+            set proj_dir [file dirname [lindex ${_cand} 0]]
+        } elseif {$tcl_platform(platform) eq "windows"} {
+            set proj_dir "C:/build_dfx"
+        }
+    }
+    set synth_dcp ""
+    if {${proj_dir} ne ""} {
+        set synth_dcp [glob -nocomplain ${proj_dir}/*.runs/synth_1/*.dcp]
+    }
     if {[llength $synth_dcp] == 0} {
-        puts "ERROR: synth_1 checkpoint not found. Run synth first."
+        puts "ERROR: synth_1 checkpoint not found (PROJ_DIR='${proj_dir}'). Run synth first."
         exit 1
     }
     open_checkpoint [lindex $synth_dcp 0]

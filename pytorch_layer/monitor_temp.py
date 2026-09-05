@@ -16,12 +16,13 @@ from datetime import datetime, timezone
 
 from xdma_driver import XdmaLinux, XdmaWindows, XdmaError
 
-XADC_BASE = 0x4600_0000   # S_AXI_XADC_REGS: канонический адрес (resize_bar0.tcl:52,
-                          # test_xdma.c:36, ADDRESS_MAP.md §2). Совпадает с
-                          # driver/driver.c FIX-1 (BAR0 = 0x4000_0000..0x7FFF_FFFF).
-                          # ВНИМАНИЕ: модуль xadc_temp.sv НЕ инстанцирован в
-                          # xdma_ddr3_core_top.sv — обращения возвращают DECERR
-                          # (0xFFFFFFFF) до интеграции XADC в top-level.
+XADC_BASE = 0x4600_0000   # S_AXI_XADC_REGS: канонический адрес DFX-карты
+                          # (docs/ADDRESS_MAP.md §4, post_bd_dfx.tcl M05 @ 0x46000000).
+                          # xadc_temp.sv инстанцирован как u_xadc в
+                          # xdma_ddr3_core_top.sv (FIX-5), но raw_temp/raw_vccint/
+                          # raw_valid = 0 (BUG-031: XADC занят MIG, xadc_wiz не
+                          # создаётся) — читаются 0°C/0V. Реальная температура —
+                          # через MIG status (GPIO2 axi_gpio_0).
 REG_TEMP = 0x00
 REG_VCCINT = 0x04
 REG_STATUS = 0x08

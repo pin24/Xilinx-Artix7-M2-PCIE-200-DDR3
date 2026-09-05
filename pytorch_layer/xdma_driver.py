@@ -79,15 +79,26 @@ class XdmaLinux(XdmaDevice):
     def __init__(self, base: str = "/dev/xdma0"):
         self.ctl = base + "_control"
         self.usr = base + "_user"
-        for p in (self.ctl, self.usr):
-            if not os.path.exists(p):
-                raise XdmaError(f"XDMA-устройство не найдено: {p}")
+        # usr ОПЦИОНАЛЕН: в DFX-сборке второй PCIe BAR не сконфигурирован,
+        # весь AXI-Lite (0x4000_0000+) доступен через _control. usr нужен
+        # только для MMIO-доступа к DDR3 (0x8000_0000+), которого в DFX-сборке
+        # нет — данные в DDR3 передаются DMA-каналами h2c/c2h
+        # (см. docs/ADDRESS_MAP.md §1.2).
+        if not os.path.exists(self.ctl):
+            raise XdmaError(f"XDMA-устройство не найдено: {self.ctl}")
+        self.has_usr = os.path.exists(self.usr)
 
     def _route(self, addr: int) -> tuple[str, int]:
         """Вернуть (devpath, bar_offset) по полному AXI-адресу."""
         if AXI_LITE_BASE <= addr < DDR3_BASE:
             return self.ctl, addr - AXI_LITE_BASE
         if addr >= DDR3_BASE:
+            if not self.has_usr:
+                raise XdmaError(
+                    f"Адрес 0x{addr:08X} требует /dev/xdma0_user (BAR2/DDR3). "
+                    f"В DFX-сборке второй BAR не сконфигурирован: передавайте "
+                    f"данные в DDR3 через DMA-каналы (h2c/c2h) — "
+                    f"см. docs/ADDRESS_MAP.md §1.2")
             return self.usr, addr - DDR3_BASE
         raise XdmaError(f"Некорректный AXI-адрес 0x{addr:08X} "
                         f"(должен быть >= 0x{AXI_LITE_BASE:08X})")
