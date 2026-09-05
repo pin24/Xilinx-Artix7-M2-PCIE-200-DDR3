@@ -38,6 +38,7 @@ module tb_tdot_axi4;
     logic        M_AXI_WLAST, M_AXI_WVALID, M_AXI_WREADY;
     logic [1:0]  M_AXI_BRESP, M_AXI_RRESP;
     logic        M_AXI_BVALID, M_AXI_BREADY, M_AXI_RVALID, M_AXI_RREADY, M_AXI_RLAST;
+    logic        sched_irq;   // IRQ планировщика (в легаси-режиме неактивен)
     logic [63:0] M_AXI_RDATA;
 
     // ---------------- подключаем DUT ----------------
@@ -72,7 +73,8 @@ module tb_tdot_axi4;
         .M_AXI_ARPROT(M_AXI_ARPROT), .M_AXI_ARQOS(M_AXI_ARQOS),
         .M_AXI_ARVALID(M_AXI_ARVALID), .M_AXI_ARREADY(M_AXI_ARREADY),
         .M_AXI_RID(M_AXI_ARID), .M_AXI_RDATA(M_AXI_RDATA), .M_AXI_RRESP(M_AXI_RRESP),
-        .M_AXI_RLAST(M_AXI_RLAST), .M_AXI_RVALID(M_AXI_RVALID), .M_AXI_RREADY(M_AXI_RREADY)
+        .M_AXI_RLAST(M_AXI_RLAST), .M_AXI_RVALID(M_AXI_RVALID), .M_AXI_RREADY(M_AXI_RREADY),
+        .sched_irq(sched_irq)
     );
 
     // ---------------- модель памяти (64-бит, 1 Мб = 131072 слов) ----------------

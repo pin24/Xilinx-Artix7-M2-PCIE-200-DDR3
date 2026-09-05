@@ -17,7 +17,8 @@
 // Регистры (32-бит, байтовый адрес, из S_AXI):
 //   [0x00] CTRL    бит0 GO (самосброс через такт)
 //   [0x04] STATUS  бит0 BUSY, бит1 DONE
-//   [0x08] N_IN    число пар (1..NUM_MAC)
+//   [0x08] N_IN    число пар (1..MAX_N_TOTAL=16*NUM_MAC; >NUM_MAC = long-dot,
+//                  авто-разбиение на проходы с аккумулятором)
 //   [0x0C] RES0    результат [31:0]            (DONE)
 //   [0x10] RES1    {16'h0, результат[47:32]}   (DONE)
 //   [0x14] DATA_ADDR_LO    data_start[31:0]
@@ -29,13 +30,35 @@
 //   [0x2C] CORE_RES0 результат [31:0], [0x30] CORE_RES1 {16'h0, результат[47:32]}
 //                  - read-only зеркала результата ядра
 //
-// Протокол работы (GO=1):
+// Планировщик (ring-buffer команд в DDR3, irq):
+//   [0x40] SCHED_CTRL   бит0 sched_en, бит1 irq_en, бит2 flush (действие),
+//                       бит3 irq_ack (действие: сброс irq_pending)
+//   [0x44] SCHED_WPTR   хостовый указатель записи (8 бит, кольцо mod 256)
+//   [0x48] SCHED_RPTR   RO текущий указатель чтения (8 бит)
+//   [0x4C/0x50] DESC_BASE_LO/HI  база таблицы дескрипторов (полный AXI-адрес)
+//   [0x54/0x58] COMP_BASE_LO/HI  база области завершений
+//   [0x5C] SCHED_STATUS RO: бит0 sched_busy, бит1 irq_pending
+//   [0x60] DONE_CNT     RO счётчик завершённых задач (16 бит, free-running)
+// Кольцо: 256 дескрипторов (таблица 8 КБ) / 256 завершений (4 КБ), указатели
+// 8-бит с естественным переполнением (mod 256).
+//
+// Дескриптор 32 Б (4×64b, LE): W0 data_addr[47:0], W1 weights_addr[47:0],
+//   W2 result_addr[47:0], W3 {32'h0, n_total[15:0], tag[15:0]}.
+// Адреса — полные AXI (обрезаются до C_M_AXI_ADDR_WIDTH=32).
+// Завершение 16 Б (2×64b): W0 {tag[15:0], result[47:0]},
+//   W1 {48'h0, passes[7:0], status[7:0]} (status: 0=OK).
+//
+// Протокол одиночной задачи (GO=1, легаси):
 //   (1) burst-чтение N_IN слов data    (по BURST_RD_LEN слов/транзакция)
 //   (2) burst-чтение N_IN слов weights
 //   (3) загрузка в compute_dot_par_raw (неиспользуемые MAC-слоты = 0)
 //   (4) вычисление (valid_in -> valid_out)
 //   (5) запись результата (1 слово) по result_addr
 //   (6) DONE=1, BUSY=0
+// Long-dot: N_IN > NUM_MAC — цикл проходов по NUM_MAC пар: чтение чанка,
+//   вычисление частичной суммы, накопление tfadd48 (pass 0 — без сложения),
+//   затем запись итога. Каждая задача планировщика — тот же цикл с
+//   n_total из дескриптора + запись completion (16 Б) в COMP_BASE + rptr*16.
 //
 // Часы: S_AXI_ACLK и M_AXI_ACLK должны быть ОДНИМ сигналом (в интеграции оба
 // = axi_aclk). CDC между AXI-Lite-регистрами и мастером не предусмотрен.
@@ -112,7 +135,10 @@ module tdot_axi4 #(
     input  logic [1:0]                            M_AXI_RRESP,
     input  logic                                  M_AXI_RLAST,
     input  logic                                  M_AXI_RVALID,
-    output logic                                  M_AXI_RREADY
+    output logic                                  M_AXI_RREADY,
+
+    // ---- IRQ планировщика (уровень 1, держится до irq_ack; домен S/M_AXI) ----
+    output logic                                  sched_irq
 );
 
     localparam int AW    = C_M_AXI_ADDR_WIDTH;
@@ -124,6 +150,10 @@ module tdot_axi4 #(
     localparam int RD_LEN_W = $clog2(BURST_RD_LEN);
     // NOTE: RD_LEN_W объявлен, но не используется в текущей логике. Оставлен
     // для будущих расширений (например, динамический BURST_RD_LEN).
+
+    // Long-dot: максимум проходов по NUM_MAC пар (сатурация n_total).
+    localparam int MAX_PASSES  = 16;
+    localparam int MAX_N_TOTAL = MAX_PASSES * NUM_MAC;
 
     logic clk, rst_n;
     assign clk   = M_AXI_ACLK;
@@ -140,12 +170,40 @@ module tdot_axi4 #(
         .result_out(core_result), .valid_out(core_valid_out)
     );
 
+    // ==================== аккумулятор long-dot ====================
+    // acc = (pass 0) частичная сумма дерева; (pass k>0) tfadd48(acc, partial).
+    // Входы держатся стабильными до valid_out (acc_q не меняется, core_result
+    // защёлкнут в result_out_reg ядра до следующей задачи).
+    logic acc_valid_q;                 // уже есть накопленный результат (pass 0 завершён)
+    logic [47:0] acc_q;
+    logic        acc_start_q;          // импульс запуска tfadd48
+    logic        add_valid_w;
+    logic [47:0] add_res_w;
+
+    tfadd48 u_acc (
+        .clk(clk), .rst_n(rst_n),
+        .valid_in(acc_start_q), .a(acc_q), .b(core_result),
+        .valid_out(add_valid_w), .result(add_res_w)
+    );
+
     // ==================== регистры (AXI-Lite) ====================
     logic go_reg;
     logic [31:0] n_in_reg;
     logic [63:0] data_start_reg, weights_start_reg, result_addr_reg;
     logic [31:0] res0_reg, res1_reg;
     logic busy_q, done_q;
+
+    // ---- регистры планировщика ----
+    logic        sched_en_q;        // SCHED_CTRL.bit0
+    logic        sched_irq_en_q;    // SCHED_CTRL.bit1
+    logic        sched_flush_q;     // SCHED_CTRL.bit2 (действие, самоочистка)
+    logic [7:0]  sched_wptr_q;      // хостовый указатель записи (кольцо mod 256)
+    logic [7:0]  sched_rptr_q;      // указатель чтения (движет движок, mod 256)
+    logic [63:0] desc_base_q;       // база таблицы дескрипторов (DDR3)
+    logic [63:0] comp_base_q;       // база области завершений (DDR3)
+    logic        irq_pending_q;     // поднято при опустошении очереди, сброс irq_ack
+    logic        sched_busy_q;      // движок исполняет задачу
+    logic [15:0] done_cnt_q;        // счётчик завершённых задач
 
     // AXI-Lite write channel: приём AW и W НЕЗАВИСИМЫЙ, с защёлками глубиной 1.
     // Запись применяется (commit), когда защёлкнуты ОБА (адрес и данные),
@@ -174,6 +232,10 @@ module tdot_axi4 #(
             awaddr_q <= 0; wdata_q <= 0;
             go_reg <= 0; n_in_reg <= NUM_MAC;
             data_start_reg <= 0; weights_start_reg <= 0; result_addr_reg <= 0;
+            sched_en_q <= 0; sched_irq_en_q <= 0; sched_flush_q <= 0;
+            sched_wptr_q <= 0;
+            desc_base_q <= 0; comp_base_q <= 0;
+            // sched_rptr_q/irq_pending_q/done_cnt_q — в блоке контроллера
         end else begin
             // приём AW/W в защёлки по handshake каждого канала независимо
             if (aw_hs) awaddr_q <= S_AXI_AWADDR;
@@ -188,21 +250,34 @@ module tdot_axi4 #(
             wready  <= !w_latched_n  || wr_commit_n;
             // применение записи из защёлок
             if (wr_commit) begin
-                case (awaddr_q[5:2])
-                    4'd0: begin
+                case (awaddr_q[7:2])
+                    6'd0: begin
                         go_reg <= wdata_q[0];
                     end
-                    4'd2: n_in_reg <= wdata_q;
-                    4'd5: data_start_reg[31:0]    <= wdata_q;
-                    4'd6: data_start_reg[63:32]   <= wdata_q;
-                    4'd7: weights_start_reg[31:0] <= wdata_q;
-                    4'd8: weights_start_reg[63:32]<= wdata_q;
-                    4'd9: result_addr_reg[31:0]   <= wdata_q;
-                    4'd10: result_addr_reg[63:32] <= wdata_q;
+                    6'd2: n_in_reg <= wdata_q;
+                    6'd5: data_start_reg[31:0]    <= wdata_q;
+                    6'd6: data_start_reg[63:32]   <= wdata_q;
+                    6'd7: weights_start_reg[31:0] <= wdata_q;
+                    6'd8: weights_start_reg[63:32]<= wdata_q;
+                    6'd9: result_addr_reg[31:0]   <= wdata_q;
+                    6'd10: result_addr_reg[63:32] <= wdata_q;
+                    // ---- планировщик ----
+                    6'd16: begin
+                        sched_en_q     <= wdata_q[0];
+                        sched_irq_en_q <= wdata_q[1];
+                        sched_flush_q  <= wdata_q[2];        // самоочистка в else-ветке
+                        // irq_ack (wdata_q[3]) — обрабатывается контроллером (sched_ack_pulse)
+                    end
+                    6'd17: sched_wptr_q <= wdata_q[7:0];
+                    6'd19: desc_base_q[31:0]  <= wdata_q;
+                    6'd20: desc_base_q[63:32] <= wdata_q;
+                    6'd21: comp_base_q[31:0]  <= wdata_q;
+                    6'd22: comp_base_q[63:32] <= wdata_q;
                     default: ;
                 endcase
-            end else if (go_reg) begin
-                go_reg <= 0;   // самосброс GO
+            end else begin
+                if (go_reg) go_reg <= 0;         // самосброс GO
+                if (sched_flush_q) sched_flush_q <= 0; // самоочистка flush
             end
         end
     end
@@ -236,20 +311,31 @@ module tdot_axi4 #(
 
     logic [C_S_AXI_DATA_WIDTH-1:0] rdata;
     always_comb begin
-        case (araddr_q[5:2])
-            4'd0: rdata = {31'b0, go_reg};
-            4'd1: rdata = {30'b0, done_q, busy_q};
-            4'd2: rdata = n_in_reg;
-            4'd3: rdata = res0_reg;                      // результат [31:0]
-            4'd4: rdata = res1_reg;                      // {16'h0, результат [47:32]}
-            4'd5: rdata = data_start_reg[31:0];
-            4'd6: rdata = data_start_reg[63:32];
-            4'd7: rdata = weights_start_reg[31:0];
-            4'd8: rdata = weights_start_reg[63:32];
-            4'd9: rdata = result_addr_reg[31:0];
-            4'd10: rdata = result_addr_reg[63:32];
-            4'd11: rdata = core_result[31:0];            // CORE_RES0: результат [31:0]
-            4'd12: rdata = {16'h0, core_result[47:32]};  // CORE_RES1: результат [47:32]
+        case (araddr_q[7:2])
+            6'd0: rdata = {31'b0, go_reg};
+            6'd1: rdata = {30'b0, done_q, busy_q};
+            6'd2: rdata = n_in_reg;
+            6'd3: rdata = res0_reg;                      // результат [31:0]
+            6'd4: rdata = res1_reg;                      // {16'h0, результат [47:32]}
+            6'd5: rdata = data_start_reg[31:0];
+            6'd6: rdata = data_start_reg[63:32];
+            6'd7: rdata = weights_start_reg[31:0];
+            6'd8: rdata = weights_start_reg[63:32];
+            6'd9: rdata = result_addr_reg[31:0];
+            6'd10: rdata = result_addr_reg[63:32];
+            6'd11: rdata = core_result[31:0];            // CORE_RES0: результат [31:0]
+            6'd12: rdata = {16'h0, core_result[47:32]};  // CORE_RES1: результат [47:32]
+            // ---- планировщик ----
+            6'd16: rdata = {28'b0, irq_pending_q, sched_flush_q,
+                            sched_irq_en_q, sched_en_q};
+            6'd17: rdata = {24'h0, sched_wptr_q};
+            6'd18: rdata = {24'h0, sched_rptr_q};
+            6'd19: rdata = desc_base_q[31:0];
+            6'd20: rdata = desc_base_q[63:32];
+            6'd21: rdata = comp_base_q[31:0];
+            6'd22: rdata = comp_base_q[63:32];
+            6'd23: rdata = {30'b0, irq_pending_q, sched_busy_q};
+            6'd24: rdata = {16'h0, done_cnt_q};
             default: rdata = 32'h0;
         endcase
     end
@@ -447,33 +533,76 @@ module tdot_axi4 #(
     assign M_AXI_BREADY  = b_ready_r;
 
     // ==================== контроллер ====================
-    localparam int CS_IDLE = 0;
-    localparam int CS_RD_DATA = 1;
-    localparam int CS_RD_WEIGHTS = 2;
-    localparam int CS_LOAD = 3;
-    localparam int CS_RUN = 4;
-    localparam int CS_WAIT = 5;
-    localparam int CS_WR = 6;
-    localparam int CS_DONE = 7;
+    // Вся механика AXI (чтения/записи) и полный жизненный цикл задачи — здесь.
+    // Multi-pass (long-dot): задача = цикл проходов по chunk_n = min(n_left,
+    // NUM_MAC) пар: чтение чанка data/weights -> загрузка -> частичная сумма ->
+    // аккумуляция (pass 0 — без сложения) -> ... -> запись результата.
+    // Задачи планировщика добавляют: fetch дескриптора (CS_FETCH_DESC),
+    // entry CS_SCHED_KICK и запись completion 16 Б (CS_CMP1..3) + rptr/done_cnt.
+    localparam int CS_IDLE        = 0;
+    localparam int CS_RD_DATA     = 1;
+    localparam int CS_RD_WEIGHTS  = 2;
+    localparam int CS_LOAD        = 3;
+    localparam int CS_RUN         = 4;
+    localparam int CS_WAIT        = 5;
+    localparam int CS_ACCUM_WAIT  = 6;
+    localparam int CS_WR          = 7;
+    localparam int CS_DONE        = 8;
+    localparam int CS_FETCH_DESC  = 9;
+    localparam int CS_SCHED_KICK  = 10;
+    localparam int CS_CMP1        = 11;
+    localparam int CS_CMP2        = 12;
+    localparam int CS_CMP3        = 13;
 
-    logic [2:0] cstate;
+    logic [3:0] cstate;
     logic go_q;
     wire go_pulse  = go_reg && !go_q;
-    // GO принимается только когда ядро свободно (busy_q=0): повторный GO во
-    // время выполнения перезапускал бы FSM и портил содержимое FIFO.
-    wire go_accept = go_pulse && !busy_q;
-    assign fifo_clr = go_accept;   // на новом запуске сбрасываем указатели FIFO
+    // Внешний GO принимается только когда ядро свободно и планировщик выключен
+    // (иначе внешний GO мог бы вклиниться в очередь задач).
+    wire go_accept = go_pulse && !busy_q && !sched_en_q;
+    wire job_start = go_accept;       // легаси-старт
+    assign fifo_clr = job_start || (cstate == CS_SCHED_KICK);
+
+    // ---- планировщик: только решение о выборке (вся механика в контроллере) ----
+    wire sched_pull = sched_en_q && !busy_q && !sched_flush_q &&
+                      (sched_rptr_q != sched_wptr_q);
+    wire sched_ack_pulse = wr_commit && (awaddr_q[7:2] == 6'd16) && wdata_q[3];
+
+    logic use_sched_q;                // текущая задача пришла от планировщика
+    logic [63:0] cur_data_q, cur_weights_q, cur_result_q;  // база задачи
+    logic [31:0] n_left_q;            // сколько пар осталось (включая текущий проход)
+    logic [31:0] elems_done_q;        // пар обработано с начала задачи
+    logic [7:0]  passes_q;            // завершено проходов в текущей задаче
+
+    // дескриптор (снимается с fifo во время fetch)
+    logic        fetch_active;
+    logic [1:0]  fetch_cnt;
+    logic [63:0] desc_w [0:3];
+    logic [47:0] job_data_addr_q, job_weights_addr_q, job_result_addr_q;
+    logic [15:0] job_n_total_q, job_tag_q;
+
+    // нормализация n_total: 0 -> NUM_MAC (легаси-семантика), сатурация до MAX
+    wire [31:0] n_total_sched  = (job_n_total_q == 16'd0)      ? NUM_MAC :
+                                 (job_n_total_q > MAX_N_TOTAL) ? MAX_N_TOTAL :
+                                                                 {16'h0, job_n_total_q};
+    wire [31:0] n_total_legacy = (n_in_reg == 32'd0)           ? NUM_MAC :
+                                 (n_in_reg > MAX_N_TOTAL)      ? MAX_N_TOTAL :
+                                                                 n_in_reg;
+
+    // размер текущего прохода
+    logic [31:0] chunk_n;
+    always_comb begin
+        chunk_n = (n_left_q > NUM_MAC) ? NUM_MAC : n_left_q;
+    end
+    // сигнатура CS_LOAD (zero-fill слотов >= chunk_n) — прежняя семантика
+    logic [31:0] n_in_eff;
+    assign n_in_eff = chunk_n;
+
+    wire last_pass = (n_left_q <= NUM_MAC);   // текущий проход — последний
+
     logic [$clog2(2*NUM_MAC):0] load_idx;
     logic [$clog2(2*NUM_MAC):0] rd_idx;    // стадия 1 конвейера: слот, читаемый из BRAM сейчас
     logic load_active;
-    logic [31:0] n_in_eff;
-
-    always_comb begin
-        if (n_in_reg == 0 || n_in_reg > NUM_MAC)
-            n_in_eff = NUM_MAC;
-        else
-            n_in_eff = n_in_reg;
-    end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -487,23 +616,90 @@ module tdot_axi4 #(
             core_data <= 0; core_weights <= 0;
             res0_reg <= 0; res1_reg <= 0;
             busy_q <= 0; done_q <= 0;
+            acc_valid_q <= 0; acc_q <= 0; acc_start_q <= 0;
+            use_sched_q <= 0;
+            cur_data_q <= 0; cur_weights_q <= 0; cur_result_q <= 0;
+            n_left_q <= 0; elems_done_q <= 0; passes_q <= 0;
+            sched_rptr_q <= 0; done_cnt_q <= 0; irq_pending_q <= 0;
+            fetch_active <= 0; fetch_cnt <= 0;
+            for (int i = 0; i < 4; i++) desc_w[i] <= 64'h0;
+            job_data_addr_q <= 0; job_weights_addr_q <= 0;
+            job_result_addr_q <= 0; job_n_total_q <= 0; job_tag_q <= 0;
         end else begin
             go_q <= go_reg;
             core_valid_in <= 0;
-            rd_start <= 0; wr_start <= 0;
-            if (go_accept) begin
+            rd_start <= 0; wr_start <= 0; acc_start_q <= 0;
+            // irq_ack действует в любом состоянии (SCHED_CTRL.bit3)
+            if (sched_ack_pulse) irq_pending_q <= 1'b0;
+            if (job_start) begin
                 busy_q <= 1; done_q <= 0;
+                acc_valid_q <= 0;
+                use_sched_q <= 1'b0;
+                cur_data_q    <= data_start_reg;
+                cur_weights_q <= weights_start_reg;
+                cur_result_q  <= result_addr_reg;
+                n_left_q      <= n_total_legacy;
+                elems_done_q  <= 0;
+                passes_q      <= 0;
                 cstate <= CS_RD_DATA;
-                rd_addr <= data_start_reg[AW-1:0];
-                rd_total <= n_in_eff;
+                rd_addr  <= data_start_reg[AW-1:0];
+                rd_total <= (n_total_legacy > NUM_MAC) ? NUM_MAC : n_total_legacy;
                 rd_start <= 1;
             end
             case (cstate)
+                CS_IDLE: begin
+                    if (sched_flush_q) begin
+                        sched_rptr_q <= 8'h0;            // flush очереди
+                    end else if (sched_pull) begin
+                        // fetch дескриптора: 4 слова (32 Б) с DESC_BASE+rptr*32
+                        fetch_active <= 1;
+                        fetch_cnt <= 0;
+                        rd_addr  <= desc_base_q[AW-1:0] + {19'h0, sched_rptr_q, 5'b0};
+                        rd_total <= 32'd4;
+                        rd_start <= 1;
+                        cstate <= CS_FETCH_DESC;
+                    end
+                end
+                CS_FETCH_DESC: begin
+                    // слова дескриптора приходят в FIFO (мусор для загрузки,
+                    // будет очищен fifo_clr в CS_SCHED_KICK) — снимаем копию
+                    if (fetch_active && fifo_push) begin
+                        desc_w[fetch_cnt] <= M_AXI_RDATA;
+                        fetch_cnt <= fetch_cnt + 1;
+                    end
+                    if (rd_done) begin
+                        // последнее слово захвачено в предыдущем такте
+                        fetch_active <= 0;
+                        job_data_addr_q    <= desc_w[0][47:0];
+                        job_weights_addr_q <= desc_w[1][47:0];
+                        job_result_addr_q  <= desc_w[2][47:0];
+                        job_n_total_q      <= desc_w[3][31:16];
+                        job_tag_q          <= desc_w[3][15:0];
+                        cstate <= CS_SCHED_KICK;
+                    end
+                end
+                CS_SCHED_KICK: begin
+                    // entry действия задачи планировщика
+                    busy_q <= 1; done_q <= 0;
+                    acc_valid_q <= 0;
+                    use_sched_q <= 1'b1;
+                    cur_data_q    <= {16'h0, job_data_addr_q};
+                    cur_weights_q <= {16'h0, job_weights_addr_q};
+                    cur_result_q  <= {16'h0, job_result_addr_q};
+                    n_left_q      <= n_total_sched;
+                    elems_done_q  <= 0;
+                    passes_q      <= 0;
+                    cstate <= CS_RD_DATA;
+                    rd_addr  <= job_data_addr_q[AW-1:0];
+                    rd_total <= (n_total_sched > NUM_MAC) ? NUM_MAC
+                                                          : n_total_sched;
+                    rd_start <= 1;
+                end
                 CS_RD_DATA: begin
                     if (rd_done) begin
                         cstate <= CS_RD_WEIGHTS;
-                        rd_addr <= weights_start_reg[AW-1:0];
-                        rd_total <= n_in_eff;
+                        rd_addr  <= cur_weights_q[AW-1:0] + elems_done_q * SW;
+                        rd_total <= chunk_n;
                         rd_start <= 1;
                     end
                 end
@@ -546,12 +742,58 @@ module tdot_axi4 #(
                 end
                 CS_WAIT: begin
                     if (core_valid_out) begin
-                        res0_reg <= core_result[31:0];              // результат [31:0]
-                        res1_reg <= {16'h0, core_result[47:32]};    // результат [47:32]
-                        cstate <= CS_WR;
-                        wr_addr <= result_addr_reg[AW-1:0];
-                        wr_data <= {16'h0, core_result};
-                        wr_start <= 1;
+                        if (!acc_valid_q) begin
+                            // pass 0: без сложения
+                            acc_valid_q <= 1;
+                            acc_q <= core_result;
+                            passes_q <= passes_q + 8'd1;
+                            if (last_pass) begin
+                                // сразу пишем результат (как в легаси-версии)
+                                res0_reg <= core_result[31:0];
+                                res1_reg <= {16'h0, core_result[47:32]};
+                                cstate <= CS_WR;
+                                wr_addr <= cur_result_q[AW-1:0];
+                                wr_data <= {16'h0, core_result};
+                                wr_start <= 1;
+                            end else begin
+                                // к следующему проходу
+                                n_left_q     <= n_left_q - chunk_n;
+                                elems_done_q <= elems_done_q + chunk_n;
+                                cstate <= CS_RD_DATA;
+                                rd_addr  <= cur_data_q[AW-1:0]
+                                            + (elems_done_q + chunk_n) * SW;
+                                rd_total <= (n_left_q - chunk_n > NUM_MAC) ?
+                                            NUM_MAC : (n_left_q - chunk_n);
+                                rd_start <= 1;
+                            end
+                        end else begin
+                            // pass k>0: сложение в аккумуляторе
+                            acc_start_q <= 1;
+                            cstate <= CS_ACCUM_WAIT;
+                        end
+                    end
+                end
+                CS_ACCUM_WAIT: begin
+                    if (add_valid_w) begin
+                        acc_q <= add_res_w;
+                        passes_q <= passes_q + 8'd1;
+                        if (last_pass) begin
+                            res0_reg <= add_res_w[31:0];
+                            res1_reg <= {16'h0, add_res_w[47:32]};
+                            cstate <= CS_WR;
+                            wr_addr <= cur_result_q[AW-1:0];
+                            wr_data <= {16'h0, add_res_w};
+                            wr_start <= 1;
+                        end else begin
+                            n_left_q     <= n_left_q - chunk_n;
+                            elems_done_q <= elems_done_q + chunk_n;
+                            cstate <= CS_RD_DATA;
+                            rd_addr  <= cur_data_q[AW-1:0]
+                                        + (elems_done_q + chunk_n) * SW;
+                            rd_total <= (n_left_q - chunk_n > NUM_MAC) ?
+                                        NUM_MAC : (n_left_q - chunk_n);
+                            rd_start <= 1;
+                        end
                     end
                 end
                 CS_WR: begin
@@ -561,11 +803,44 @@ module tdot_axi4 #(
                 end
                 CS_DONE: begin
                     busy_q <= 0; done_q <= 1;
-                    cstate <= CS_IDLE;
+                    cstate <= use_sched_q ? CS_CMP1 : CS_IDLE;
                 end
+                // ---- completion записи задачи планировщика ----
+                CS_CMP1: begin
+                    // W0: {tag[15:0], result[47:0]}
+                    wr_addr  <= comp_base_q[AW-1:0] + {20'h0, sched_rptr_q, 4'b0};
+                    wr_data  <= {job_tag_q, res1_reg[15:0], res0_reg};
+                    wr_start <= 1;
+                    cstate <= CS_CMP2;
+                end
+                CS_CMP2: begin
+                    if (wr_done) begin
+                        // W1: {48'h0, passes[7:0], status[7:0]}
+                        wr_addr  <= comp_base_q[AW-1:0]
+                                    + {20'h0, sched_rptr_q, 4'b0} + SW;
+                        wr_data  <= {48'h0, passes_q, 8'h00};
+                        wr_start <= 1;
+                        cstate <= CS_CMP3;
+                    end
+                end
+                CS_CMP3: begin
+                    if (wr_done) begin
+                        sched_rptr_q <= sched_rptr_q + 8'd1;
+                        done_cnt_q   <= done_cnt_q + 16'd1;
+                        // опустошение очереди -> IRQ (уровень, до irq_ack)
+                        if (sched_irq_en_q &&
+                            (sched_rptr_q + 8'd1 == sched_wptr_q))
+                            irq_pending_q <= 1'b1;
+                        cstate <= CS_IDLE;
+                    end
+                end
+                default: cstate <= CS_IDLE;
             endcase
         end
     end
+
+    assign sched_irq = sched_irq_en_q && irq_pending_q;
+
 
     // fifo_pop в фазе загрузки: pop ТОЛЬКО в такт выдачи BRAM-чтения
     // (стадия 1, слот rd_idx) и только когда слово реально есть в FIFO.

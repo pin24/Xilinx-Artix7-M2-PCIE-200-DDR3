@@ -23,6 +23,15 @@
   0x1C/0x20 WEIGHTS_ADDR_LO/HI
   0x24/0x28 RESULT_ADDR_LO/HI
   0x2C/0x30 CORE_RES0/CORE_RES1
+
+  Планировщик (ring-buffer команд в DDR3 + IRQ, см. tdot_axi4.sv):
+  0x40 SCHED_CTRL  бит0 sched_en, бит1 irq_en, бит2 flush, бит3 irq_ack
+  0x44 SCHED_WPTR  хостовый указатель записи (8 бит, кольцо mod 256)
+  0x48 SCHED_RPTR  RO указатель чтения (8 бит)
+  0x4C/0x50 DESC_BASE_LO/HI   база таблицы дескрипторов (DDR3, полный AXI)
+  0x54/0x58 COMP_BASE_LO/HI   база области завершений (DDR3, полный AXI)
+  0x5C SCHED_STATUS  RO бит0 sched_busy, бит1 irq_pending
+  0x60 DONE_CNT      RO счётчик завершённых задач (16 бит)
 """
 from __future__ import annotations
 import os, subprocess, struct, time
@@ -379,9 +388,214 @@ class TdotCore:
 
 
 # ---------------------------------------------------------------------------
+# Аппаратный планировщик: ring-buffer команд в DDR3 + doorbell + IRQ
+# (RTL: tdot_axi4.sv CS_FETCH_DESC/CS_SCHED_KICK/CS_CMP1..3; regs 0x40..0x60)
+# ---------------------------------------------------------------------------
+SCHED_CTRL     = 0x40   # bit0 sched_en, bit1 irq_en, bit2 flush, bit3 irq_ack
+SCHED_WPTR     = 0x44
+SCHED_RPTR     = 0x48   # RO
+SCHED_DESC_LO  = 0x4C
+SCHED_DESC_HI  = 0x50
+SCHED_COMP_LO  = 0x54
+SCHED_COMP_HI  = 0x58
+SCHED_STATUS   = 0x5C   # RO: bit0 sched_busy, bit1 irq_pending
+SCHED_DONE_CNT = 0x60   # RO: 16-bit счётчик завершённых задач
+
+# Дескриптор 32 Б (4×64b LE): W0 data_addr, W1 weights_addr, W2 result_addr
+# (полные AXI-адреса, помещаются в 32 бита), W3 {16'h0, n_total, tag}.
+# Завершение 16 Б (2×64b LE): W0 {tag[15:0], result[47:0]},
+# W1 {48'h0, passes[7:0], status[7:0]}.
+DESC_STRIDE = 32
+COMP_STRIDE = 16
+
+# Слои DDR3 под планировщик (в стороне от данных ядра 0x0..0x4000
+# и selftest-паттерна 0x0100_0000; docs/ADDRESS_MAP.md §6)
+SCHED_DESC_OFF = 0x0010_0000   # таблица дескрипторов (256 × 32 Б = 8 КБ)
+SCHED_COMP_OFF = 0x0011_0000   # область завершений   (256 × 16 Б = 4 КБ)
+SCHED_RING_DEPTH = 256
+
+
+class TdotScheduler:
+    """Батчевый запуск dot-задач через аппаратный планировщик.
+
+    Поток: submit() наливает дескрипторы DMA h2c и пишет WPTR (doorbell) ->
+    железо само выбирает задачи, long-dot (n_total > NUM_MAC) раскладывает
+    на проходы, пишет результаты и completion -> wait() ждёт IRQ
+    (/dev/xdma0_events_0) или поллит RPTR -> collect() читает завершения c2h.
+    """
+
+    def __init__(self, dev: XdmaDevice, num_mac: int = 32,
+                 ring_depth: int = SCHED_RING_DEPTH,
+                 desc_off: int = SCHED_DESC_OFF,
+                 comp_off: int = SCHED_COMP_OFF):
+        if num_mac not in (8, 16, 32):
+            raise ValueError(f"num_mac={num_mac}: ожидается 8/16/32")
+        self.dev = dev
+        self.num_mac = num_mac
+        self.depth = ring_depth
+        self.desc_off = desc_off
+        self.comp_off = comp_off
+        self._wptr = 0            # локальная копия WPTR (хостовая)
+        self._rptr_done = 0       # сколько завершений уже забрано collect()
+        # остановить движок, сбросить очередь, прописать базы
+        self._reg_w(SCHED_CTRL, 1 << 2)                       # flush
+        self._reg_w(SCHED_DESC_LO, (DDR3_BASE + desc_off) & 0xFFFFFFFF)
+        self._reg_w(SCHED_DESC_HI, ((DDR3_BASE + desc_off) >> 32) & 0xFFFFFFFF)
+        self._reg_w(SCHED_COMP_LO, (DDR3_BASE + comp_off) & 0xFFFFFFFF)
+        self._reg_w(SCHED_COMP_HI, ((DDR3_BASE + comp_off) >> 32) & 0xFFFFFFFF)
+        self._reg_w(SCHED_CTRL, 0)                            # flush самоочистился
+
+    # ---- регистры ----
+    def _reg_w(self, off: int, val: int) -> None:
+        self.dev.write(REG_BASE + off, struct.pack("<I", val & 0xFFFFFFFF))
+
+    def _reg_r(self, off: int) -> int:
+        return struct.unpack("<I", self.dev.read(REG_BASE + off, 4))[0]
+
+    # ---- запуск ----
+    def submit(self, jobs) -> int:
+        """jobs: iterable (data_bits, weights_bits, result_off, tag).
+
+        data_bits/weights_bits — списки 48-битных TFloat48; result_off —
+        СМЕЩЕНИЕ в DDR3, куда ядро положит результат. Данные заливаются
+        DMA h2c в слоты 0x0020_0000 + idx*0x4000 (data) и 0x0060_0000 +
+        idx*0x4000 (weights) — до 2048 элементов на вектор. Слоты
+        переиспользуются между submit() — не подавайте новый батч до wait().
+        Возвращает число поставленных задач.
+        """
+        jobs = list(jobs)
+        if not jobs:
+            return 0
+        if len(jobs) > self.depth:
+            raise ValueError(f"{len(jobs)} задач > глубины кольца {self.depth}")
+        rptr = self._reg_r(SCHED_RPTR) & 0xFF
+        pending = (self._wptr - rptr) & 0xFF
+        if pending + len(jobs) > self.depth:
+            raise ValueError(f"кольцо переполнено: pending={pending}, "
+                             f"новых={len(jobs)}, глубина={self.depth}; "
+                             f"вызовите collect()/wait()")
+        blob = bytearray()
+        for idx, (data_bits, weights_bits, result_off, tag) in enumerate(jobs):
+            n = len(data_bits)
+            if n == 0 or len(weights_bits) != n:
+                raise ValueError(f"job {idx}: пусто/размеры не совпадают")
+            if n > 16 * self.num_mac:
+                raise ValueError(f"job {idx}: n={n} > MAX_N_TOTAL="
+                                 f"{16 * self.num_mac} (сатурация в RTL)")
+            data_off = 0x0020_0000 + idx * 0x4000
+            weights_off = 0x0060_0000 + idx * 0x4000
+            self.dev.write_dma(data_off, _pack_tf48(data_bits))
+            self.dev.write_dma(weights_off, _pack_tf48(weights_bits))
+            blob += struct.pack("<QQQQ",
+                                (DDR3_BASE + data_off) & 0xFFFFFFFFFFFF,
+                                (DDR3_BASE + weights_off) & 0xFFFFFFFFFFFF,
+                                (DDR3_BASE + result_off) & 0xFFFFFFFFFFFF,
+                                ((n & 0xFFFF) << 16) | (tag & 0xFFFF))
+        # запись дескрипторов с учётом wrap кольца (максимум двумя кусками)
+        start = self._wptr % self.depth
+        first = min(len(jobs), self.depth - start)
+        self.dev.write_dma(self.desc_off + start * DESC_STRIDE,
+                           bytes(blob[:first * DESC_STRIDE]))
+        if first < len(jobs):
+            self.dev.write_dma(self.desc_off,
+                               bytes(blob[first * DESC_STRIDE:]))
+        self._wptr = (self._wptr + len(jobs)) & 0xFF
+        self._reg_w(SCHED_WPTR, self._wptr)          # doorbell
+        return len(jobs)
+
+    # ---- ожидание ----
+    def wait(self, count: int | None = None, timeout_ms: float = 5000.0,
+             use_events: bool = True) -> int:
+        """Ждать завершения count задач (по умолчанию — всех поставленных).
+
+        Приоритет: блокирующее чтение /dev/xdma0_events_0 (IRQ при
+        опустошении очереди), иначе поллинг RPTR каждые 200 мкс.
+        Возвращает число незабранных завершений.
+        """
+        if count is None:
+            count = (self._wptr - (self._reg_r(SCHED_RPTR) & 0xFF)) & 0xFF
+        target = (self._rptr_done + count) & 0xFF
+        t0 = time.monotonic()
+        events = "/dev/xdma0_events_0"
+        while True:
+            rptr = self._reg_r(SCHED_RPTR) & 0xFF
+            if rptr == target:
+                return (self._wptr - rptr) & 0xFFFF
+            if (time.monotonic() - t0) * 1000.0 > timeout_ms:
+                raise XdmaError(
+                    f"таймаут ожидания планировщика ({timeout_ms} мс): "
+                    f"RPTR={rptr}, ждали {target}; STATUS="
+                    f"0x{self._reg_r(SCHED_STATUS):X}")
+            if use_events and os.path.exists(events) and os.access(events, os.R_OK):
+                try:
+                    with open(events, "rb", buffering=0) as f:
+                        f.read(4)            # блокируется до IRQ
+                except OSError:
+                    pass                     # драйвер без user-IRQ — поллинг
+            else:
+                time.sleep(0.0002)
+
+    # ---- приём результатов ----
+    def collect(self, n: int | None = None):
+        """Читать завершения (RPTR..), возвращать список словарей
+        {tag, result_bits, status, passes}. result_bits — 48-битный TFloat48."""
+        rptr = self._reg_r(SCHED_RPTR) & 0xFF
+        done = (rptr - self._rptr_done) & 0xFF
+        if n is None:
+            n = done
+        if n > done:
+            raise XdmaError(f"запрошено {n} завершений, готово {done}")
+        out = []
+        left = n
+        while left > 0:
+            idx = self._rptr_done % self.depth
+            chunk = min(left, self.depth - idx)       # до wrap кольца
+            raw = self.dev.read_dma(self.comp_off + idx * COMP_STRIDE,
+                                    chunk * COMP_STRIDE)
+            for k in range(chunk):
+                w0, w1 = struct.unpack_from("<QQ", raw, k * COMP_STRIDE)
+                out.append({
+                    "tag": (w0 >> 48) & 0xFFFF,
+                    "result_bits": w0 & 0xFFFFFFFFFFFF,
+                    "status": w1 & 0xFF,
+                    "passes": (w1 >> 8) & 0xFF,
+                })
+            self._rptr_done = (self._rptr_done + chunk) & 0xFF
+            left -= chunk
+        return out
+
+    # ---- удобный батч ----
+    def dot_batch(self, pairs, timeout_ms: float = 5000.0):
+        """pairs: [(data_bits, weights_bits), ...] — пакет dot с автотегами.
+
+        Возвращает список 48-битных результатов (в порядке подачи).
+        Результаты пишутся ядром в DDR 0x00A0_0000 + idx*8 (вне регионов
+        data/weights) и берутся из completion-записей.
+        """
+        jobs = []
+        for idx, (d, w) in enumerate(pairs):
+            jobs.append((d, w, 0x00A0_0000 + idx * 8, idx & 0xFFFF))
+        self.submit(jobs)
+        self.wait(len(jobs), timeout_ms=timeout_ms)
+        comps = self.collect(len(jobs))
+        for c in comps:
+            if c["status"] != 0:
+                raise XdmaError(f"задача tag={c['tag']}: status={c['status']}")
+        return [c["result_bits"] for c in comps]
+
+
+def _pack_tf48(bits_list) -> bytes:
+    buf = bytearray()
+    for b in bits_list:
+        buf += struct.pack("<Q", b & 0xFFFFFFFFFFFF)
+    return bytes(buf)
+
+
+# ---------------------------------------------------------------------------
 # Самопроверка DMA-пути на железе:
 #   python xdma_driver.py --selftest            # паттерн h2c/c2h + замер МБ/с
 #   python xdma_driver.py --selftest --dot      # + один вызов TdotCore.dot
+#   python xdma_driver.py --selftest --dot --sched 16   # + планировщик (16+1 задач)
 # ---------------------------------------------------------------------------
 def _selftest(argv=None) -> int:
     import argparse
@@ -396,6 +610,9 @@ def _selftest(argv=None) -> int:
                          "(по умолчанию 0x01000000 = 16 МиБ)")
     ap.add_argument("--dot", action="store_true",
                     help="дополнительно выполнить один вызов TdotCore.dot")
+    ap.add_argument("--sched", type=lambda x: int(x, 0), default=0, metavar="K",
+                    help="дополнительно прогнать K задач через аппаратный "
+                         "планировщик (по умолчанию 16)")
     args = ap.parse_args(argv)
 
     try:
@@ -437,6 +654,28 @@ def _selftest(argv=None) -> int:
         if abs(got - 8.0) > 0.05:
             raise XdmaError(f"dot(1.0 x 8) = {got!r}, ожидалось 8.0")
         print(f"dot(1.0 × 8) = {got:.4f}: OK")
+
+    # 3. (опционально) Аппаратный планировщик: K задач + один long-dot
+    if args.sched:
+        k = args.sched
+        from fpga_backend import FpgaBackend
+        fb = FpgaBackend(mode="cpu", n=32)
+        one = [fb._to_bits48(v) for v in [1.0] * 32]
+        two = [fb._to_bits48(v) for v in [1.0] * 64]   # long-dot: 2 прохода
+        pairs = [(one, one)] * k
+        pairs.append((two, two))                       # n=64 > NUM_MAC=32
+        sched = TdotScheduler(dev, num_mac=32)
+        t3 = _time.monotonic()
+        res = sched.dot_batch(pairs)
+        dt = (_time.monotonic() - t3) * 1e3
+        for i, rb in enumerate(res):
+            expected = 64.0 if i == k else 32.0
+            got = fb._bits_to_float(rb)
+            if abs(got - expected) > 0.5:
+                raise XdmaError(f"планировщик job {i}: {got!r}, "
+                                f"ожидалось {expected}")
+        print(f"планировщик: {k + 1} задач (вкл. long-dot 64) за {dt:.1f} мс "
+              f"({dt / (k + 1) * 1000:.0f} мкс/задача): OK")
     return 0
 
 

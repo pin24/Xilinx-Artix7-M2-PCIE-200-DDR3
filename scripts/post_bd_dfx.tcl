@@ -124,6 +124,32 @@ assign_bd_address -offset 0x40003000 -range 0x1000 \
 set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI:M03_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
 
 # ============================================================================
+# 2b. tdot_irq — IRQ планировщика TDOT -> xdma_0/usr_irq_req (MSI-X вектор)
+# ============================================================================
+# tdot_axi4 выставляет УРОВЕНЬ (sched_irq, держится до irq_ack хоста);
+# 2-FF синхронизация уже сделана в xdma_ddr3_core_top (домен axi_aclk 250).
+# usr_irq_req[15:0]: bit0 = tdot_irq, In1..15 = 0 (xlconstant 15 бит).
+puts "=== 2b. tdot_irq -> xdma_0/usr_irq_req[0] ==="
+
+if {[get_bd_ports -quiet tdot_irq] eq ""} {
+    create_bd_port -dir I -type intr tdot_irq
+}
+if {[get_bd_cells -quiet xlconstant_irq15] eq ""} {
+    create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 xlconstant_irq15
+    set_property -dict [list CONFIG.CONST_WIDTH {15} CONFIG.CONST_VAL {0}] \
+        [get_bd_cells xlconstant_irq15]
+}
+if {[get_bd_cells -quiet xlconcat_irq] eq ""} {
+    create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_irq
+    set_property -dict [list CONFIG.NUM_PORTS {2} \
+        CONFIG.IN0_WIDTH {1} CONFIG.IN1_WIDTH {15}] [get_bd_cells xlconcat_irq]
+}
+connect_bd_net [get_bd_ports tdot_irq] [get_bd_pins xlconcat_irq/In0]
+connect_bd_net [get_bd_pins xlconstant_irq15/dout] [get_bd_pins xlconcat_irq/In1]
+connect_bd_net [get_bd_pins xlconcat_irq/dout] [get_bd_pins xdma_0/usr_irq_req]
+puts " tdot_irq -> usr_irq_req[0] (MSI-X), In1..15 = 0"
+
+# ============================================================================
 # 3. S_AXI_ICAP_REGS — регистры ICAP
 # ============================================================================
 puts "=== 3. S_AXI_ICAP_REGS (AXI-Lite → xdma_axi_lite_smc/M04 @ 0x40004000) ==="

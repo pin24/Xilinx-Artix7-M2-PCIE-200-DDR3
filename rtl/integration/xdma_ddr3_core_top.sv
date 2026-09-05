@@ -101,6 +101,16 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
   logic        m_axi_rvalid, m_axi_rready, m_axi_rlast;
   logic [1:0]  m_axi_rresp;
 
+  // ---- IRQ планировщика TDOT: уровень из fabric 125 -> домен XDMA 250 ----
+  // Уровень держится до irq_ack (миллисекунды) — 2-FF синхронизация достаточна;
+  // дальше в BD: tdot_irq -> xlconcat -> xdma_0/usr_irq_req (MSI-X вектор).
+  logic tdot_irq_w;
+  (* ASYNC_REG = "TRUE" *) logic [1:0] tdot_irq_sync;
+  always_ff @(posedge axi_aclk or negedge axi_aresetn) begin
+      if (!axi_aresetn) tdot_irq_sync <= 2'b00;
+      else              tdot_irq_sync <= {tdot_irq_sync[0], tdot_irq_w};
+  end
+
   tdot_axi4 #(.NUM_MAC(NUM_MAC)) u_tdot (
       .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
       .S_AXI_AWADDR(s_axil_awaddr), .S_AXI_AWPROT(1'b0),
@@ -128,7 +138,8 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .M_AXI_ARPROT(m_axi_arprot), .M_AXI_ARQOS(m_axi_arqos),
       .M_AXI_ARVALID(m_axi_arvalid), .M_AXI_ARREADY(m_axi_arready),
       .M_AXI_RID(), .M_AXI_RDATA(m_axi_rdata), .M_AXI_RRESP(m_axi_rresp),
-      .M_AXI_RLAST(m_axi_rlast), .M_AXI_RVALID(m_axi_rvalid), .M_AXI_RREADY(m_axi_rready)
+      .M_AXI_RLAST(m_axi_rlast), .M_AXI_RVALID(m_axi_rvalid), .M_AXI_RREADY(m_axi_rready),
+      .sched_irq(tdot_irq_w)
   );
 
   // ======================== ICAP (перезагрузка на лету через AXI-Lite) ========================
@@ -222,6 +233,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32)
       .axi_aclk_out(axi_aclk),      // экспорт xdma_0/axi_aclk из BD (250 МГц, 64-бит)
       .axi_aresetn_out(axi_aresetn),// экспорт xdma_0/axi_aresetn из BD
       .axi_aclk_in(axi_aclk),       // loopback: та же цепь, что axi_aclk_out
+      .tdot_irq(tdot_irq_sync[1]),  // IRQ планировщика (синхр. в 250, -> usr_irq_req)
       .clk_core_out(core_clk),      // 125 МГц fabric/ядро (BUG-034, clk125_core_wiz)
       .core_resetn_out(core_resetn),// сброс fabric-домена (rst_core_125M)
       .diff_clock_rtl_0_clk_n(diff_clock_rtl_0_clk_n),
