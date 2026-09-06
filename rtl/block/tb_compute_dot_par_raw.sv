@@ -3,13 +3,14 @@
 // ============================================================================
 module tb_compute_dot_par_raw;
     parameter int NUM_MAC = 32;
+    parameter int ADDERS  = 8;    // Шаг 2: аддеров в дереве (A/B: 1 vs 8)
     logic clk = 0, rst_n = 0;
     logic [48*NUM_MAC-1:0] data_in, weights;
     logic valid_in = 0;
     logic [47:0] result_out;
     logic valid_out;
 
-    compute_dot_par_raw #(.NUM_MAC(NUM_MAC)) dut (
+    compute_dot_par_raw #(.NUM_MAC(NUM_MAC), .ADDERS(ADDERS)) dut (
         .clk(clk), .rst_n(rst_n),
         .data_in(data_in), .weights(weights), .valid_in(valid_in),
         .result_out(result_out), .valid_out(valid_out)

@@ -17,6 +17,7 @@ RTL = os.path.dirname(os.path.abspath(__file__))
 SIM = os.path.join(RTL, "sim")
 XIL_BIN = "C:/AMDDesignTools/Vivado/2021.2/bin"
 NUM_MAC = int(sys.argv[1]) if len(sys.argv) > 1 else 32
+ADDERS = int(sys.argv[2]) if len(sys.argv) > 2 else 8   # Шаг 2: аддеров в дереве
 os.makedirs(SIM, exist_ok=True)
 
 
@@ -126,8 +127,14 @@ def _raw_mul(a, b):
 
 
 def _raw_add(pa, ea, pb, eb):
-    if pa == 0: return (pb, eb)
-    if pb == 0: return (pa, ea)
+    # BUG-041-выравнивание (2026-09-06): нулевой операнд выбрасывается, но
+    # результат ОБЯЗАНА быть нормализованным — выход tfadd_raw всегда
+    # нормализованный TFloat48 (pack48 в DONE), «отложить нормализацию» RTL
+    # не может физически. Ранее shortcut возвращал (pb, eb) как есть — на
+    # векторах с нулями (тернарные веса) это давало другой ПОРЯДОК округления
+    # на следующем уровне дерева (расхождения в младших тритах).
+    if pa == 0: return _norm_raw_rtl(pb, eb)
+    if pb == 0: return _norm_raw_rtl(pa, ea)
     if ea > eb:
         pb = _shift_seq(pb, ea - eb); e = ea
     elif eb > ea:
@@ -159,19 +166,37 @@ def dot_ref_raw(vals_a, vals_b):
     return to_bits48(arith48._norm_raw(m, e))
 
 
-def gen_input(ncase=8):
+def gen_input(ncase=24):
+    """Смесь профилей: (0) оба random; (1) тернарные веса {-1,0,+1} — много
+    нулевых продуктов (зона BUG-041); (2) ВСЕ веса нулевые; (3) точные нули
+    в данных. Golden dot_ref_raw содержит zero-shortcut (_raw_add) — эталон
+    корректен на нулях по построению."""
     random.seed(61)
+    cases = []
+    for i in range(ncase):
+        a = [f32(random.uniform(-10, 10)) for _ in range(NUM_MAC)]
+        kind = i % 4
+        if kind == 0:
+            b = [f32(random.uniform(-10, 10)) for _ in range(NUM_MAC)]
+        elif kind == 1:
+            b = [float(random.choice([-1, 0, 1])) for _ in range(NUM_MAC)]
+        elif kind == 2:
+            b = [0.0] * NUM_MAC
+        else:
+            b = [f32(random.uniform(-10, 10)) for _ in range(NUM_MAC)]
+            for j in random.sample(range(NUM_MAC), max(1, NUM_MAC // 4)):
+                a[j] = 0.0
+        cases.append((a, b))
     with open(os.path.join(SIM, "cdparr_in.hex"), "w") as f:
         with open(os.path.join(SIM, "cdparr_expected.hex"), "w") as fe:
-            for _ in range(ncase):
-                a = [f32(random.uniform(-10, 10)) for _ in range(NUM_MAC)]
-                b = [f32(random.uniform(-10, 10)) for _ in range(NUM_MAC)]
+            for a, b in cases:
                 bits = [to_bits48(TFloat.from_float(x)) for x in a] + \
                        [to_bits48(TFloat.from_float(y)) for y in b]
                 f.write(" ".join(f"{x:012x}" for x in bits) + "\n")
                 r = dot_ref_raw(bits[:NUM_MAC], bits[NUM_MAC:])
                 fe.write(f"{r:012x}\n")
-    print(f"Сгенерировано {ncase} случаев (NUM_MAC={NUM_MAC})")
+    print(f"Сгенерировано {len(cases)} случаев (NUM_MAC={NUM_MAC}, ADDERS={ADDERS}; "
+          f"профили: random / тернарные веса с нулями / все нули / нули в данных)")
 
 
 def run_sim():
@@ -180,6 +205,8 @@ def run_sim():
     tb_src = open(tb_path).read()
     tb_src = tb_src.replace("parameter int NUM_MAC = 32;",
                             f"parameter int NUM_MAC = {NUM_MAC};")
+    tb_src = tb_src.replace("parameter int ADDERS  = 8;",
+                            f"parameter int ADDERS  = {ADDERS};")
     tb_use = os.path.join(RTL, "tb_compute_dot_par_raw_use.sv")
     open(tb_use, "w").write(tb_src)
     files = [
@@ -221,7 +248,7 @@ def verify():
             bad += 1
             if bad <= 10:
                 print(f"  [{i}] exp={e:012x} got={g:012x}")
-    print(f"compute_dot_par_raw(NUM_MAC={NUM_MAC}): проверено {len(exp)}, несовпадений {bad}")
+    print(f"compute_dot_par_raw(NUM_MAC={NUM_MAC}, ADDERS={ADDERS}): проверено {len(exp)}, несовпадений {bad}")
     return bad == 0
 
 

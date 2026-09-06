@@ -19,6 +19,10 @@
 #      Правило проекта (BUG-038): прогон без тайминг-вердикта не считается
 #      завершённым. Это харнесс для пайплайнинга ДЕРЕВА tfadd_raw —
 #      сравнение "до/после" по WNS/TNS/LUT делается ЭТИМ скриптом.
+#   5. ADDERS через -tclargs (Шаг 2 дерева, 2026-09-06): число barrel-аддеров
+#      compute_dot_par_raw. Формы: ADDERS=8 / "ADDERS 8"; голое число по-прежнему
+#      означает NUM_MAC. A/B Шага 2: прогон ADDERS=1 vs ADDERS=8, сравнение
+#      util_parraw<N>_a<K>.rpt / timing_parraw<N>_a<K>.rpt (суффикс _a<K>).
 # ============================================================================
 set SCRIPT_DIR [file dirname [file normalize [info script]]]
 set ROOT       [file normalize "${SCRIPT_DIR}/../.."]
@@ -35,8 +39,9 @@ if {[info exists ::env(PROJ_DIR)] && ${::env(PROJ_DIR)} ne ""} {
     set proj_dir "${ROOT}/build/block_synth_raw"
 }
 
-# --- NUM_MAC / JOBS из tclargs (все формы; урок BUG-033) ---
+# --- NUM_MAC / ADDERS / JOBS из tclargs (все формы; урок BUG-033) ---
 set npar 32
+set adders 8
 set jobs 8
 if {$argc > 0} {
     for {set i 0} {$i < $argc} {incr i} {
@@ -45,15 +50,22 @@ if {$argc > 0} {
             set npar $v
         } elseif {[regexp {^JOBS?=?(\d+)$} $a -> v]} {
             set jobs $v
+        } elseif {[regexp {^ADDERS?=?(\d+)$} $a -> v]} {
+            set adders $v
         } elseif {$a eq "NUM_MAC" || $a eq "-NUM_MAC"} {
             incr i
             if {$i < $argc && [regexp {^\d+$} [lindex $argv $i]]} {
                 set npar [lindex $argv $i]
             }
+        } elseif {$a eq "ADDERS" || $a eq "-ADDERS"} {
+            incr i
+            if {$i < $argc && [regexp {^\d+$} [lindex $argv $i]]} {
+                set adders [lindex $argv $i]
+            }
         }
     }
 }
-puts "=== synth_par_raw: NUM_MAC=${npar} JOBS=${jobs} ==="
+puts "=== synth_par_raw: NUM_MAC=${npar} ADDERS=${adders} JOBS=${jobs} ==="
 puts "=== ROOT=${ROOT} ==="
 puts "=== PROJ=${proj_dir} ==="
 
@@ -69,7 +81,7 @@ add_files -norecurse \
     ${rtl_dir}/compute_dot_par_raw.sv
 
 update_compile_order -fileset sources_1
-set_property generic NUM_MAC=${npar} [current_fileset]
+set_property generic [list NUM_MAC=${npar} ADDERS=${adders}] [current_fileset]
 
 launch_runs synth_1 -jobs ${jobs}
 wait_on_run synth_1
@@ -87,22 +99,22 @@ open_run synth_1
 # в проектный прогон НЕ попадает). Внутриблочная цель — fabric 125 МГц,
 # как в полной сборке (clk125_core_wiz): requirement 8.000 ns.
 create_clock -period 8.000 -name clk_fab125 -waveform {0.000 4.000} [get_ports clk]
-report_utilization    -file ${proj_dir}/util_parraw${npar}.rpt
-report_timing_summary -file ${proj_dir}/timing_parraw${npar}.rpt
+report_utilization    -file ${proj_dir}/util_parraw${npar}_a${adders}.rpt
+report_timing_summary -file ${proj_dir}/timing_parraw${npar}_a${adders}.rpt
 
 # --- Вердикт тайминга (та же библиотека, что FATAL-гейт сборки) ---
 source ${lib_dir}/tcl_timing_lib.tcl
-set tlst [::timing::parse_summary_rpt ${proj_dir}/timing_parraw${npar}.rpt]
-set rc   [::timing::print_verdict $tlst "BLOCK TIMING (NUM_MAC=${npar}, 125 МГц)"]
+set tlst [::timing::parse_summary_rpt ${proj_dir}/timing_parraw${npar}_a${adders}.rpt]
+set rc   [::timing::print_verdict $tlst "BLOCK TIMING (NUM_MAC=${npar}, ADDERS=${adders}, 125 МГц)"]
 if {$rc != 0 || [::timing::is_fatal $tlst]} {
-    puts "=== BLOCK TIMING FATAL: compute_dot_par_raw(NUM_MAC=${npar}) не закрывает 125 МГц ==="
+    puts "=== BLOCK TIMING FATAL: compute_dot_par_raw(NUM_MAC=${npar}, ADDERS=${adders}) не закрывает 125 МГц ==="
     puts "=== Это ожидаемо для последовательного дерева tfadd_raw; сравнивай по worst-пути ==="
     report_timing -max_paths 10 -nworst 1 -file ${proj_dir}/timing_worst10.rpt
     close_design
     close_project
     exit 1
 }
-puts "=== BLOCK TIMING MET: compute_dot_par_raw(NUM_MAC=${npar}) @ 125 МГц ==="
+puts "=== BLOCK TIMING MET: compute_dot_par_raw(NUM_MAC=${npar}, ADDERS=${adders}) @ 125 МГц ==="
 close_design
 close_project
 exit 0
