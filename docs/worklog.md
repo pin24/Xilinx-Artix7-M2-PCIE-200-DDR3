@@ -357,3 +357,17 @@ Work Log:
 Stage Summary:
 - Публикация завершена: origin/XDMA_DDR3_TMUL = 5dd7006 (Шаг 1 + BUG-041 + Шаг 2). Локальных отставаний нет (0/0).
 - Осталось за стендом (из Task 22): xsim tb_tfadd_equiv/tb_compute_dot_par_raw, A/B synth_par_raw.tcl ADDERS=1 vs 8 (LUT/WNS 125 МГц), полная сборка NUM_MAC=16/32 с FATAL-гейтом.
+
+---
+Task ID: 24
+Agent: main (Super Z)
+Task: Worklog не был на GitHub — причина и исправление (команда пользователя: «почему worklog не добавлен в github!??»)
+
+Work Log:
+- Причина: worklog.md вёлся во ВНЕШНЕМ репо /home/z/my-project, у которого НЕТ remote (git remote -v пуст) — коммиты Tasks 19–23 существовали только локально; во внутренний репо (с origin) worklog не добавлялся.
+- Исправление: worklog.md скопирован во внутренний репо → docs/worklog.md (359 строк, Tasks 19–24, канал ошибок и протоколы); коммит 8051c5a «docs: add worklog.md (multi-agent work log, Tasks 19-23)»; push → origin/XDMA_DDR3_TMUL 5dd7006..8051c5a, verified 0/0.
+- ПРОТОКОЛ ДАЛЬНЕЙШЕГО ВЕДЕНИЯ: каноническая копия — docs/worklog.md во внутреннем репо (публикуется в GitHub); внешний /home/z/my-project/worklog.md — рабочая копия, синхронизируется cp при каждой записи; обе записи делаются в ОДНОМ ходе (append + cp + commit inner + push inner по разрешению).
+
+Stage Summary:
+- Worklog теперь на GitHub: https://github.com/pin24/Xilinx-Artix7-M2-PCIE-200-DDR3/blob/XDMA_DDR3_TMUL/docs/worklog.md
+- Больше не дублировать ошибку: каждая новая запись Task N = append в оба файла, коммит внутреннего, push по разрешению пользователя.
