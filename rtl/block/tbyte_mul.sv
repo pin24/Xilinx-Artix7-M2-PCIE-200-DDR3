@@ -15,19 +15,78 @@ module tbyte_mul (
     localparam logic [1:0] P1 = 2'b01;
     localparam logic [1:0] N1 = 2'b10;
 
-    function automatic logic signed [1:0] trit_val(input logic [1:0] c);
-        case (c)
-            P1: trit_val = 2'sd1;
-            N1: trit_val = -2'sd1;
-            default: trit_val = 2'sd0;
+    // Pure-LUT: трит-произведение; 16 ключей (2'b11 → 0, как trit_val).
+    function automatic logic signed [1:0] ptv(input logic [1:0] x, input logic [1:0] y);
+        case ({x, y})
+            4'h0: return 2'sd0;
+            4'h1: return 2'sd0;
+            4'h2: return 2'sd0;
+            4'h3: return 2'sd0;
+            4'h4: return 2'sd0;
+            4'h5: return 2'sd1;
+            4'h6: return -2'sd1;
+            4'h7: return 2'sd0;
+            4'h8: return 2'sd0;
+            4'h9: return -2'sd1;
+            4'hA: return 2'sd1;
+            4'hB: return 2'sd0;
+            4'hC: return 2'sd0;
+            4'hD: return 2'sd0;
+            4'hE: return 2'sd0;
+            4'hF: return 2'sd0;
+            default: return 2'sd0;
         endcase
     endfunction
-
-    function automatic logic [1:0] int2trit(input logic signed [2:0] v);
-        case (v)
-            3'sd1: int2trit = 2'b01;
-            -3'sd1: int2trit = 2'b10;
-            default: int2trit = 2'b00;
+    // Pure-LUT balanced-сборка: s=coeff+carry ∈ [-6,6]; ключ {coeff[3:0], carry[2:0]}
+    // → {r_enc[1:0], q[2:0]} (q — перенос). 45/45 валидных ключей == формуле (P5).
+    function automatic logic [4:0] asm_tab(input logic [6:0] key);
+        case (key)
+            7'h00: return 5'h00;
+            7'h01: return 5'h08;
+            7'h02: return 5'h11;
+            7'h06: return 5'h0F;
+            7'h07: return 5'h10;
+            7'h08: return 5'h08;
+            7'h09: return 5'h11;
+            7'h0A: return 5'h01;
+            7'h0E: return 5'h10;
+            7'h0F: return 5'h00;
+            7'h10: return 5'h11;
+            7'h11: return 5'h01;
+            7'h12: return 5'h09;
+            7'h16: return 5'h00;
+            7'h17: return 5'h08;
+            7'h18: return 5'h01;
+            7'h19: return 5'h09;
+            7'h1A: return 5'h12;
+            7'h1E: return 5'h08;
+            7'h1F: return 5'h11;
+            7'h20: return 5'h09;
+            7'h21: return 5'h12;
+            7'h22: return 5'h02;
+            7'h26: return 5'h11;
+            7'h27: return 5'h01;
+            7'h60: return 5'h17;
+            7'h61: return 5'h07;
+            7'h62: return 5'h0F;
+            7'h66: return 5'h06;
+            7'h67: return 5'h0E;
+            7'h68: return 5'h07;
+            7'h69: return 5'h0F;
+            7'h6A: return 5'h10;
+            7'h6E: return 5'h0E;
+            7'h6F: return 5'h17;
+            7'h70: return 5'h0F;
+            7'h71: return 5'h10;
+            7'h72: return 5'h00;
+            7'h76: return 5'h17;
+            7'h77: return 5'h07;
+            7'h78: return 5'h10;
+            7'h79: return 5'h00;
+            7'h7A: return 5'h08;
+            7'h7E: return 5'h07;
+            7'h7F: return 5'h0F;
+            default: return 5'h00;
         endcase
     endfunction
 
@@ -39,12 +98,12 @@ module tbyte_mul (
         bt[0] = b[1:0]; bt[1] = b[3:2]; bt[2] = b[5:4]; bt[3] = b[7:6];
     end
 
-    // произведения тритов (значение -1,0,1)
-    logic signed [2:0] pt [0:3][0:3];
+    // произведения тритов (значение -1,0,1) — таблица ptv (0 CARRY4)
+    logic signed [1:0] pt [0:3][0:3];
     always_comb begin
         for (int i = 0; i < 4; i++)
             for (int j = 0; j < 4; j++)
-                pt[i][j] = trit_val(at[i]) * trit_val(bt[j]);
+                pt[i][j] = ptv(at[i], bt[j]);
     end
 
     // coeff[k] = sum_{i+j=k} pt[i][j]
@@ -56,30 +115,17 @@ module tbyte_mul (
                 coeff[i+j] = coeff[i+j] + pt[i][j];
     end
 
-    // balanced-сборка: трит[k] = (coeff[k]+carry[k]) mod 3, перенос может быть до 2
-    logic signed [4:0] carry [0:8];
-    logic signed [5:0] s_show [0:7];
-    logic signed [5:0] q_show [0:7];
-    logic signed [2:0] r_show [0:7];
+    // balanced-сборка: Pure-LUT asm_tab (0 CARRY4); перенос цепочкой case-таблиц
+    logic signed [2:0] carry [0:8];
+    logic [6:0] akey;
+    logic [4:0] ares;
     always_comb begin
-        carry[0] = 5'sd0;
+        carry[0] = 3'sd0;
         for (int k = 0; k < 8; k++) begin
-            logic signed [5:0] s;
-            logic signed [5:0] q;
-            logic signed [2:0] r;
-            s = coeff[k] + carry[k];
-            s_show[k] = s;
-            q = s / 3;                  // к нулю
-            r = s - 3 * q;              // остаток {-2,-1,0,1,2}
-            q_show[k] = q;
-            r_show[k] = r;
-            if (r == 2) begin
-                r = -1; q = q + 1;
-            end else if (r == -2) begin
-                r = 1; q = q - 1;
-            end
-            prod[2*k +: 2] = int2trit(r);
-            carry[k+1] = q;
+            akey = {coeff[k], carry[k]};
+            ares = asm_tab(akey);
+            prod[2*k +: 2] = ares[4:3];
+            carry[k+1] = $signed(ares[2:0]);
         end
     end
 
