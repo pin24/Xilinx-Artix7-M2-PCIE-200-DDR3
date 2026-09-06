@@ -7,6 +7,14 @@
 //   3. Dadda tree: сжимает partial products в 2 вектора
 //   4. Carry-propagate adder: финальная сборка
 //
+// ВЕРСИЯ 2 (BUG-039, 2026-09-06): исправлена ТОЧНОСТЬ:
+//   (а) средний член Karatsuba: s-коррекция переноса сумм половин (раньше
+//       усекался до 10 тритов -> 43.9% случайных пар давали неверный продукт,
+//       ошибка до ~3^30; тождество см. в always_comb);
+//   (б) carry_val в mul_10x10 расширен до 4 бит (q[1:0] обрезал q до ±5).
+// ВНИМАНИЕ: модуль ОДНОТАКТОВЫЙ (вся комбинационная схема за такт) — в сборку
+// НЕ подключён (тайминг, BUG-037/038); перед подключением нужен пайплайн.
+//
 // Интерфейс СОВПАДАЕТ с tfmul_raw.sv:
 //   clk, rst_n, valid_in, a[47:0]={E(8), M(40)}, b[47:0]
 //   valid_out, prod[79:0] (40 тритов), e[7:0], neg
@@ -117,7 +125,9 @@ module tfmul_kbd (
 
         // Dadda-редукция (столбцовая): суммы и перенос
         logic [1:0] sum_col [0:PP_WIDTH-1];
-        logic signed [1:0] carry_val;
+        // BUG-039: было logic signed [1:0] — q = col_sum/3 достигает ±5
+        // (10 partial products + перенос), q[1:0] обрезал: +2 хранился как -2.
+        logic signed [3:0] carry_val;
 
         // --- Реализация (упрощённая, без Booth на первой итерации) ---
 
@@ -174,7 +184,7 @@ module tfmul_kbd (
             if (r > 1) begin q = q + 1; r = r - 3; end
             else if (r < -1) begin q = q - 1; r = r + 3; end
             sum_col[j] = tcode(r[1:0]);
-            carry_val = q[1:0];
+            carry_val = q[3:0];   // BUG-039: было q[1:0] — обрезка переноса
         end
 
         // Заполняем carry_vec (из carry_val после последнего столбца)
@@ -189,7 +199,7 @@ module tfmul_kbd (
         for (int j = 0; j < PP_WIDTH; j++) begin
             result_w[2*j +: 2] = sum_col[j];
         end
-        result_w[2*PP_WIDTH +: 2] = tcode(carry_val);
+        result_w[2*PP_WIDTH +: 2] = tcode(carry_val[1:0]); // сюда доходит только 0: 10×10 помещается в 20 тритов
 
         return result_w;
     endfunction
@@ -202,12 +212,16 @@ module tfmul_kbd (
     // Результаты трёх умножений 10×10 (21 трит каждый)
     logic [2*PP_WIDTH-1:0] mul_lo_lo;  // A_lo · B_lo
     logic [2*PP_WIDTH-1:0] mul_hi_hi;  // A_hi · B_hi
-    logic [2*PP_WIDTH-1:0] mul_sum;    // (A_hi+A_lo) · (B_hi+B_lo)
+    logic [2*PP_WIDTH-1:0] mul_sum;    // a_mod · b_mod — 10×10 на младших тритах сумм
+    // s-коррекция среднего члена (BUG-039): полные суммы — HALF+1 тритов
+    logic signed [1:0]     s_a, s_b;    // переносы в (HALF+1)-й трит сумм ∈ {-1,0,1}
+    logic [2*(HALF+1)-1:0] corr1;       // s_a*b_mod + s_b*a_mod (11 тритов)
+    logic [2*PP_WIDTH-1:0] mul_sum_mid; // скорректированный средний член (21 трит)
 
     // Размещение на финальной шине (41 трит):
     //   mul_hi_hi × 3^20  — позиция 20..40 (21 трит на позициях 20..40)
     //   mul_lo_lo          — позиция 0..20 (21 трит)
-    //   mul_sum - mul_hi_hi - mul_lo_lo на позициях 10..30 (знаковое расширение)
+    //   mul_sum_mid - mul_hi_hi - mul_lo_lo на позициях 10..30 (знаковое расширение)
 
     // Финальный результат (сумма трёх слагаемых) — 41 трит = 82 бита
     logic [2*SUM_WIDTH-1:0] final_result;
@@ -273,16 +287,68 @@ module tfmul_kbd (
             b_sum_local[2*HALF +: 2] = tcode(carry[1:0]);
         end
 
-        // Используем нижние 10 тритов a_sum/b_sum для умножения (упрощение: ignoring overflow)
-        // NOTE: правильнее — mul_sum должна быть 11×11, но для прототипа берём 10 тритов.
-        // Это потенциально теряет точность, но упрощает код.
-        // В финальной версии нужно mul_11x11.
+        // ====================================================================
+        // Средний член Karatsuba: mul_10x10 + s-коррекция (BUG-039)
+        // ====================================================================
+        // Полные суммы A_sum = a_hi+a_lo занимают HALF+1 тритов: A_sum = s_a*3^HALF + a_mod.
+        // Перенос s УЖЕ вычислен в a_sum_local/b_sum_local[2*HALF +: 2] (раньше
+        // выбрасывался — 43.9% пар давали неверный продукт с ошибкой до ~3^30).
+        //   A_sum*B_sum = a_mod*b_mod + 3^HALF*(s_a*b_mod + s_b*a_mod)
+        //               + 3^(2*HALF)*(s_a*s_b)
+        // s*x для одиночного трита — знаковый мультиплексор (±x/0), БЕЗ дерева PP.
+        // Эквивалентно mul_11x11, но деревья остаются 10×10.
+        // ====================================================================
         a_sum_short = a_sum_local[2*HALF-1:0];
         b_sum_short = b_sum_local[2*HALF-1:0];
-        mul_sum = mul_10x10(a_sum_short, b_sum_short);
+        mul_sum = mul_10x10(a_sum_short, b_sum_short);   // a_mod * b_mod (21 трит)
+
+        s_a = tval(a_sum_local[2*HALF +: 2]);            // перенос в 11-й трит ∈ {-1,0,1}
+        s_b = tval(b_sum_local[2*HALF +: 2]);
+
+        // corr1 = s_a*b_mod + s_b*a_mod — HALF+1 тритов
+        // (|corr1| <= 2*(3^HALF-1) = 59048 < 3^(HALF+1)/2 = 88573)
+        begin
+            logic signed [3:0] c1, tot1, q1, r1;
+            c1 = 4'sd0;
+            for (int i = 0; i <= HALF; i++) begin        // HALF+1 колонок (0..10)
+                tot1 = c1;
+                if (i < HALF) begin
+                    if (s_a == 2'sd1)       tot1 = tot1 + tval(b_sum_short[2*i +: 2]);
+                    else if (s_a == -2'sd1) tot1 = tot1 - tval(b_sum_short[2*i +: 2]);
+                    if (s_b == 2'sd1)       tot1 = tot1 + tval(a_sum_short[2*i +: 2]);
+                    else if (s_b == -2'sd1) tot1 = tot1 - tval(a_sum_short[2*i +: 2]);
+                end
+                q1 = tot1 / 3;
+                r1 = tot1 - 3 * q1;
+                if (r1 > 1)       begin q1 = q1 + 1; r1 = r1 - 3; end
+                else if (r1 < -1) begin q1 = q1 - 1; r1 = r1 + 3; end
+                corr1[2*i +: 2] = tcode(r1[1:0]);
+                c1 = q1;
+            end
+        end
+
+        // Слияние: mul_sum_mid = mul_sum + corr1*3^HALF + (s_a*s_b)*3^(2*HALF) — 21 трит
+        // (|A_sum*B_sum| <= (3^HALF-1)^2 = 3.487e9 < 3^(2*HALF+1)/2 = 5.234e9)
+        begin
+            logic signed [3:0] c2, tot2, q2, r2;
+            logic signed [1:0] sb2;
+            c2  = 4'sd0;
+            sb2 = s_a * s_b;                             // 1x1 трит ∈ {-1,0,1}
+            for (int t = 0; t < PP_WIDTH; t++) begin     // 21 колонка (0..20)
+                tot2 = c2 + tval(mul_sum[2*t +: 2]);
+                if (t >= HALF)   tot2 = tot2 + tval(corr1[2*(t-HALF) +: 2]);
+                if (t == 2*HALF) tot2 = tot2 + sb2;
+                q2 = tot2 / 3;
+                r2 = tot2 - 3 * q2;
+                if (r2 > 1)       begin q2 = q2 + 1; r2 = r2 - 3; end
+                else if (r2 < -1) begin q2 = q2 - 1; r2 = r2 + 3; end
+                mul_sum_mid[2*t +: 2] = tcode(r2[1:0]);
+                c2 = q2;
+            end
+        end
 
         // --- 3. Финальная сборка Karatsuba ---
-        // A·B = mul_hi_hi << 20 + (mul_sum - mul_hi_hi - mul_lo_lo) << 10 + mul_lo_lo
+        // A·B = mul_hi_hi << 20 + (mul_sum_mid - mul_hi_hi - mul_lo_lo) << 10 + mul_lo_lo
         // Реализуем через сложение трёх слагаемых с правильными сдвигами.
 
         // Инициализация финального результата
@@ -307,9 +373,9 @@ module tfmul_kbd (
                     col_sum = col_sum + tval(mul_hi_hi[2*(j - 2*HALF) +: 2]);
                 end
 
-                // mul_sum на позиции j-10 (триты 10..30)
+                // скорректированный средний член на позиции j-10 (триты 10..30)
                 if (j >= HALF && j - HALF < PP_WIDTH) begin
-                    col_sum = col_sum + tval(mul_sum[2*(j - HALF) +: 2]);
+                    col_sum = col_sum + tval(mul_sum_mid[2*(j - HALF) +: 2]);
                 end
 
                 // Вычитание mul_hi_hi на позиции j-10
