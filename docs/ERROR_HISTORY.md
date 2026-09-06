@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-06 — Timing: WNS=-120.809ns, TNS=-373780ns (fabric 125 МГц)
+
+### [BUG-037] Троичный умножитель tfmul_kbd без пайплайна — 263 уровня логики
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `rtl/block/tfmul_kbd.sv` (и `tfmul_raw.sv`), `compute_dot_par_raw.sv`, `tdot_axi4.sv` |
+| **Симптом** | `make build NUM_MAC=16 JOBS=7` — сборка проходит (BD → synth → impl → bitstream), но route_design выдаёт: `Estimated Timing Summary \| WNS=-120.878 \| TNS=-373994`. После phys_opt: `WNS=-112.772`. Финальный отчёт: `clk_out1_xdma_ddr3_dfx_clk125_core_wiz_0` (fabric 125 МГц): **Setup: 10419 Failing Endpoints, Worst Slack -120.809ns, Total Violation -332311.640ns**. Другие домены: `clk_125mhz_x0y0` (MIG internal) — 12 failing, -0.221ns; `clk_250mhz_mux_x0y0` — 409 failing, -0.769ns; `async_default` — 27440 failing, -3.275ns (кросс-домен). |
+| **Причина** | Критический путь: `u_tdot/u_core/gen_mac[2].u_mul/b_mr_reg[16]/C` → `prod_r_reg[77]`. Data Path Delay = **128.535ns** (logic 49.293ns + route 79.242ns), **263 уровня логики** (139×CARRY4 + 125×LUT). Requirement = 8.000ns (125 МГц). Slack = -120.809ns. Умножитель TFloat48 (40 тритов × 40 тритов) реализован как **комбинаторная цепь** без конвейера — вся операция за один такт. Для 125 МГц необходимо ~15-20 уровней, а здесь 263. |
+| **Другие нарушения** | (1) `async_default` (кросс-домен 250→125): 27440 failing, WNS=-3.275ns, TNS=-27166ns — неблокируемые асинхронные пути между SmartConnect-доменами. (2) `clk_250mhz_mux_x0y0`: 409 failing, WNS=-0.769ns — XDMA 250 МГц. (3) `clk_125mhz_x0y0`: 12 failing, WNS=-0.221ns — MIG internal 125 МГц. |
+| **Направление исправления** | **Пайплайнизация троичного умножителя**: разбить Dadda-дерево (139×CARRY4) на 16-20 стадий с регистрами между ними. Это снизит Logic Levels с 263 до ~15-18, задержку с 128ns до ~8ns (мет). Latency: +16-20 тактов (не критично — dot-процессор читает N_IN=16/32/64 пар). Также: добавить `set_false_path` на асинхронные кросс-доменные пути (250→125 через SmartConnect) для устранения async_default. |
+| **Статус** | 🔴 **Критический** — дизайн не работает на желаемой частоте 125 МГц. Требуется пайплайнизация tfmul_kbd. |
+
+**Урок**: любой комбинаторный умножитель с шириной >16 бит на Artix-7 требует пайплайна. 263 CARRY4 в одной цепочке — гарантированный тайминг-фейл. Проверять Logic Levels в отчёте синтеза до запуска имплементации.
+
+---
+
 ## 2026-09-06 — Impl opt_design FAIL: multi-driven nets (core_clk/core_resetn)
 
 ### [BUG-036] DRC MDRV-1 — core_clk/core_resetn как input-порты топа дают 2 драйвера
