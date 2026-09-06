@@ -41,7 +41,7 @@ set ::env(PROJ_DIR_BUILD) ${PROJ_DIR}
 set PART       "xc7a200tfbg484-2"
 set TOP_NAME   "xdma_ddr3_core_top"
 
-set NUM_MAC     32
+set NUM_MAC     8
 set JOBS        8
 set SKIP_SYNTH  0
 
@@ -311,6 +311,7 @@ add_files -norecurse \
     ${ROOT}/rtl/block/tbyte_add.sv \
     ${ROOT}/rtl/block/tbyte_mul.sv \
     ${ROOT}/rtl/block/tfadd_raw.sv \
+    ${ROOT}/rtl/block/tfadd48.sv \
     ${ROOT}/rtl/block/tfmul_raw.sv \
     ${ROOT}/rtl/block/compute_dot_par_raw.sv \
     ${ROOT}/rtl/integration/tdot_axi4.sv \
@@ -393,6 +394,8 @@ current_run [get_runs impl_1]
 # Генерировать .bin вместе с .bit и в дочерних конфигурациях RP (частичные
 # битстримы понадобятся для горячей замены через ICAP — pytorch_layer/icap_load.py)
 catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}
+# Разрешить LUT over-utilization (145689 vs 134600, ~8%) — placer часто справляется
+set_param drc.disableLUTOverUtilError 1
 launch_runs impl_1 -to_step write_bitstream -jobs ${JOBS}
 wait_on_run impl_1
 set st2 [get_property STATUS [get_runs impl_1]]

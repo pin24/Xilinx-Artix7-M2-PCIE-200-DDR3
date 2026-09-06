@@ -61,18 +61,21 @@ module tfmul_raw (
     // sum_next[t] = tot mod 3 (balanced), carry_next[t+1] = tot div 3
     // Перенос уезжает на 1 столбец ВЫШЕ и попадает в carry_r[t+1] на след. такте.
     logic [79:0] sum_n, carry_n;
+    logic [1:0] pv;
+    logic signed [3:0] stot;
+    logic signed [2:0] sq, sr;
     always_comb begin
         for (int t = 0; t < 40; t++) begin
-            logic [1:0] pv = 2'b00;
+            pv = 2'b00;
             if (t >= shift_q && t < shift_q + 8)
                 pv = partial_q[2*(t-shift_q)+:2];
-            logic signed [3:0] tot = tv(sum_r[2*t+:2]) + tv(carry_r[2*t+:2]) + tv(pv);
-            logic signed [2:0] q = tot / 3;
-            logic signed [2:0] r = tot - 3*q;
-            if (r > 1) begin q = q+1; r = r-3; end else if (r < -1) begin q = q-1; r = r+3; end
-            sum_n[2*t+:2] = i2t(r);
+            stot = tv(sum_r[2*t+:2]) + tv(carry_r[2*t+:2]) + tv(pv);
+            sq = stot / 3;
+            sr = stot - 3*sq;
+            if (sr > 1) begin sq = sq+1; sr = sr-3; end else if (sr < -1) begin sq = sq-1; sr = sr+3; end
+            sum_n[2*t+:2] = i2t(sr);
             if (t < 39)
-                carry_n[2*(t+1)+:2] = i2t(q);
+                carry_n[2*(t+1)+:2] = i2t(sq);
         end
         carry_n[1:0] = 2'b00;  // перенос в столбец 0 нет
     end
@@ -81,6 +84,8 @@ module tfmul_raw (
     logic [79:0] fin_n;
     logic signed [2:0] fin_carry_n;
     logic [1:0] last_n;
+    logic signed [3:0] ftot;
+    logic signed [2:0] fq, fr;
     always_comb begin
         fin_n = fin_r;
         fin_carry_n = fin_carry;
@@ -88,13 +93,13 @@ module tfmul_raw (
         for (int k = 0; k < 2; k++) begin
             int t = 2*fcnt + k;
             if (t < 40) begin
-                logic signed [3:0] tot = fin_carry_n + tv(sum_r[2*t+:2]) + tv(carry_r[2*t+:2]);
-                logic signed [2:0] q = tot / 3;
-                logic signed [2:0] r = tot - 3*q;
-                if (r > 1) begin q = q+1; r = r-3; end else if (r < -1) begin q = q-1; r = r+3; end
-                fin_n[2*t+:2] = i2t(r);
-                fin_carry_n = q;
-                if (r != 0) last_n = i2t(r);
+                ftot = fin_carry_n + tv(sum_r[2*t+:2]) + tv(carry_r[2*t+:2]);
+                fq = ftot / 3;
+                fr = ftot - 3*fq;
+                if (fr > 1) begin fq = fq+1; fr = fr-3; end else if (fr < -1) begin fq = fq-1; fr = fr+3; end
+                fin_n[2*t+:2] = i2t(fr);
+                fin_carry_n = fq;
+                if (fr != 0) last_n = i2t(fr);
             end
         end
     end
