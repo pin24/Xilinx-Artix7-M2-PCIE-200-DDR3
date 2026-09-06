@@ -324,11 +324,14 @@ puts "=== 4. ADD CONSTRAINTS ==="
 set pins_xdc  ${ROOT}/constraints/xdma_ddr3_pins.xdc
 set early_xdc ${ROOT}/constraints/xdma_ddr3_early.xdc
 set pblock_xdc ${ROOT}/constraints/pblock.xdc
+set tmg_xdc   ${ROOT}/constraints/timing_exceptions.xdc
 add_files -fileset constrs_1 ${pins_xdc}
 add_files -fileset constrs_1 ${early_xdc}
+add_files -fileset constrs_1 ${tmg_xdc}
 add_files -fileset constrs_1 ${pblock_xdc}
 set_property PROCESSING_ORDER EARLY  [get_files ${early_xdc}]
 set_property PROCESSING_ORDER NORMAL [get_files ${pins_xdc}]
+set_property PROCESSING_ORDER NORMAL [get_files ${tmg_xdc}]
 set_property PROCESSING_ORDER LATE   [get_files ${pblock_xdc}]
 update_compile_order -fileset constrs_1
 
@@ -407,11 +410,62 @@ if {[string first "complete" [string tolower $st2]] == -1} {
     exit 1
 }
 
+# ---------- 8.5 FATAL TIMING GATE (BUG-035) ----------
+# Vivado по умолчанию пишет битстрим даже при WNS<0 — гейт обязан стоять
+# ДО экспорта артефактов. WNS/WHS/WPWS < 0 => сборка ФАТАЛЬНА:
+#   - в artifacts_dfx не экспортируется ничего;
+#   - exit 1 (build.bat печатает BUILD FAILED);
+#   - в логе — вердикт с числами и worst paths, отчёт timing_FATAL.rpt.
+# Дополнительно гейтятся routed-отчёты дочерних (RP) реализаций —
+# partial-битстримы проверяются так же строго, как полный дизайн.
+puts "=== 8.5 FATAL TIMING GATE (BUG-035) ==="
+source ${ROOT}/scripts/tcl_timing_lib.tcl
+set ARTIFACTS_DIR "${ROOT}/build/artifacts_dfx"
+file mkdir ${ARTIFACTS_DIR}
+
+if {[catch {open_run impl_1} gate_open_err]} {
+    puts "ERROR: open_run impl_1 failed: ${gate_open_err}"
+    close_project
+    exit 1
+}
+
+set gate_full_txt [report_timing_summary -quiet -warn_on_violation -return_string]
+set gate_full_summary [::timing::parse_summary_string ${gate_full_txt}]
+set gate_fail [::timing::print_verdict ${gate_full_summary} "FULL DESIGN (impl_1)"]
+
+set child_rpts [glob -nocomplain ${PROJ_DIR}.runs/child_impl*/*timing_summary_routed*.rpt]
+foreach crpt ${child_rpts} {
+    set cs [::timing::parse_summary_rpt ${crpt}]
+    if {[::timing::print_verdict ${cs} "CHILD [file tail [file dirname ${crpt}]]"]} {
+        set gate_fail 1
+    }
+}
+
+if {${gate_fail}} {
+    report_timing_summary -quiet -file ${ARTIFACTS_DIR}/timing_FATAL.rpt
+    set wpaths [get_timing_paths -quiet -delay_type max -max_paths 10 -nworst 1 -slack_lesser_than 0]
+    set wi 0
+    foreach wp ${wpaths} {
+        set wsp ""; set wep ""
+        catch {set wsp [get_property STARTPOINT_PIN ${wp}]}
+        catch {set wep [get_property ENDPOINT_PIN ${wp}]}
+        puts [format "  FATAL PATH #%d slack %s ns: %s -> %s" \
+            ${wi} [get_property SLACK ${wp}] ${wsp} ${wep}]
+        incr wi
+    }
+    puts "=== FATAL: тайминг не закрыт — артефакты НЕ экспортируются (timing_FATAL.rpt) ==="
+    puts "=== Разбор критического пути: vivado -mode batch -source scripts/timing_report_analysis.tcl ==="
+    close_project
+    exit 1
+}
+
 # ---------- 9. Export artifacts ----------
 puts "=== 9. EXPORT ARTIFACTS ==="
-open_run impl_1
+# дизайн уже открыт гейтом (open_run impl_1) — не переоткрываем
+if {[catch {current_design} _cur_dsn] != 0 || ${_cur_dsn} eq ""} {
+    open_run impl_1
+}
 
-set ARTIFACTS_DIR "${ROOT}/build/artifacts_dfx"
 file mkdir ${ARTIFACTS_DIR}
 
 set bit_file "${ARTIFACTS_DIR}/${TOP_NAME}.bit"

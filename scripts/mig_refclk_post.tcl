@@ -61,6 +61,28 @@ if {[llength $refclk_pins] == 0} {
 
 # создаём clock (200 MHz = 5 ns period)
 set refclk_pin [lindex $refclk_pins 0]
+
+# BUG-035 (2026-09-06): на REFCLK pin УЖЕ приходит propagated clock от
+# clk_wiz: clk_out1_clk200_clk_wiz -> mig_7series_0/clk_ref_i ->
+# u_iodelay_ctrl/REFCLK (авто-клок MMCM распространяется через BUFG и
+# иерархию вплоть до REFCLK). Повторный create_clock плодит ВТОРОЙ
+# корневой клок на той же цепи: внутри MIG возникают фиктивные inter-clock
+# пары (ICLK=mig_refclk vs ui_clk), на которые НЕ действуют штатные
+# исключения MIG XDC — источник необъяснимых тайминг-провалов.
+# Решение: создавать mig_refclk ТОЛЬКО если клок на цепи отсутствует
+# (легитимный случай — внешний рефклок, а не выход clk_wiz).
+set tmg_refclk_net [get_nets -quiet -of_objects $refclk_pin]
+set tmg_existing_clk [list]
+if {[llength $tmg_refclk_net] > 0} {
+    set tmg_existing_clk [get_clocks -quiet -of_objects [lindex $tmg_refclk_net 0]]
+}
+if {[llength $tmg_existing_clk] > 0} {
+    puts "=== SKIP mig_refclk: на REFCLK уже действует propagated clock: $tmg_existing_clk ==="
+    puts "=== (дубликатный create_clock порождал фиктивные inter-clock пары, BUG-035) ==="
+    if {$opened_here} { close_design }
+    return
+}
+
 puts "=== Creating mig_refclk (200 MHz, 5.000 ns) on pin: $refclk_pin ==="
 create_clock -name mig_refclk -period 5.000 $refclk_pin
 

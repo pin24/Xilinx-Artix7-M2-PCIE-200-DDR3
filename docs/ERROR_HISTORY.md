@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-09-06 — FATAL: WNS −120.809 ns / TNS −373 780 ns после разделения доменов; тайминг теперь гейтится
+
+### [BUG-035] WNS −120.809 / TNS −373 780: ноль тайминг-исключений при 4 асинхронных клоковых корнях + дублирующий клок mig_refclk
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `constraints/` (отсутствовали исключения), `scripts/mig_refclk_post.tcl` (дубль клока), `scripts/build_dfx.tcl` (не было тайминг-гейта) |
+| **Симптом** | Сборка после BUG-034 (split доменов) + widening + планировщика: **WNS = −120.809 ns, TNS = −373 780 ns**. Сигнатура: TNS/WNS ≈ 3093 эндпоинта с почти одинаковым провалом — межклоковая пара, затаймированная как синхронная. Vivado при этом успешно записал битстрим (пишет и при нарушениях!) |
+| **Причина 1** | В проекте не было **ни одного** тайминг-исключения (set_clock_groups / set_false_path / set_max_delay). Дизайн имеет 4 взаимно асинхронных корня: pcie_refclk (100 МГц → userclk1 250/userclk2 125), сырой clk50 (HWICAP icap_clk), clk125_core_wiz (fabric/RP), clk200→ui_clk (MIG). Все CDC-переходы (SmartConnect 250/125/100, tdot_irq_sync, icap_ctrl, HWICAP 50↔125) попадали в setup/hold-анализ с полным требованием |
+| **Причина 2** | `mig_refclk_post.tcl` делал `create_clock mig_refclk` на pin IODELAYCTRL/REFCLK, на который УЖЕ распространялся авто-клок `clk_out1_clk200_clk_wiz` (та же цепь через clk_ref_i). Два клока на одной цепи → фиктивные inter-clock пары внутри MIG PHY (ICLK=mig_refclk vs ui_clk), на которые не действуют штатные исключения MIG XDC |
+| **Причина 3** | В build-флоу не было тайминг-гейта: битстрим экспортировался даже при фатальном нарушении |
+| **Исправление 1** | `constraints/timing_exceptions.xdc` (новый, PROCESSING_ORDER NORMAL): `set_clock_groups -asynchronous` между 4 группами (pcie-дерево, сырой clk50, fabric125, MIG-дерево). Группы собираются в catch с CRITICAL WARNING при пустых; ВНУТРИ групп тайминг не ослаблен — реальные нарушения видны в отчётах. + `set_max_delay -datapath_only 10 ns` на CDC-синхронизаторы (подстраховка) |
+| **Исправление 2** | `mig_refclk_post.tcl`: перед `create_clock` проверяется наличие propagated clock на цепи REFCLK (`get_clocks -of_objects [get_nets ...]`) — при наличии клок НЕ создаётся (легитимно только для внешнего рефклока) |
+| **Исправление 3** | `scripts/build_dfx.tcl` шаг 8.5 «FATAL TIMING GATE»: после impl — `report_timing_summary`, парс WNS/TNS/WHS/THS/WPWS (`scripts/tcl_timing_lib.tcl`); WNS/WHS/WPWS < 0 ⇒ в artifacts_dfx не экспортируется НИЧЕГО, exit 1, в лог печатаются 10 худших путей + `timing_FATAL.rpt`. Отдельно гейтятся routed-отчёты дочерних (RP) реализаций. Утилита на любой чекпоинт: `scripts/check_timing_fatal.tcl -tclargs <dcp>` |
+| **Диагностика** | `scripts/timing_report_analysis.tcl` (batch-аналог Reports → Report Timing Summary): Clock Summary, Inter-Clock Table, топ-32 worst setup путей (start/end, требование, задержка, уровни логики), атрибуция модулей-виновников (топ-10 по числу эндпоинтов), logic-level distribution (гид по pipelining), report_clock_interactions + report_cdc |
+| **Проверка** | `/home/z/my-project/scripts/test_timing_gate.py`: парсер на РЕАЛЬНОМ timing_full.rpt (WNS 0.370/109148 эндпоинтов) + синтетическая сигнатура −120.809/−373 780 + −inf/NA/пустой блок + TCL-баланс 5 файлов — 22/22 OK. dfx_reaudit: 0 ошибок. Мок-тест сборки групп set_clock_groups — OK |
+| **Статус** | ✅ Инфраструктура исправлена; подтверждение на сборке — за стендом: пересобрать (исключения войдут в impl) и прогнать `timing_report_analysis.tcl`; если WNS останется < 0 — отчёт покажет пару/модуль для pipelining |
+
+**Урок**: при появлении НОВОГО клокового домена (BUG-034 добавил clk125_core_wiz, а XDMA стал 250 МГц) немедленно добавлять межклоковые исключения — Vivado по умолчанию таймирует ЛЮБЫЕ две лестницы клоков как синхронные и пишет битстрим с любым WNS. Ноль исключений в многочастотном дизайне = мина. Правило проекта: **сборка без FATAL-гейта тайминга не считается завершённой**; каждое изменение клокинга проверять Inter-Clock Table (все пары должны быть либо исключены, либо осознанно затаймированы).
+
+---
+
 ## 2026-09-06 — XDMA 64 бит @ 250 МГц: ядро/RP обязаны остаться на 125 МГц; LUTRAM→BRAM
 
 ### [BUG-034] Выбранный вариант оптимизации: XDMA 128→64 @ 250 МГц без потери полосы + разделение доменов
