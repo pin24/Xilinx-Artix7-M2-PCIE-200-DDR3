@@ -1,5 +1,5 @@
 # ============================================================================
-# timing_report_analysis.tcl — детальный разбор критического пути (BUG-035)
+# timing_report_analysis.tcl — детальный разбор критического пути (BUG-038)
 # ============================================================================
 # Usage:
 #   vivado -mode batch -source scripts/timing_report_analysis.tcl -tclargs [dcp] [outdir]

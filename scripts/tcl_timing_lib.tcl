@@ -1,5 +1,5 @@
 # ============================================================================
-# tcl_timing_lib.tcl — парсер Design Timing Summary + FATAL-гейт (BUG-035)
+# tcl_timing_lib.tcl — парсер Design Timing Summary + FATAL-гейт (BUG-038)
 # ============================================================================
 # Чистый Tcl: файл безопасно source-ить в любом интерпретаторе (в т.ч. вне
 # Vivado — юнит-тесты). Команды Vivado вызываются только внутри процедур.
@@ -109,7 +109,7 @@ proc ::timing::print_verdict {lst {label "TIMING"}} {
         puts "============================================================"
         puts " FATAL: TIMING NOT MET — ${label}"
         puts " Нарушение setup/hold/pulse-width делает битстрим НЕРАБОТОСПОСОБНЫМ."
-        puts " Сборка остановлена до экспорта артефактов (BUG-035 convention)."
+        puts " Сборка остановлена до экспорта артефактов (BUG-038 convention)."
         puts " Действия:"
         puts "   1) vivado -mode batch -source scripts/timing_report_analysis.tcl \\"
         puts "        -tclargs <checkpoint.dcp>"

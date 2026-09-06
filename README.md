@@ -78,14 +78,13 @@
 
 ```cmd
 REM Из корня репозитория:
-scripts\build.bat
+cd Xilinx-Artix7-M2-PCIE-200-DDR3
+make build
 ```
 
-`build.bat` автоматически:
+Makefile автоматически:
 1. Находит Vivado 2025.2 в стандартных путях (`C:\AMDDesignTools\...`, `C:\Xilinx\...`)
-2. Если путь к репо длиннее 40 символов — создаёт виртуальный диск (subst) для обхода Windows MAX_PATH лимита (Vivado MIG IP генерирует пути 260+ символов)
-3. Запускает `scripts\build_dfx.tcl` — сборка DFX-варианта
-4. После сборки (успех или fail) отключает виртуальный диск
+2. Запускает `scripts\build_dfx.tcl` — полная DFX-сборка (synth + impl + bitstream + partials)
 
 `build_dfx.tcl` выполняет:
 1. Создаёт проект (`C:\build_dfx` на Windows — обход MAX_PATH; на Linux — `build/dfx_proj`; переопределяется переменной окружения `PROJ_DIR`)
@@ -102,16 +101,22 @@ scripts\build.bat
 
 ```cmd
 REM Сборка с NUM_MAC=16 (меньше LUT):
-scripts\build.bat NUM_MAC=16
+make build NUM_MAC=16
 
 REM Увеличить параллелизм:
-scripts\build.bat JOBS=12
+make build JOBS=12
 
 REM Только создать проект без synth (для отладки в GUI):
-scripts\build.bat SKIP_SYNTH=1
+make proj
+
+REM Экспорт .bin/.mcs/partial из готового impl_1 (без пересинтеза):
+make artifacts
+
+REM Полная очистка:
+make clean
 
 REM Комбинация:
-scripts\build.bat NUM_MAC=32 JOBS=12
+make build NUM_MAC=32 JOBS=12
 ```
 
 ### Прямой запуск через Vivado

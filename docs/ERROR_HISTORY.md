@@ -8,11 +8,13 @@
 
 ## 2026-09-06 — FATAL: WNS −120.809 ns / TNS −373 780 ns после разделения доменов; тайминг теперь гейтится
 
-### [BUG-035] WNS −120.809 / TNS −373 780: ноль тайминг-исключений при 4 асинхронных клоковых корнях + дублирующий клок mig_refclk
+### [BUG-038] WNS −120.809 / TNS −373 780: ноль тайминг-исключений при 4 асинхронных клоковых корнях + дублирующий клок mig_refclk
+
+> **Нумерация**: локально запись публиковалась как BUG-035; при мердже с origin обнаружена коллизия (BUG-035/036/037 на origin уже заняты), запись перенумерована в BUG-038. Событие то же, что BUG-037, но аспект другой: констрейнты/гейт, а не умножитель.
 
 | Поле | Значение |
 |------|----------|
-| **Где** | `constraints/` (отсутствовали исключения), `scripts/mig_refclk_post.tcl` (дубль клока), `scripts/build_dfx.tcl` (не было тайминг-гейта) |
+| **Где** | `constraints/` (отсутствовали исключения), `scripts/mig_refclk_post.tcl` (дубль клока; на origin позже удалён в 9cfce13 как legacy — дубль больше не создаётся), `scripts/build_dfx.tcl` (не было тайминг-гейта) |
 | **Симптом** | Сборка после BUG-034 (split доменов) + widening + планировщика: **WNS = −120.809 ns, TNS = −373 780 ns**. Сигнатура: TNS/WNS ≈ 3093 эндпоинта с почти одинаковым провалом — межклоковая пара, затаймированная как синхронная. Vivado при этом успешно записал битстрим (пишет и при нарушениях!) |
 | **Причина 1** | В проекте не было **ни одного** тайминг-исключения (set_clock_groups / set_false_path / set_max_delay). Дизайн имеет 4 взаимно асинхронных корня: pcie_refclk (100 МГц → userclk1 250/userclk2 125), сырой clk50 (HWICAP icap_clk), clk125_core_wiz (fabric/RP), clk200→ui_clk (MIG). Все CDC-переходы (SmartConnect 250/125/100, tdot_irq_sync, icap_ctrl, HWICAP 50↔125) попадали в setup/hold-анализ с полным требованием |
 | **Причина 2** | `mig_refclk_post.tcl` делал `create_clock mig_refclk` на pin IODELAYCTRL/REFCLK, на который УЖЕ распространялся авто-клок `clk_out1_clk200_clk_wiz` (та же цепь через clk_ref_i). Два клока на одной цепи → фиктивные inter-clock пары внутри MIG PHY (ICLK=mig_refclk vs ui_clk), на которые не действуют штатные исключения MIG XDC |
@@ -24,7 +26,62 @@
 | **Проверка** | `/home/z/my-project/scripts/test_timing_gate.py`: парсер на РЕАЛЬНОМ timing_full.rpt (WNS 0.370/109148 эндпоинтов) + синтетическая сигнатура −120.809/−373 780 + −inf/NA/пустой блок + TCL-баланс 5 файлов — 22/22 OK. dfx_reaudit: 0 ошибок. Мок-тест сборки групп set_clock_groups — OK |
 | **Статус** | ✅ Инфраструктура исправлена; подтверждение на сборке — за стендом: пересобрать (исключения войдут в impl) и прогнать `timing_report_analysis.tcl`; если WNS останется < 0 — отчёт покажет пару/модуль для pipelining |
 
-**Урок**: при появлении НОВОГО клокового домена (BUG-034 добавил clk125_core_wiz, а XDMA стал 250 МГц) немедленно добавлять межклоковые исключения — Vivado по умолчанию таймирует ЛЮБЫЕ две лестницы клоков как синхронные и пишет битстрим с любым WNS. Ноль исключений в многочастотном дизайне = мина. Правило проекта: **сборка без FATAL-гейта тайминга не считается завершённой**; каждое изменение клокинга проверять Inter-Clock Table (все пары должны быть либо исключены, либо осознанно затаймированы).
+**Урок** (BUG-038): при появлении НОВОГО клокового домена (BUG-034 добавил clk125_core_wiz, а XDMA стал 250 МГц) немедленно добавлять межклоковые исключения — Vivado по умолчанию таймирует ЛЮБЫЕ две лестницы клоков как синхронные и пишет битстрим с любым WNS. Ноль исключений в многочастотном дизайне = мина. Правило проекта: **сборка без FATAL-гейта тайминга не считается завершённой**; каждое изменение клокинга проверять Inter-Clock Table (все пары должны быть либо исключены, либо осознанно затаймированы).
+
+---
+
+## 2026-09-06 — Timing: WNS=-120.809ns, TNS=-373780ns (fabric 125 МГц)
+
+### [BUG-037] Троичный умножитель tfmul_kbd без пайплайна — 263 уровня логики
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `rtl/block/tfmul_kbd.sv` (и `tfmul_raw.sv`), `compute_dot_par_raw.sv`, `tdot_axi4.sv` |
+| **Симптом** | `make build NUM_MAC=16 JOBS=7` — сборка проходит (BD → synth → impl → bitstream), но route_design выдаёт: `Estimated Timing Summary \| WNS=-120.878 \| TNS=-373994`. После phys_opt: `WNS=-112.772`. Финальный отчёт: `clk_out1_xdma_ddr3_dfx_clk125_core_wiz_0` (fabric 125 МГц): **Setup: 10419 Failing Endpoints, Worst Slack -120.809ns, Total Violation -332311.640ns**. Другие домены: `clk_125mhz_x0y0` (MIG internal) — 12 failing, -0.221ns; `clk_250mhz_mux_x0y0` — 409 failing, -0.769ns; `async_default` — 27440 failing, -3.275ns (кросс-домен). |
+| **Причина** | Критический путь: `u_tdot/u_core/gen_mac[2].u_mul/b_mr_reg[16]/C` → `prod_r_reg[77]`. Data Path Delay = **128.535ns** (logic 49.293ns + route 79.242ns), **263 уровня логики** (139×CARRY4 + 125×LUT). Requirement = 8.000ns (125 МГц). Slack = -120.809ns. Умножитель TFloat48 (40 тритов × 40 тритов) реализован как **комбинаторная цепь** без конвейера — вся операция за один такт. Для 125 МГц необходимо ~15-20 уровней, а здесь 263. |
+| **Другие нарушения** | (1) `async_default` (кросс-домен 250→125): 27440 failing, WNS=-3.275ns, TNS=-27166ns — неблокируемые асинхронные пути между SmartConnect-доменами. (2) `clk_250mhz_mux_x0y0`: 409 failing, WNS=-0.769ns — XDMA 250 МГц. (3) `clk_125mhz_x0y0`: 12 failing, WNS=-0.221ns — MIG internal 125 МГц. |
+| **Направление исправления** | **Пайплайнизация троичного умножителя**: разбить Dadda-дерево (139×CARRY4) на 16-20 стадий с регистрами между ними. Это снизит Logic Levels с 263 до ~15-18, задержку с 128ns до ~8ns (мет). Latency: +16-20 тактов (не критично — dot-процессор читает N_IN=16/32/64 пар). Также: добавить `set_false_path` на асинхронные кросс-доменные пути (250→125 через SmartConnect) для устранения async_default. |
+| **Статус** | 🔴 **Критический** — дизайн не работает на желаемой частоте 125 МГц. Требуется пайплайнизация tfmul_kbd. |
+
+**Урок**: любой комбинаторный умножитель с шириной >16 бит на Artix-7 требует пайплайна. 263 CARRY4 в одной цепочке — гарантированный тайминг-фейл. Проверять Logic Levels в отчёте синтеза до запуска имплементации.
+
+---
+
+## 2026-09-06 — Impl opt_design FAIL: multi-driven nets (core_clk/core_resetn)
+
+### [BUG-036] DRC MDRV-1 — core_clk/core_resetn как input-порты топа дают 2 драйвера
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `rtl/integration/xdma_ddr3_core_top.sv` (порты модуля) |
+| **Симптом** | `make build NUM_MAC=16 JOBS=7`: BD-валидация и синтез прошли, но `impl_1 → opt_design` падает: `ERROR: [DRC MDRV-1] Multiple Driver Nets: Net xdma_ddr3_dfx_i/clk125_core_wiz/inst/clk_out1 has multiple drivers: core_clk_IBUF_inst/O, and .../clkout1_buf/O` (и то же для `rst_core_125M/peripheral_aresetn`). Причина в `Synth 8-6859 multi-driven net on pin core_clk` |
+| **Причина** | Top-модуль объявлял `core_clk`/`core_resetn` как **input-порты**, но в BD-обёртке к ним подключены **выходы BD** `clk_core_out`/`core_resetn_out` (которые внутри BD уже драйвятся от `clk125_core_wiz/clk_out1` и `rst_core_125M/peripheral_aresetn`). На верхнем уровне Vivado ставит IBUF на input-порт и получает 2 драйвера одной сети (IBUF + выход clk_wiz) → multi-driven |
+| **Исправление** | `core_clk`/`core_resetn` переведены из input-портов модуля во **внутренние логи** (`logic core_clk; logic core_resetn;`) — сеть теперь имеет только один драйвер (выход BD) |
+| **Проверка** | Полная сборка `make build NUM_MAC=16 JOBS=7` повторно (см. следующий прогон). Ожидание: impl → write_bitstream Complete, артефакты в `build/artifacts_dfx/` |
+| **Статус** | ✅ Исправлено (требует повторного прогона impl) |
+
+**Урок**: если BD экспортирует такт/сброс наружу (`clk_core_out`/`core_resetn_out`), они уже являются драйверами сети на верхнем уровне. НЕ дублировать их входными портами RTL-топа — это создаёт multi-driven nets (MDRV-1) после линковки BD-обёртки.
+
+---
+
+## 2026-09-06 — Сборка падает на post_bd_dfx.tcl: ASSOCIATED_BUSIF/FREQ_HZ read-only (регрессия BUG-034)
+
+### [BUG-035] BD 41-237 FREQ_HZ mismatch 250 vs 125 МГц — блокирует сборку
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/xdma_ddr3_dfx_bd.tcl:723-725,735-736`, `scripts/post_bd_dfx.tcl:86-88,127-128,153-154,179` |
+| **Симптом** | `make build NUM_MAC=16 JOBS=7` падает на шаге 2c (source post_bd_dfx.tcl, строки 281 `validate_bd_design`). В логе: `ERROR: [BD 41-237] Bus Interface property FREQ_HZ does not match between /xdma_axi_smc/S02_AXI(250000000) and /M_AXI_TDOT(125000000)` + аналогично по `S_AXI_TDOT_REGS/M03`, `S_AXI_ICAP_REGS/M04`, `S_AXI_XADC_REGS/M05`. Перед этим: `CRITICAL WARNING: [BD 41-737] Cannot set the parameter FREQ_HZ/ASSOCIATED_BUSIF on /xdma_axi_smc/aclk2. It is read-only.` (и `aclk1`) → сборка останавливается до синтеза |
+| **Причина** | Исправление BUG-034 построено на явной установке `CONFIG.ASSOCIATED_BUSIF` и `CONFIG.FREQ_HZ` на тактовых пинах SmartConnect (`aclk1`/`aclk2`, команды `set_property` на `get_bd_pins`). В Vivado 2025.2 оба свойства на пинах клока SmartConnect **read-only** (BD 41-737) — `set_property` молча игнорируется. Без ассоциации порты `S02_AXI`, `M03/M04/M05_AXI` остаются на дефолтном клоке `aclk` = `xdma_0/axi_aclk` (250 МГц при 64-бит XDMA), в то время как `post_bd_dfx.tcl` задаёт внешним BD-портам `FREQ_HZ=125 МГц` → несоответствие 250 vs 125 → BD 41-237 → `validate_bd_design` ERROR |
+| **Сопутствующее** | После BD 41-737 появляются CRITICAL WARNING вида «The device(s) attached to /M03_AXI do not share a common clock domain with this smartconnect instance» (1713-1715, 1724) — тот же корень: доменная ассоциация не задалась, SmartConnect считает порты синхронными 250 МГц |
+| **Проверка** | `C:\build_dfx` создан 06.09 00:38-00:39, ранов synth/impl ещё нет — падение на этапе BD (до генерации). Лог: `vivado.log` (repo root, 00:40:14), строки 1563-1749 |
+| **Направление исправления** | В 2025.2 ассоциацию интерфейс↔клок задавать не через пины клока, а через свойство **`CLK_DOMAIN` на интерфейсных пинах**: `set_property CLK_DOMAIN {clk125_core_wiz/clk_out1} [get_bd_intf_pins xdma_axi_smc/S01_AXI]` (и для S02/M03-M05) + убрать жёсткие `FREQ_HZ` с внешних портов, чтобы не было конфликта метаданных. Либо расширять `ASSOCIATED_BUSIF` на этапе создания SmartConnect (в `create_bd_cell` через `CONFIG`-dict IP-инстанса) — проверить, что в 2025.2 это допустимо |
+| **Диагностика (пробы probe3/probe9/probe11/probe12)** | (1) `CLK_DOMAIN` на интерфейсных пинах SmartConnect — параметра НЕ существует (BD 41-1642). (2) `ASSOCIATED_BUSIF`/`FREQ_HZ` на клок-пинах SmartConnect — read-only (BD 41-737), молча игнорируются. (3) Vivado **авто-выводит** домен для интерфейсов, у которых есть локальный клок-сосед (GPIO с s_axi_aclk → aclk1). (4) Для **внешних** BD-портов инференс невозможен — они садятся на дефолтный `aclk` (250) → FREQ_HZ mismatch 250 vs 125. (5) Рабочий механизм — ассоциация имён внешних портов с **экспортированным клок-портом** fabric-домена (clk_core_out, 125 МГц) через `CONFIG.ASSOCIATED_BUSIF` — как в probe3 V5 (M02→clk_core_out, validate OK). (6) КРИТИЧНО: разделитель в ASSOCIATED_BUSIF — **двоеточие** (`S02_AXI:M03_AXI:...`), НЕ пробел! Пробел даёт BD 41-1287 «Associated interface by name ... not found» — Vivado ищет один интерфейс с именем, содержащим пробелы |
+| **Исправление (BUG-035-fix)** | `scripts/xdma_ddr3_dfx_bd.tcl`: (1) убраны все `set_property CONFIG.ASSOCIATED_BUSIF/FREQ_HZ` с клок-пинов `aclk1/aclk2` SmartConnect (read-only); (2) создание внешних портов M_AXI_TDOT/S_AXI_TDOT_REGS/S_AXI_ICAP_REGS/S_AXI_XADC_REGS + их подключение к S02/M03/M04/M05 и assign_bd_address перенесено из post_bd_dfx.tcl **в конец базового скрипта** (до validate — чтобы порты и их FREQ_HZ=125 были видны); (3) в конце создаётся clk_core_out, подключается к clk125_core_wiz/clk_out1 (идемпотентно) и ставится `CONFIG.ASSOCIATED_BUSIF {M_AXI_TDOT:S_AXI_TDOT_REGS:S_AXI_ICAP_REGS:S_AXI_XADC_REGS}` (ДВОЕТОЧИЕ = имена внешних портов); (4) `validate_bd_design` + `save_bd_design` в конце. `scripts/post_bd_dfx.tcl`: сокращён до экспорта клоков (axi_aclk_in/out, clk_core_out, core_resetn_out) и очистки legacy M_AXI_ICAP; `_clk_connect` стал идемпотентным (пропускает, если порт уже на сети — иначе BD 5-4 on re-run); БЕЗ дублей портов и БЕЗ set_property на пинах SmartConnect. `scripts/build_dfx.tcl`: в SKIP_SYNTH-ветке убран близкий `save_project_as` (оставлял проект открытым → Coretcl 2-101 "already open" → make Error 1) — теперь просто `close_project; exit 0` |
+| **Проверка исправления** | `make proj` (SKIP_SYNTH=1) — полный проход: 2b validate OK, 2c POST-BD DFX: OK, 2d validate OK, выход 0. BD 41-237 (FREQ_HZ mismatch) отсутствует; BD 41-737/41-1642/41-2559/41-1287 отсутствуют. `make build` — полная сборка (см. след. запуск) |
+| **Статус** | ✅ Исправлено (подтверждено: `make proj` — все шаги BD-валидации OK, выход 0) |
+
+**Урок**: в Vivado 2025.2 `ASSOCIATED_BUSIF`/`FREQ_HZ` на пинах клока SmartConnect — read-only (BD 41-737), `CLK_DOMAIN`/`FREQ_HZ` на интерфейсных пинах не существуют (BD 41-1642). Для внешних BD-портов домен задаётся ЕДИНСТВЕННО через `CONFIG.ASSOCIATED_BUSIF` на экспортированном клок-порте, причём разделитель — **двоеточие** (`A:B:C`), не пробел, иначе BD 41-1287. Любой «фикс» тактовых доменов проверять фактической BD-валидацией.
 
 ---
 

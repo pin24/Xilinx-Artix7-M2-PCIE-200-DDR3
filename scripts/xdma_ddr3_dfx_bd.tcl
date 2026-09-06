@@ -715,25 +715,22 @@ set_property -dict [list \
   ] $clk125_core_wiz
 
   set xdma_axi_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_smc ]
-  # 3 домена (BUG-034): aclk=XDMA 250 (S00), aclk1=ui_clk 100 (M00→MIG),
-  # aclk2=fabric 125 (S01=dfx_socket, S02=M_AXI_TDOT — добавляется в post_bd_dfx).
+  # 3 домена, 3 SI, 1 MI — СРАЗУ финальные значения (S02 будет подключён в post_bd_dfx).
+  # BUG-035: НЕ ставим ASSOCIATED_BUSIF/FREQ_HZ на clock-пинах — read-only (BD 41-737)
+  # и ломают авто-вывод доменов. Vivado сам выводит домены из FREQ_HZ портов/IP.
   set_property -dict [list \
     CONFIG.NUM_CLKS {3} \
-    CONFIG.ASSOCIATED_BUSIF {S00_AXI} \
-  ] [get_bd_pins xdma_axi_smc/aclk]
-  set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI} [get_bd_pins xdma_axi_smc/aclk1]
-  set_property CONFIG.ASSOCIATED_BUSIF {S01_AXI} [get_bd_pins xdma_axi_smc/aclk2]
+    CONFIG.NUM_SI {3} \
+    CONFIG.NUM_MI {1} \
+  ] $xdma_axi_smc
 
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
-  # 2 домена (BUG-034): aclk=XDMA 250 (S00), aclk1=fabric 125 (M00..M02;
-  # M03..M05 добавляет post_bd_dfx и расширяет ASSOCIATED_BUSIF).
+  # 2 домена, 6 MI СРАЗУ (M03-M05 будут подключены в post_bd_dfx).
   set_property -dict [list \
-    CONFIG.NUM_MI {3} \
+    CONFIG.NUM_MI {6} \
     CONFIG.NUM_SI {1} \
     CONFIG.NUM_CLKS {2} \
   ] $xdma_axi_lite_smc
-  set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_pins xdma_axi_lite_smc/aclk]
-  set_property CONFIG.ASSOCIATED_BUSIF {M00_AXI:M01_AXI:M02_AXI} [get_bd_pins xdma_axi_lite_smc/aclk1]
 
   set mig7_status_concat [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 mig7_status_concat ]
 
@@ -834,6 +831,75 @@ set_property -dict [list \
   assign_bd_address -offset 0x40001000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_hwicap_0/S_AXI_LITE/Reg] -force
 
   current_bd_instance $oldCurInst
+
+  # ============================================================================
+  # Создание внешних портов (бывший post_bd_dfx шаги 1-4)
+  # Делаем ЗДЕСЬ до validate_bd_design, чтобы Vivado видел FREQ_HZ=125 на портах
+  # и авто-вывел домен fabric (125 МГц) для S02/M03-M05 (BUG-035).
+  # ============================================================================
+
+  # M_AXI_TDOT — AXI4 master от tdot_axi4 к DDR3
+  set tdot_m_port [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_TDOT]
+  set_property -dict [list \
+    CONFIG.PROTOCOL AXI4 CONFIG.DATA_WIDTH 64 CONFIG.ADDR_WIDTH 32 \
+    CONFIG.NUM_READ_OUTSTANDING 2 CONFIG.NUM_WRITE_OUTSTANDING 2 CONFIG.FREQ_HZ 125000000] $tdot_m_port
+  connect_bd_intf_net [get_bd_intf_pins xdma_axi_smc/S02_AXI] $tdot_m_port
+  assign_bd_address -offset 0x80000000 -range 0x10000000 \
+    -target_address_space [get_bd_addr_spaces $tdot_m_port] \
+    [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
+
+  # S_AXI_TDOT_REGS
+  set tdot_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_TDOT_REGS]
+  set_property -dict [list \
+    CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $tdot_port
+  connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M03_AXI] $tdot_port
+  assign_bd_address -offset 0x40003000 -range 0x1000 \
+    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $tdot_port/Reg] -force
+
+  # S_AXI_ICAP_REGS
+  set icap_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_ICAP_REGS]
+  set_property -dict [list \
+    CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $icap_port
+  connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M04_AXI] $icap_port
+  assign_bd_address -offset 0x40004000 -range 0x1000 \
+    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $icap_port/Reg] -force
+
+  # S_AXI_XADC_REGS
+  set xadc_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_XADC_REGS]
+  set_property -dict [list \
+    CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $xadc_port
+  connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M05_AXI] $xadc_port
+  assign_bd_address -offset 0x46000000 -range 0x1000 \
+    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $xadc_port/Reg] -force
+
+  # ---- BUG-035: привязка внешних портов к fabric-домену 125 МГц ----
+  # Vivado не авто-выводит домен для внешних AXI-портов — они садятся на
+  # aclk=250 → BD 41-237 (FREQ_HZ mismatch 250 vs 125). Решение (probe3 V5):
+  # ассоциировать имена внешних портов с экспортированным клок-портом
+  # clk_core_out (125 МГц, питает тот же домен, что aclk2/aclk1).
+  if {[get_bd_ports -quiet clk_core_out] eq ""} {
+      create_bd_port -dir O -type clk -freq_hz 125000000 clk_core_out
+  }
+  # BUG-035: привязка внешних портов к fabric-домену 125 МГц.
+  # ВАЖНО: разделитель в ASSOCIATED_BUSIF — ДВОЕТОЧИЕ (как в default.tcl
+  # {rp_M_AXI:rp_S_AXI}), НЕ пробел! С пробелами Vivado ищет интерфейс
+  # с одним именем "<a> <b>" → BD 41-1287 "not found".
+  # Имена — внешних BD-портов (M_AXI_TDOT...), они проверены в diag8: VALIDATE OK.
+  if {[get_bd_ports -quiet clk_core_out] eq ""} {
+      create_bd_port -dir O -type clk -freq_hz 125000000 clk_core_out
+  }
+  # Идемпотентно: подключаем clk_core_out только если он ещё не на сети
+  if {[llength [get_bd_nets -quiet -of_objects [get_bd_ports clk_core_out]]] == 0} {
+      set _cpin [get_bd_pins clk125_core_wiz/clk_out1]
+      set _cnet [get_bd_nets -quiet -of_objects $_cpin]
+      if {$_cnet eq ""} {
+          connect_bd_net [get_bd_ports clk_core_out] $_cpin
+      } else {
+          connect_bd_net -net $_cnet [get_bd_ports clk_core_out]
+      }
+  }
+  set_property CONFIG.ASSOCIATED_BUSIF {M_AXI_TDOT:S_AXI_TDOT_REGS:S_AXI_ICAP_REGS:S_AXI_XADC_REGS} [get_bd_ports clk_core_out]
+
   validate_bd_design
   save_bd_design
 }

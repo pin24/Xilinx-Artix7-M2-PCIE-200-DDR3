@@ -57,10 +57,10 @@ if errorlevel 1 (
 echo Exported certificate: %PKG_DIR%\XDMA.cer
 
 echo === Compiling XDMA.sys ===
-REM FIX BC-1 (DRV-5): compile driver/driver.c (the file fixed by FIX-1 with
-REM AXI_LITE_BASE subtraction in BOTH EvtIoRead and EvtIoWrite). Do NOT switch
-REM to xdma_driver_win_src_2017/sys/driver.c — that file has the Read/Write
-REM asymmetry (D4 / DRV-5 B-3) and a different security_cookie constant.
+REM FIX BC-1 (DRV-5): compile driver/driver.c + security_cookie.c
+REM NOTE: security_cookie.c does NOT include wdf.h (avoids C2373 conflict
+REM with vcruntime.h __security_cookie extern). driver.c includes wdf.h.
+REM Do NOT include ucrt include/lib paths — KMDF drivers do not need CRT.
 cl.exe /nologo /c /O1 /GS- /kernel /Zp8 /Gy /GF /GR- /Gz /TC ^
     /Fo"%TMP_DIR%\driver.obj" ^
     /D_WIN64 /D_AMD64_ /DAMD64 /DWINNT=1 ^
@@ -68,21 +68,30 @@ cl.exe /nologo /c /O1 /GS- /kernel /Zp8 /Gy /GF /GR- /Gz /TC ^
     /D_UNICODE /DUNICODE ^
     /I"%KIT_ROOT%\Include\%WDK_VERSION%\km" ^
     /I"%KIT_ROOT%\Include\%WDK_VERSION%\shared" ^
-    /I"%KIT_ROOT%\Include\%WDK_VERSION%\um" ^
-    /I"%KIT_ROOT%\Include\%WDK_VERSION%\ucrt" ^
     /I"%KIT_ROOT%\Include\wdf\kmdf\1.15" ^
     "%~dp0driver.c"
 if %ERRORLEVEL% neq 0 (
     echo ERROR: driver.c compilation failed
     exit /b 1
 )
+cl.exe /nologo /c /O1 /GS- /kernel /Zp8 /Gy /GF /GR- /Gz /TC ^
+    /Fo"%TMP_DIR%\security_cookie.obj" ^
+    /D_WIN64 /D_AMD64_ /DAMD64 /DWINNT=1 ^
+    /D_WIN32_WINNT=0x0A00 /DNTDDI_VERSION=0x0A000002 ^
+    /D_UNICODE /DUNICODE ^
+    /I"%KIT_ROOT%\Include\%WDK_VERSION%\km" ^
+    /I"%KIT_ROOT%\Include\%WDK_VERSION%\shared" ^
+    "%~dp0security_cookie.c"
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: security_cookie.c compilation failed
+    exit /b 1
+)
 
 echo === Linking XDMA.sys ===
 link.exe /nologo /entry:DriverEntry /subsystem:native /machine:x64 /driver /kernel /nodefaultlib ^
-    "%TMP_DIR%\driver.obj" ^
+    "%TMP_DIR%\driver.obj" "%TMP_DIR%\security_cookie.obj" ^
     /out:"%BUILD_DIR%\XDMA.sys" ^
     /LIBPATH:"%KIT_ROOT%\Lib\%WDK_VERSION%\km\x64" ^
-    /LIBPATH:"%KIT_ROOT%\Lib\%WDK_VERSION%\ucrt\x64" ^
     /LIBPATH:"%KIT_ROOT%\Lib\wdf\kmdf\x64\1.15" ^
     ntoskrnl.lib hal.lib wdfldr.lib wdfdriverentry.lib
 if %ERRORLEVEL% neq 0 (

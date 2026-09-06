@@ -28,7 +28,7 @@ set PROJ_NAME  "m2_artix7_xdma_ddr3_dfx"
 #      на который наступает генерация MIG IP; build.bat дополнительно делает
 #      subst репозитория);
 #   3) Linux/macOS: ${ROOT}/build/dfx_proj (внутри репозитория).
-# Выбранный каталог экспортируется дочерним скриптам (mig_refclk_post.tcl,
+# Выбранный каталог экспортируется дочерним скриптам (post_bd_dfx.tcl и BD-скрипты,
 # post_bd_dfx.tcl) через переменную окружения PROJ_DIR_BUILD.
 if {[info exists ::env(PROJ_DIR)] && ${::env(PROJ_DIR)} ne ""} {
     set PROJ_DIR [file normalize ${::env(PROJ_DIR)}]
@@ -358,7 +358,6 @@ if {$pcie_ip_xdc ne ""} {
 
 if {${SKIP_SYNTH}} {
     puts "=== SKIP_SYNTH=1 — exiting before synth ==="
-    save_project_as ${PROJ_DIR}/${PROJ_NAME}.xpr -force
     close_project
     exit 0
 }
@@ -368,11 +367,6 @@ puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
-
-# AUDIT-02: create_clock mig_refclk на REFCLK pin MIG IODELAYCTRL
-# выполняем в TCL.POST после synth (когда pin существует в netlist).
-# До synth get_pins возвращает пустой список — см. ERROR_HISTORY.md BUG-026.
-set_property STEPS.SYNTH_DESIGN.TCL.POST ${ROOT}/scripts/mig_refclk_post.tcl [get_runs synth_1]
 
 launch_runs synth_1 -jobs ${JOBS}
 wait_on_run synth_1
@@ -396,7 +390,6 @@ if {$pcie_ip_xdc ne ""} {
 # ---------- 8. Implementation + Bitstream ----------
 puts "=== 8. IMPLEMENTATION + BITSTREAM ==="
 current_run [get_runs impl_1]
-set_property STEPS.PLACE_DESIGN.TCL.PRE ${ROOT}/scripts/suppress_warnings.tcl [get_runs impl_1]
 # Генерировать .bin вместе с .bit и в дочерних конфигурациях RP (частичные
 # битстримы понадобятся для горячей замены через ICAP — pytorch_layer/icap_load.py)
 catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}
@@ -410,7 +403,7 @@ if {[string first "complete" [string tolower $st2]] == -1} {
     exit 1
 }
 
-# ---------- 8.5 FATAL TIMING GATE (BUG-035) ----------
+# ---------- 8.5 FATAL TIMING GATE (BUG-038) ----------
 # Vivado по умолчанию пишет битстрим даже при WNS<0 — гейт обязан стоять
 # ДО экспорта артефактов. WNS/WHS/WPWS < 0 => сборка ФАТАЛЬНА:
 #   - в artifacts_dfx не экспортируется ничего;
@@ -418,7 +411,7 @@ if {[string first "complete" [string tolower $st2]] == -1} {
 #   - в логе — вердикт с числами и worst paths, отчёт timing_FATAL.rpt.
 # Дополнительно гейтятся routed-отчёты дочерних (RP) реализаций —
 # partial-битстримы проверяются так же строго, как полный дизайн.
-puts "=== 8.5 FATAL TIMING GATE (BUG-035) ==="
+puts "=== 8.5 FATAL TIMING GATE (BUG-038) ==="
 source ${ROOT}/scripts/tcl_timing_lib.tcl
 set ARTIFACTS_DIR "${ROOT}/build/artifacts_dfx"
 file mkdir ${ARTIFACTS_DIR}
