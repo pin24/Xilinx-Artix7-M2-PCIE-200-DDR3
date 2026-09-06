@@ -36,9 +36,9 @@ module tb_tfadd_raw;
         for (int t = 0; t < 200; t++) begin
             @(posedge clk);
             if (dut.phase != 5)
-                $display("T%0d phase=%0d cnt=%0d e=%0d", t, dut.phase, dut.cnt, dut.e_sum);
+                $display("T%0d phase=%0d k=%0d e=%0d", t, dut.phase, dut.k_algn, dut.e_sum);
             if (dut.phase == 4)
-                $display("NORM sum=%h e=%0d val=%0d", dut.sum, dut.e_sum, dut.val_abs);
+                $display("NORM sum=%h e=%0d", dut.sum, dut.e_sum);
             if (valid_out) begin
                 $display("RESULT=%h", result);
                 break;
