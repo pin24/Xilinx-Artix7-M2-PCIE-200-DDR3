@@ -9,6 +9,11 @@
 //     отличаться — сравнение по событиям valid_out).
 //   * |Δe| >= 64: зона BUG-040 — serial работает на мусорном cnt; расхождения
 //     учитываются отдельно (DE64_DIFF), НЕ являются провалом теста.
+//   * нулевые операнды: зона BUG-041 — ref выбирает big по ЭКСПОНЕНТЕ и
+//     нулевой операнд с «большой» e съедает ненулевой; barrel-версия (фикс
+//     2026-09-06) права: x+0 == norm(x). Расхождения на ap==0 || bp==0
+//     учитываются отдельно (Z41_DIFF), НЕ являются провалом теста;
+//     покрытие обязано быть ненулевым (Z41_DIFF > 0).
 //   * латентность новой версии обязана быть ровно 6 тактов на каждой
 //     транзакции (LAT_ERR = 0).
 // Запуск (стена): xvlog -sv tfadd_raw.sv tfadd_raw_ref.sv tb_tfadd_equiv.sv
@@ -35,6 +40,7 @@ module tb_tfadd_equiv;
     always #5 clk = ~clk;
 
     int pass = 0, fail = 0, de64_diff = 0, de64_same = 0, lat_err = 0;
+    int z41_diff = 0, z41_same = 0;
 
     function automatic logic [79:0] tneg40(input logic [79:0] x);
         for (int t = 0; t < 40; t++) begin
@@ -79,9 +85,13 @@ module tb_tfadd_equiv;
         if (res_n === res_r) begin
             pass++;
             if (de >= 64) de64_same++;
+            if (ap == 80'h0 || bp == 80'h0) z41_same++;
         end else if (de >= 64) begin
             // зона BUG-040: serial на мусорном cnt — расхождение ожидаемо
             de64_diff++;
+        end else if (ap == 80'h0 || bp == 80'h0) begin
+            // зона BUG-041: ref без zero-shortcut — расхождение ожидаемо
+            z41_diff++;
         end else begin
             $display("[DIFF] %s de=%0d ae=%0d be=%0d ap=%h bp=%h: new=%h ref=%h",
                      tag, de, ae, be, ap, bp, res_n, res_r);
@@ -116,6 +126,13 @@ module tb_tfadd_equiv;
             run_one(80'h1 << 36, 8'sd62, 80'h1 << 36, 8'sd62 - 8'(d), "de64");
         end
 
+        // ---- направленные BUG-041: нулевые операнды (ref расходится — ОЖИДАЕМО) ----
+        run_one(80'h0, 8'sd20, 80'h1 << 36, 8'sd0, "z41-a0-big-e");   // 0 + 1: ref даст 0, new = norm(1)
+        run_one(80'h1 << 36, 8'sd0, 80'h0, 8'sd20, "z41-b0-big-e");   // 1 + 0
+        run_one(80'h0, -8'sd30, 80'h1 << 36, -8'sd40, "z41-a0-neg");  // 0 + 3^-22
+        run_one(80'h0, 8'sd0, 80'h0, 8'sd0, "z41-00");                // 0+0: совпадает
+        run_one(80'h0, -8'sd40, 80'h1 << 36, 8'sd40, "z41-a0-sat");   // 0 + max: SAT в new
+
         // ---- случайные: продукты (e ∈ [-98,62], |Δe| <= 63) ----
         repeat (3000) begin
             ra = {$urandom, $urandom}; rb = {$urandom, $urandom};
@@ -149,11 +166,20 @@ module tb_tfadd_equiv;
             re_b = 8'(beb);
             run_one(ra, re_a, rb, re_b, "rnd-de64");
         end
+        // ---- случайные с нулевым операндом (зона BUG-041) ----
+        repeat (300) begin
+            ra = {$urandom, $urandom}; rb = {$urandom, $urandom};
+            re_a = 8'($urandom % 81) - 8'sd40;
+            re_b = 8'($urandom % 81) - 8'sd40;
+            if ($urandom % 2) ra = 80'h0; else rb = 80'h0;
+            run_one(ra, re_a, rb, re_b, "rnd-z41");
+        end
 
         $display("=================================================");
         $display("EQUIV: pass=%0d fail=%0d lat_err=%0d", pass, fail, lat_err);
         $display("BUG-040 zone (de>=64): diff=%0d same=%0d", de64_diff, de64_same);
-        if (fail == 0 && lat_err == 0 && de64_diff > 0)
+        $display("BUG-041 zone (zero ops): diff=%0d same=%0d", z41_diff, z41_same);
+        if (fail == 0 && lat_err == 0 && de64_diff > 0 && z41_diff > 0)
             $display("ALL EQUIV PASS");
         else
             $display("EQUIV FAILED");

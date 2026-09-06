@@ -132,7 +132,7 @@ def exp_code(e):
         q = abs(x) // 3 * (1 if x >= 0 else -1)
         rv = x - 3 * q
         if rv == 2:    code, q = 2, q + 1
-        elif rv == -2: code, q = 2, q - 1
+        elif rv == -2: code, q = 1, q - 1   # P1, как в SV (2'b01); было 2 — транскрипционная ошибка модели (найдена proof_tree_par.py T0/T1, 2026-09-06)
         elif rv == 1:  code = 1
         elif rv == -1: code = 2
         else:          code = 0

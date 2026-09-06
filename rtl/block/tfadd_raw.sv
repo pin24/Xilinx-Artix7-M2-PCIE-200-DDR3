@@ -27,6 +27,19 @@
 //   добавлялся в масштабе большого). Теперь de — 9 бит,
 //   k = min(|de|, 22) — проектное намерение (A6: barrel == intent на всём
 //   de 0..160; serial с багом расходится в 2880/30000 случайных de>=64).
+//
+// BUG-041 (исправлен здесь, 2026-09-06, найден при подготовке Шага 2 дерева):
+//   нулевые операнды. Выбор big/small шёл по ЭКСПОНЕНТЕ, а нулевой продукт /
+//   частичная сумма несёт МУСОРНУЮ экспоненту (tfmul_raw: prod=0,
+//   e=ea+eb-18 ∈ [-98,62]; нулевой TFloat48 = m=0, e=0). Если нулевой операнд
+//   оказывался «большим» (напр. нулевой вес при данных с e<0), ненулевой
+//   операнд уходил в m_small и сдвигался на min(|Δe|,22) тритов: при |Δe|>22 —
+//   ТЕРЯЛСЯ ПОЛНОСТЬЮ (x+0 == 0), при |Δe|<=22 — огрызался. Реальный кейс —
+//   тернарные веса {-1,0,+1}: много нулевых продуктов на уровне 0 дерева и
+//   нулевые частичные суммы (48'h0, e=0) на уровнях >=1. Теперь: za/zb —
+//   нулевой операнд выбрасывается, ненулевой идёт как big с k=0:
+//   x+0 == norm(x), 0+0 == 0 (семантика golden _raw_add из
+//   verify_compute_dot_par_raw.py). Доказательство: proof_tree_par.py (Z1/Z2).
 // ============================================================================
 module tfadd_raw (
     input  logic        clk,
@@ -99,6 +112,11 @@ module tfadd_raw (
     assign de_s = $signed({a_e[7], a_e}) - $signed({b_e[7], b_e});
     assign de_a = de_s[8] ? (9'd0 - de_s) : de_s;
     assign k_algn_c = (de_a > 9'd22) ? 5'd22 : de_a[4:0];
+
+    // ---- BUG-041: детект нулевых операндов (мантисса == 0, все триты 00) ----
+    logic za, zb;
+    assign za = (a_prod == 80'h0);
+    assign zb = (b_prod == 80'h0);
 
     // ---- ALGN баррель: чистый сбалансированный сдвиг на k_algn (nearest) ----
     logic [2*W-1:0] algn_y;
@@ -301,16 +319,32 @@ module tfadd_raw (
             case (phase)
                 PH_IDLE: begin
                     if (valid_in) begin
-                        if (a_e > b_e) begin
+                        if (za && zb) begin           // BUG-041: 0 + 0 = 0
+                            m_big   <= 84'h0;
+                            m_small <= 84'h0;
+                            m_big_e <= 8'sd0;
+                            k_algn  <= 5'd0;
+                        end else if (za) begin        // BUG-041: 0 + b = norm(b), b — big вне зависимости от e
+                            m_big   <= {2'b00, b_prod};
+                            m_small <= 84'h0;
+                            m_big_e <= b_e;
+                            k_algn  <= 5'd0;
+                        end else if (zb) begin        // BUG-041: a + 0 = norm(a)
+                            m_big   <= {2'b00, a_prod};
+                            m_small <= 84'h0;
+                            m_big_e <= a_e;
+                            k_algn  <= 5'd0;
+                        end else if (a_e > b_e) begin
                             m_big   <= {2'b00, a_prod};
                             m_small <= {2'b00, b_prod};
                             m_big_e <= a_e;
+                            k_algn <= k_algn_c;
                         end else begin
                             m_big   <= {2'b00, b_prod};
                             m_small <= {2'b00, a_prod};
                             m_big_e <= b_e;
+                            k_algn <= k_algn_c;
                         end
-                        k_algn <= k_algn_c;
                         phase <= PH_INIT;
                     end
                 end
