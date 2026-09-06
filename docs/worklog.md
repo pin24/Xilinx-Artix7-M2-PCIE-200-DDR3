@@ -368,6 +368,34 @@ Work Log:
 - Исправление: worklog.md скопирован во внутренний репо → docs/worklog.md (359 строк, Tasks 19–24, канал ошибок и протоколы); коммит 8051c5a «docs: add worklog.md (multi-agent work log, Tasks 19-23)»; push → origin/XDMA_DDR3_TMUL 5dd7006..8051c5a, verified 0/0.
 - ПРОТОКОЛ ДАЛЬНЕЙШЕГО ВЕДЕНИЯ: каноническая копия — docs/worklog.md во внутреннем репо (публикуется в GitHub); внешний /home/z/my-project/worklog.md — рабочая копия, синхронизируется cp при каждой записи; обе записи делаются в ОДНОМ ходе (append + cp + commit inner + push inner по разрешению).
 
+---
+
+Task ID: 25
+Agent: MultiTool (main)
+Task: Борьба с LUT over-utilization — NUM_MAC=16, 12, 8; тайминг-фиксы
+
+Work Log:
+- Исходная проблема: сборка падала с WNS=-120.809ns, TNS=-373780ns на fabric-домене 125 МГц (BUG-037). Критический путь: u_tdot/u_core/gen_mac[*].u_mul — tfmul_raw, 263 уровня логики, 139 CARRY4 в цепочке. Причина: 40-тритный комбинаторный carry-adder без пайплайна.
+- Фикс BUG-037 (7da39e5): per-column carry-save pipeline в tfmul_raw — глубина ~15 LUT/колонку, 48 тактов латентности. WNS должен был уйти в 0.
+- После фикса: синтез прошёл, но place_design упал с UTLZ-1 (LUT over-utilized). Цикл итераций:
+  - NUM_MAC=16, LUT=139797 (104%): 4% перебора — placer не уложил 5197 LUT.
+  - NUM_MAC=12, LUT=145689 (108%): парадоксально больше! Причина: параллельный агент добавил barrel tfadd_raw (6-stage, 5dd7006) и переписал tdot_axi4 (+401 строка) — конвейеризованный adder-дерево дал +30-40k LUT, перекрыв экономию от 16→12 умножителей.
+  - Дополнительно: pblock RP (20 колонок) не вмещал rp_m_axi_smc — расширен до 50 колонок (SLICE_X62Y50:SLICE_X111Y249).
+  - tfadd48.sv не был добавлен в build_dfx.tcl параллельным агентом — исправлено (добавлен в add_files).
+  - tfmul_raw.sv имел проблемы с кодировкой/объявлением переменных — вынесены на уровень модуля (сработало в 2025.2, где `logic` внутри for-block не поддерживается).
+- Текущий подход: NUM_MAC=8 (даёт экономию ~15k LUT относительно 12, влезает в 134600).
+- Driver: скомпилирован (driver.c + security_cookie.c, VS2015+WDK 10.0.14393.0), test_xdma.exe работает (ожидаемо не находит устройство). build.cmd требует Admin + testsigning.
+- Открыто: XADC (BUG-031, всегда 0°C), функциональная верификация на железе (0% — ни один битстрим не прошит).
+
+Stage Summary:
+- BUG-037 (тайминг) — carry-save pipeline в tfmul_raw — ✅ исправлено
+- BUG-035 (BD clock domains) — ✅ исправлено (ASSOCIATED_BUSIF с двоеточием на clk_core_out)
+- BUG-036 (multi-driven nets core_clk) — ✅ исправлено
+- LUT over-utilization — ❌ NUM_MAC=16/12 не влезают, переход на NUM_MAC=8
+- Driver — ✅ скомпилирован, ❌ не установлен (нет Admin)
+- HW verification — ❌ не начата
+- XADC — ❌ не работает (BUG-031, open)
+
 Stage Summary:
 - Worklog теперь на GitHub: https://github.com/pin24/Xilinx-Artix7-M2-PCIE-200-DDR3/blob/XDMA_DDR3_TMUL/docs/worklog.md
 - Больше не дублировать ошибку: каждая новая запись Task N = append в оба файла, коммит внутреннего, push по разрешению пользователя.
