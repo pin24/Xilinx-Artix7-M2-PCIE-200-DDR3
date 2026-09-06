@@ -7,33 +7,9 @@
 // to get BAR0 offset within the 64KB/128MB mapped window.
 #define AXI_LITE_BASE 0x40000000ULL
 
-// Security cookie — must be initialized with entropy (DEVLOG #18, CHANGELOG [1.0.0]).
-// /GS- disables cookie checks in compiled code, but the WDF 1.15 stub still
-// references __security_init_cookie; provide a real implementation instead
-// of the previous empty no-op (which caused BSOD system_thread_exception_not_handled
-// on FxDriverEntry due to GS epilog mismatch).
-volatile ULONG_PTR __security_cookie = 0x1B2F3A4C5D6E7F80ULL;
-
-void __security_init_cookie(void)
-{
-    LARGE_INTEGER perf;
-    perf = KeQueryPerformanceCounter(NULL);
-
-    ULONG_PTR new_cookie = (ULONG_PTR)perf.QuadPart;
-    new_cookie ^= (ULONG_PTR)&__security_cookie;  // ASLR address as additional entropy
-    if (new_cookie == 0) new_cookie = 0x1B2F3A4C5D6E7F80ULL;
-
-    // Atomically update the cookie (interlocked) — safe on SMP.
-    InterlockedExchangePointer((PVOID volatile *)&__security_cookie, (PVOID)new_cookie);
-}
-
-void __security_check_cookie(ULONG_PTR cookie)
-{
-    // Minimal no-op check — KMDF tolerates cookie changes; /GS- also disables
-    // checks in compiled code. Real MSVC would call __report_gsfailure here
-    // on mismatch, but we intentionally do nothing for robustness.
-    UNREFERENCED_PARAMETER(cookie);
-}
+// Security cookie (__security_cookie, __security_init_cookie, __security_check_cookie)
+// вынесены в отдельный файл security_cookie.c (без wdf.h, чтобы не было
+// C2373 conflict с vcruntime.h). DEVLOG #18, CHANGELOG [1.0.0].
 
 #define IOCTL_XDMA_GET_BAR_INFO \
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
