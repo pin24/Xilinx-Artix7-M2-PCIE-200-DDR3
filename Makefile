@@ -9,11 +9,13 @@
 #   make build            # полная DFX-сборка (synth+impl+bitstream+partials)
 #   make proj             # только создать проект (SKIP_SYNTH=1)
 #   make num_mac=16 build # собрать с NUM_MAC=16
+#   make adders=4 build   # собрать с ADDERS=4 (аддеров в barrel-дереве)
 #   make artifacts        # .bin/.mcs из готового impl_1 (без пересинтеза)
 #   make clean            # удалить каталог проекта и артефакты
 # ============================================================================
 
 NUM_MAC ?= 8
+ADDERS  ?= 4
 JOBS    ?= 7
 
 # Auto-detect Vivado on Windows
@@ -47,7 +49,7 @@ help:
 
 # Полная сборка DFX (проект создаётся заново, затем synth+impl+bitstream)
 build:
-	"$(VIVADO)" -mode batch -source $(BUILD_DFX) -tclargs NUM_MAC=$(NUM_MAC) JOBS=$(JOBS)
+	"$(VIVADO)" -mode batch -source $(BUILD_DFX) -tclargs NUM_MAC=$(NUM_MAC) ADDERS=$(ADDERS) JOBS=$(JOBS)
 
 # Только создать проект без синтеза
 proj:

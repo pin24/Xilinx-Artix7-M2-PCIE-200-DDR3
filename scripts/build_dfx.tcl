@@ -42,6 +42,7 @@ set PART       "xc7a200tfbg484-2"
 set TOP_NAME   "xdma_ddr3_core_top"
 
 set NUM_MAC     8
+set ADDERS      4
 set JOBS        8
 set SKIP_SYNTH  0
 
@@ -67,12 +68,12 @@ for {set _i 0} {$_i < $_nargs} {incr _i} {
     set _argn [string trimleft $_arg -]
     set _next [lindex $argv [expr {$_i + 1}]]
     # 1) каноническая форма KEY=VALUE одним словом (дефис перед KEY допустим)
-    if {[regexp {^(NUM_MAC|JOBS|SKIP_SYNTH)=(\d+)$} $_argn -> _k _v]} {
+    if {[regexp {^(NUM_MAC|JOBS|SKIP_SYNTH|ADDERS)=(\d+)$} $_argn -> _k _v]} {
         set $_k $_v
         continue
     }
     # 2)+3) позиционный fallback: ключ отдельным словом, значение следом
-    if {[lsearch -exact {NUM_MAC JOBS SKIP_SYNTH} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
+    if {[lsearch -exact {NUM_MAC JOBS SKIP_SYNTH ADDERS} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
         set $_argn $_next
         incr _i
         continue
@@ -88,6 +89,7 @@ puts " PART       : ${PART}"
 puts " TOP        : ${TOP_NAME}"
 puts " ARGS (raw) : ${argv}"
 puts " NUM_MAC    : ${NUM_MAC}"
+puts " ADDERS     : ${ADDERS}"
 puts " JOBS       : ${JOBS}"
 puts " SKIP_SYNTH : ${SKIP_SYNTH}"
 puts "============================================================"
@@ -319,6 +321,7 @@ add_files -norecurse \
     ${ROOT}/rtl/integration/xadc_temp.sv \
     ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
+set_property generic ADDERS=${ADDERS} [current_fileset]
 
 # ---------- 4. Констрейны ----------
 puts "=== 4. ADD CONSTRAINTS ==="

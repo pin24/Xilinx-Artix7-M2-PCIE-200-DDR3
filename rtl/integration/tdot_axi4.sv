@@ -65,6 +65,7 @@
 // ============================================================================
 module tdot_axi4 #(
     parameter int NUM_MAC = 32,
+    parameter int ADDERS  = 8,        // barrel-аддеров в дереве compute_dot_par_raw (1 = последовательный)
     parameter int C_S_AXI_DATA_WIDTH = 32,
     parameter int C_S_AXI_ADDR_WIDTH = 8,
     parameter int C_M_AXI_ID_WIDTH   = 1,
@@ -164,7 +165,7 @@ module tdot_axi4 #(
     logic core_valid_in, core_valid_out;
     logic [47:0] core_result;
 
-    compute_dot_par_raw #(.NUM_MAC(NUM_MAC)) u_core (
+    compute_dot_par_raw #(.NUM_MAC(NUM_MAC), .ADDERS(ADDERS)) u_core (
         .clk(clk), .rst_n(rst_n),
         .data_in(core_data), .weights(core_weights), .valid_in(core_valid_in),
         .result_out(core_result), .valid_out(core_valid_out)
