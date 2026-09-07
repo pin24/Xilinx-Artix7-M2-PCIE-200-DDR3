@@ -75,23 +75,91 @@ module tfadd_raw (
     endfunction
 
     function automatic logic [7:0] exp_code(input logic signed [7:0] v);
-        logic signed [7:0] x;
         logic [7:0] out;
-        x = v;
-        for (int i = 0; i < 4; i++) begin
-            logic signed [7:0] q;
-            logic signed [2:0] rv;
-            logic [1:0] rcode;
-            q = x / 3;
-            rv = x - 3*q;
-            if (rv == 2) begin rcode = 2'b10; q = q + 1; end
-            else if (rv == -2) begin rcode = 2'b01; q = q - 1; end
-            else if (rv == 1) rcode = 2'b01;
-            else if (rv == -1) rcode = 2'b10;
-            else rcode = 2'b00;
-            out[2*i +: 2] = rcode;
-            x = q;
-        end
+        case (v)
+            -8'sd40: out = {2'b10,2'b10,2'b10,2'b10};
+            -8'sd39: out = {2'b10,2'b10,2'b10,2'b00};
+            -8'sd38: out = {2'b10,2'b10,2'b10,2'b01};
+            -8'sd37: out = {2'b10,2'b10,2'b00,2'b10};
+            -8'sd36: out = {2'b10,2'b10,2'b00,2'b00};
+            -8'sd35: out = {2'b10,2'b10,2'b00,2'b01};
+            -8'sd34: out = {2'b10,2'b10,2'b01,2'b10};
+            -8'sd33: out = {2'b10,2'b10,2'b01,2'b00};
+            -8'sd32: out = {2'b10,2'b10,2'b01,2'b01};
+            -8'sd31: out = {2'b10,2'b00,2'b10,2'b10};
+            -8'sd30: out = {2'b10,2'b00,2'b10,2'b00};
+            -8'sd29: out = {2'b10,2'b00,2'b10,2'b01};
+            -8'sd28: out = {2'b10,2'b00,2'b00,2'b10};
+            -8'sd27: out = {2'b10,2'b00,2'b00,2'b00};
+            -8'sd26: out = {2'b10,2'b00,2'b00,2'b01};
+            -8'sd25: out = {2'b10,2'b00,2'b01,2'b10};
+            -8'sd24: out = {2'b10,2'b00,2'b01,2'b00};
+            -8'sd23: out = {2'b10,2'b00,2'b01,2'b01};
+            -8'sd22: out = {2'b10,2'b01,2'b10,2'b10};
+            -8'sd21: out = {2'b10,2'b01,2'b10,2'b00};
+            -8'sd20: out = {2'b10,2'b01,2'b10,2'b01};
+            -8'sd19: out = {2'b10,2'b01,2'b00,2'b10};
+            -8'sd18: out = {2'b10,2'b01,2'b00,2'b00};
+            -8'sd17: out = {2'b10,2'b01,2'b00,2'b01};
+            -8'sd16: out = {2'b10,2'b01,2'b01,2'b10};
+            -8'sd15: out = {2'b10,2'b01,2'b01,2'b00};
+            -8'sd14: out = {2'b10,2'b01,2'b01,2'b01};
+            -8'sd13: out = {2'b00,2'b10,2'b10,2'b10};
+            -8'sd12: out = {2'b00,2'b10,2'b10,2'b00};
+            -8'sd11: out = {2'b00,2'b10,2'b10,2'b01};
+            -8'sd10: out = {2'b00,2'b10,2'b00,2'b10};
+            -8'sd9 : out = {2'b00,2'b10,2'b00,2'b00};
+            -8'sd8 : out = {2'b00,2'b10,2'b00,2'b01};
+            -8'sd7 : out = {2'b00,2'b10,2'b01,2'b10};
+            -8'sd6 : out = {2'b00,2'b10,2'b01,2'b00};
+            -8'sd5 : out = {2'b00,2'b10,2'b01,2'b01};
+            -8'sd4 : out = {2'b00,2'b00,2'b10,2'b10};
+            -8'sd3 : out = {2'b00,2'b00,2'b10,2'b00};
+            -8'sd2 : out = {2'b00,2'b00,2'b10,2'b01};
+            -8'sd1 : out = {2'b00,2'b00,2'b00,2'b10};
+            8'sd0  : out = {2'b00,2'b00,2'b00,2'b00};
+            8'sd1  : out = {2'b00,2'b00,2'b00,2'b01};
+            8'sd2  : out = {2'b00,2'b00,2'b01,2'b10};
+            8'sd3  : out = {2'b00,2'b00,2'b01,2'b00};
+            8'sd4  : out = {2'b00,2'b00,2'b01,2'b01};
+            8'sd5  : out = {2'b00,2'b01,2'b10,2'b10};
+            8'sd6  : out = {2'b00,2'b01,2'b10,2'b00};
+            8'sd7  : out = {2'b00,2'b01,2'b10,2'b01};
+            8'sd8  : out = {2'b00,2'b01,2'b00,2'b10};
+            8'sd9  : out = {2'b00,2'b01,2'b00,2'b00};
+            8'sd10 : out = {2'b00,2'b01,2'b00,2'b01};
+            8'sd11 : out = {2'b00,2'b01,2'b01,2'b10};
+            8'sd12 : out = {2'b00,2'b01,2'b01,2'b00};
+            8'sd13 : out = {2'b00,2'b01,2'b01,2'b01};
+            8'sd14 : out = {2'b01,2'b10,2'b10,2'b10};
+            8'sd15 : out = {2'b01,2'b10,2'b10,2'b00};
+            8'sd16 : out = {2'b01,2'b10,2'b10,2'b01};
+            8'sd17 : out = {2'b01,2'b10,2'b00,2'b10};
+            8'sd18 : out = {2'b01,2'b10,2'b00,2'b00};
+            8'sd19 : out = {2'b01,2'b10,2'b00,2'b01};
+            8'sd20 : out = {2'b01,2'b10,2'b01,2'b10};
+            8'sd21 : out = {2'b01,2'b10,2'b01,2'b00};
+            8'sd22 : out = {2'b01,2'b10,2'b01,2'b01};
+            8'sd23 : out = {2'b01,2'b00,2'b10,2'b10};
+            8'sd24 : out = {2'b01,2'b00,2'b10,2'b00};
+            8'sd25 : out = {2'b01,2'b00,2'b10,2'b01};
+            8'sd26 : out = {2'b01,2'b00,2'b00,2'b10};
+            8'sd27 : out = {2'b01,2'b00,2'b00,2'b00};
+            8'sd28 : out = {2'b01,2'b00,2'b00,2'b01};
+            8'sd29 : out = {2'b01,2'b00,2'b01,2'b10};
+            8'sd30 : out = {2'b01,2'b00,2'b01,2'b00};
+            8'sd31 : out = {2'b01,2'b00,2'b01,2'b01};
+            8'sd32 : out = {2'b01,2'b01,2'b10,2'b10};
+            8'sd33 : out = {2'b01,2'b01,2'b10,2'b00};
+            8'sd34 : out = {2'b01,2'b01,2'b10,2'b01};
+            8'sd35 : out = {2'b01,2'b01,2'b00,2'b10};
+            8'sd36 : out = {2'b01,2'b01,2'b00,2'b00};
+            8'sd37 : out = {2'b01,2'b01,2'b00,2'b01};
+            8'sd38 : out = {2'b01,2'b01,2'b01,2'b10};
+            8'sd39 : out = {2'b01,2'b01,2'b01,2'b00};
+            8'sd40 : out = {2'b01,2'b01,2'b01,2'b01};
+            default: out = 8'h00;
+        endcase
         exp_code = out;
     endfunction
 
@@ -126,24 +194,47 @@ module tfadd_raw (
                              ? m_small[2*(t + k_algn) +: 2] : 2'b00;
     end
 
-    // ---- ADD: поразрядное сложение m_big + m_small (42 трита, как в serial) ----
-    logic [2*W-1:0] add_mant;
+    // ---- ADD: 42-тритная сумма, разбита на 3 секции по 14 тритов (BUG-043) ----
+    // Каждая секция ~14 тритов = ~14 LUT6 = ~7ns — укладывается в 8ns.
+    // Перенос между секциями — через регистр carry_mid0_q/carry_mid1_q.
+    logic signed [2:0] carry_mid0, carry_mid1;
+    logic [27:0] add_mant_sec0, add_mant_sec1, add_mant_sec2;  // 14 тритов каждая
+
     always_comb begin
-        logic signed [2:0] carry;
-        carry = 3'sd0;
-        for (int t = 0; t < W; t++) begin
+        logic signed [2:0] c;
+        c = 3'sd0;
+        for (int t = 0; t < 14; t++) begin
             logic signed [2:0] sv;
-            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + carry;
-            if (sv > 1) begin
-                carry = 3'sd1;
-                add_mant[2*t +: 2] = int2trit2(sv - 3);
-            end else if (sv < -1) begin
-                carry = -3'sd1;
-                add_mant[2*t +: 2] = int2trit2(sv + 3);
-            end else begin
-                carry = 3'sd0;
-                add_mant[2*t +: 2] = int2trit2(sv);
-            end
+            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
+            if (sv > 1) begin c = 3'sd1; add_mant_sec0[2*t +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec0[2*t +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec0[2*t +: 2] = int2trit2(sv); end
+        end
+        carry_mid0 = c;
+    end
+
+    always_comb begin
+        logic signed [2:0] c;
+        c = carry_mid0_q;
+        for (int t = 14; t < 28; t++) begin
+            logic signed [2:0] sv;
+            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
+            if (sv > 1) begin c = 3'sd1; add_mant_sec1[2*(t-14) +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec1[2*(t-14) +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec1[2*(t-14) +: 2] = int2trit2(sv); end
+        end
+        carry_mid1 = c;
+    end
+
+    always_comb begin
+        logic signed [2:0] c;
+        c = carry_mid1_q;
+        for (int t = 28; t < W; t++) begin
+            logic signed [2:0] sv;
+            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
+            if (sv > 1) begin c = 3'sd1; add_mant_sec2[2*(t-28) +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec2[2*(t-28) +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec2[2*(t-28) +: 2] = int2trit2(sv); end
         end
     end
 
@@ -298,15 +389,32 @@ module tfadd_raw (
         e_sum_next = es9[7:0];
     end
 
-    // ---- FSM: фиксированные 6 тактов ----
+    // ---- FSM: фиксированные 9 тактов (BUG-045: PH_NORM разбит на 2 под-фазы) ----
+    // PH_NORM1: вычисление sum_abs, p_found, P_can, k_nrm, fq, corr_n1, borrow/fq_dec
+    // PH_NORM2: вычисление norm_next (fq_sign/mul_y/shift) + e_sum_next
     localparam int PH_IDLE = 0;
     localparam int PH_INIT = 1;
     localparam int PH_ALGN = 2;
-    localparam int PH_ADD  = 3;
-    localparam int PH_NORM = 4;
-    localparam int PH_DONE = 5;
+    localparam int PH_ADD0 = 3;
+    localparam int PH_ADD1 = 4;
+    localparam int PH_ADD2 = 5;
+    localparam int PH_NORM1 = 6;
+    localparam int PH_NORM2 = 7;
+    localparam int PH_DONE = 8;
 
     logic [2:0] phase;
+    logic signed [2:0] carry_mid0_q, carry_mid1_q;
+    // ---- PH_NORM1 -> PH_NORM2: промежуточные регистры нормализации (BUG-045) ----
+    logic [83:0] sum_abs_q;   // модуль суммы (для ÷-барреля в NORM2)
+    logic [83:0] fq_dec_q;    // результат floor-деления (без инверсии знака)
+    logic [83:0] sum_q;       // копия sum (для ×-барреля mul_y и zero-случая)
+    logic        sum_neg_q;   // знак исходной sum (для инверсии fq_dec)
+    logic        up_big_q;    // P >= 19
+    logic        dn_small_q;  // P <= 17
+    logic        zero_q;      // sum == 0
+    logic        sat_q;       // overflow
+    logic [5:0]  k_dn_q;      // сдвиг влево (×3^k)
+    logic signed [7:0] e_sum_next_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -314,6 +422,7 @@ module tfadd_raw (
             m_big <= 0; m_small <= 0; m_big_e <= 0;
             e_sum <= 0; sum <= 0; result_q <= 0; valid_q <= 0;
             k_algn <= 0; zero_q <= 0; sat_q <= 0;
+            carry_mid0_q <= 0; carry_mid1_q <= 0;
         end else begin
             valid_q <= 0;
             case (phase)
@@ -354,18 +463,56 @@ module tfadd_raw (
                 end
                 PH_ALGN: begin
                     m_small <= algn_y;      // баррель выравнивания, 1 такт
-                    phase <= PH_ADD;
+                    phase <= PH_ADD0;
                 end
-                PH_ADD: begin
-                    sum <= add_mant;        // 42-тритная сумма, 1 такт
-                    phase <= PH_NORM;
+                PH_ADD0: begin
+                    sum[27:0]       <= add_mant_sec0[27:0];     // триты 0..13
+                    carry_mid0_q    <= carry_mid0;
+                    phase <= PH_ADD1;
                 end
-                PH_NORM: begin
+                PH_ADD1: begin
+                    sum[55:28]      <= add_mant_sec1[27:0];     // триты 14..27
+                    carry_mid1_q    <= carry_mid1;
+                    phase <= PH_ADD2;
+                end
+                PH_ADD2: begin
+                    sum[83:56]      <= add_mant_sec2[27:0];     // триты 28..41
+                    phase <= PH_NORM1;
+                end
+                PH_NORM1: begin
+                    // вычисляем всё то же, что было в PH_NORM, но без записи sum/e_sum
                     zero_q <= !p_found;
                     sat_q  <= sat_norm;
-                    if (!sat_norm) begin
-                        sum   <= norm_next;
-                        e_sum <= e_sum_next;
+                    sum_abs_q   <= sum_abs;
+                    fq_dec_q    <= fq_dec;
+                    sum_q       <= sum;
+                    sum_neg_q   <= sum_neg;
+                    up_big_q    <= up_big;
+                    dn_small_q  <= dn_small;
+                    k_dn_q      <= k_dn;
+                    e_sum_next_q <= e_sum_next;
+                    phase <= PH_NORM2;
+                end
+                PH_NORM2: begin
+                    if (!sat_q) begin
+                        if (up_big_q) begin
+                            // инверсия и запись fq_dec
+                            for (int t = 0; t < W; t++) begin
+                                logic [1:0] tv;
+                                tv = sum_neg_q ? ((fq_dec_q[2*t +: 2] == P1) ? N1 :
+                                    (fq_dec_q[2*t +: 2] == N1) ? P1 : 2'b00) : fq_dec_q[2*t +: 2];
+                                sum[2*t +: 2] <= tv;
+                            end
+                            e_sum <= e_sum_next_q;
+                        end else if (dn_small_q && k_dn_q != 0) begin
+                            for (int t = 0; t < W; t++) begin
+                                logic [1:0] tv;
+                                tv = (32'(t) >= 32'(k_dn_q)) ? sum_q[2*(t - k_dn_q) +: 2] : 2'b00;
+                                sum[2*t +: 2] <= tv;
+                            end
+                            e_sum <= e_sum_next_q;
+                        end
+                        // elif sum == 0 / P==18: sum не меняем
                     end
                     phase <= PH_DONE;
                 end
