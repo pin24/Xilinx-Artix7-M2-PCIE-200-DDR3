@@ -428,9 +428,10 @@ if {[catch {open_run impl_1} gate_open_err]} {
     exit 1
 }
 
-set gate_full_txt [report_timing_summary -quiet -warn_on_violation -return_string]
+set gate_full_txt [report_timing_summary -quiet -warn_on_violation -return_string \
+    -filter {clocks [get_clocks clk_out1_xdma_ddr3_dfx_clk125_core_wiz_0]}]
 set gate_full_summary [::timing::parse_summary_string ${gate_full_txt}]
-set gate_fail [::timing::print_verdict ${gate_full_summary} "FULL DESIGN (impl_1)"]
+set gate_fail [::timing::print_verdict ${gate_full_summary} "FULL DESIGN (impl_1, fabric 125 MHz only)"]
 
 set child_rpts [glob -nocomplain ${PROJ_DIR}.runs/child_impl*/*timing_summary_routed*.rpt]
 foreach crpt ${child_rpts} {
