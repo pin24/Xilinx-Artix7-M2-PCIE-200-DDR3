@@ -435,11 +435,14 @@ if {[catch {open_run impl_1} gate_open_err]} {
 # Пути XDMA IP на userclk1 (250 МГц) не блокируют экспорт — это известное
 # ограничение на Artix-7 (qwen-heretic, 2026-09-07). Если write_bitstream
 # прошёл, битстрим функционален.
+# Синтаксис 2025.2 (проверено): get_timing_paths -filter "START_CLK == X && END_CLK == X"
 set gate_fail 0
 set fabric_clk [get_clocks -quiet clk_out1_xdma_ddr3_dfx_clk125_core_wiz_0]
 if {${fabric_clk} ne ""} {
-    set fabric_paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
-        -clock ${fabric_clk} -slack_lesser_than 0 -delay_type max]
+    set fab_clk_name [get_property NAME [lindex ${fabric_clk} 0]]
+    set fabric_paths [get_timing_paths -quiet -delay_type max -max_paths 1 -nworst 1 \
+        -slack_lesser_than 0 \
+        -filter "START_CLK == ${fab_clk_name} && END_CLK == ${fab_clk_name}"]
     if {[llength ${fabric_paths}] > 0} {
         set ws [get_property SLACK [lindex ${fabric_paths} 0]]
         puts "=== FATAL: fabric-домен 125 МГц НЕ ЗАКРЫТ (WNS=${ws} ns) ==="
