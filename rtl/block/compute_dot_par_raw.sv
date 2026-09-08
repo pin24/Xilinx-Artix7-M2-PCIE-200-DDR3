@@ -100,7 +100,7 @@ module compute_dot_par_raw #(
     logic [7:0]  pe   [0:NUM_MAC-1];
     logic        pneg [0:NUM_MAC-1];
     logic [47:0] tbuf [0:1][0:NUM_MAC-1];
-    logic        t_dst;
+    logic        t_dst;          // double-buffer selector for tfadd_raw adder tree
 
     function automatic logic signed [2:0] trit_val_ab(input logic [1:0] c);
         case (c)
@@ -141,7 +141,6 @@ module compute_dot_par_raw #(
     logic [1:0]  phase;
     logic [7:0]  mul_done;
     logic [7:0]  t_lvl, t_cnt;
-    logic        t_dst;
     logic [7:0]  rnd_issue;               // следующий раунд выдачи внутри уровня
     logic [7:0]  collected;               // собрано результатов на уровне
     logic [ADDERS-1:0] ad_busy_q;         // аддер занят (от выдачи до valid_out)

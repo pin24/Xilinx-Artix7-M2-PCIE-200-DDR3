@@ -129,7 +129,7 @@ if {[get_bd_cells -quiet xlconcat_irq] eq ""} {
 }
 connect_bd_net [get_bd_ports tdot_irq] [get_bd_pins xlconcat_irq/In0]
 connect_bd_net [get_bd_pins xlconstant_irq15/dout] [get_bd_pins xlconcat_irq/In1]
-connect_bd_net [get_bd_pins xlconcat_irq/dout] [get_bd_pins xdma_0/usr_irq_req]
+connect_bd_net [get_bd_pins xlconcat_irq/dout[0]] [get_bd_pins xdma_0/usr_irq_req]
 puts " tdot_irq -> usr_irq_req[0] (MSI-X), In1..15 = 0"
 
 # ============================================================================
