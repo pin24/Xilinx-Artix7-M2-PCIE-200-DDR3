@@ -64,3 +64,18 @@ if {![catch {
 }]} { }
 
 puts "=== timing_exceptions_post.tcl DONE ==="
+
+# ---- GTPE2_CHANNEL LOC (динамический поиск, BUG-047) ----
+# XDMA Gen2 x4 на Artix-7: lanes 0-3 = GTPE2_CHANNEL_X0Y4-7.
+# Жёсткие пути в early.xdc ломаются при смене версии IP (12-2285).
+set gt_cells [get_cells -hierarchical -quiet \
+    -filter {PRIMITIVE_TYPE =~ *.GTPE2_CHANNEL.* && INST_NAME =~ *pipe_lane*}]
+if {[llength $gt_cells] >= 4} {
+    set_property LOC GTPE2_CHANNEL_X0Y4 [lindex $gt_cells 0]
+    set_property LOC GTPE2_CHANNEL_X0Y5 [lindex $gt_cells 1]
+    set_property LOC GTPE2_CHANNEL_X0Y6 [lindex $gt_cells 2]
+    set_property LOC GTPE2_CHANNEL_X0Y7 [lindex $gt_cells 3]
+    puts "INFO: GTPE2_CHANNEL LOC assigned via dynamic search"
+} else {
+    puts "CRITICAL WARNING: only [llength $gt_cells] GTPE2_CHANNEL cells found (need >=4)"
+}
