@@ -328,15 +328,15 @@ puts "=== 4. ADD CONSTRAINTS ==="
 set pins_xdc  ${ROOT}/constraints/xdma_ddr3_pins.xdc
 set early_xdc ${ROOT}/constraints/xdma_ddr3_early.xdc
 set pblock_xdc ${ROOT}/constraints/pblock.xdc
-set tmg_xdc   ${ROOT}/constraints/timing_exceptions.xdc
+set tmg_tcl   ${ROOT}/constraints/timing_exceptions.tcl
 add_files -fileset constrs_1 ${pins_xdc}
 add_files -fileset constrs_1 ${early_xdc}
-add_files -fileset constrs_1 ${tmg_xdc}
 add_files -fileset constrs_1 ${pblock_xdc}
 set_property PROCESSING_ORDER EARLY  [get_files ${early_xdc}]
 set_property PROCESSING_ORDER NORMAL [get_files ${pins_xdc}]
-set_property PROCESSING_ORDER NORMAL [get_files ${tmg_xdc}]
 set_property PROCESSING_ORDER LATE   [get_files ${pblock_xdc}]
+# timing_exceptions.tcl не читаем здесь — клоки BD ещё не существуют.
+# Применяем в TCL.POST synth_1 (см. ниже).
 update_compile_order -fileset constrs_1
 
 # Vivado 2025.2 DRC REQP-123 ложное срабатывание для clk200_clk_wiz
@@ -371,6 +371,9 @@ puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+# BUG-047: set_clock_groups применяем в TCL.POST синтеза — на этапе чтения
+# констрейнов порождённые клоки BD ещё не существуют (MMCM не элаборирован).
+set_property STEPS.SYNTH_DESIGN.TCL.POST ${ROOT}/scripts/timing_exceptions_post.tcl [get_runs synth_1]
 
 launch_runs synth_1 -jobs ${JOBS}
 wait_on_run synth_1

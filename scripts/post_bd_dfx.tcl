@@ -128,8 +128,10 @@ if {[get_bd_cells -quiet xlconcat_irq] eq ""} {
         CONFIG.IN0_WIDTH {1} CONFIG.IN1_WIDTH {15}] [get_bd_cells xlconcat_irq]
 }
 connect_bd_net [get_bd_ports tdot_irq] [get_bd_pins xlconcat_irq/In0]
-connect_bd_net [get_bd_pins xlconstant_irq15/dout] [get_bd_pins xlconcat_irq/In1]
-connect_bd_net [get_bd_pins xlconcat_irq/dout[0]] [get_bd_pins xdma_0/usr_irq_req]
+# BUG-048: квадратные скобки [0] в TCL экранируем фигурными — иначе
+# интерпретатор пытается выполнить 0 как команду (BD 5-4 "requires at least two pins").
+# xlconstant_irq15 не существует — In1 остаётся неподключенным (tied-off).
+connect_bd_net [get_bd_pins {xlconcat_irq/dout[0]}] [get_bd_pins xdma_0/usr_irq_req]
 puts " tdot_irq -> usr_irq_req[0] (MSI-X), In1..15 = 0"
 
 # ============================================================================

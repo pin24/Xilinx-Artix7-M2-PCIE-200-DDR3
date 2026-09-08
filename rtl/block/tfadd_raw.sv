@@ -411,8 +411,6 @@ module tfadd_raw (
     logic        sum_neg_q;   // знак исходной sum (для инверсии fq_dec)
     logic        up_big_q;    // P >= 19
     logic        dn_small_q;  // P <= 17
-    logic        zero_q;      // sum == 0
-    logic        sat_q;       // overflow
     logic [5:0]  k_dn_q;      // сдвиг влево (×3^k)
     logic signed [7:0] e_sum_next_q;
 
