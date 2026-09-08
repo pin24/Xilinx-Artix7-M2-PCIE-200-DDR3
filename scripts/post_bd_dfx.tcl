@@ -117,22 +117,26 @@ puts "=== 5c. tdot_irq -> xdma_0/usr_irq_req[0] ==="
 if {[get_bd_ports -quiet tdot_irq] eq ""} {
     create_bd_port -dir I -type intr tdot_irq
 }
-if {[get_bd_cells -quiet xlconstant_irq15] eq ""} {
-    create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 xlconstant_irq15
-    set_property -dict [list CONFIG.CONST_WIDTH {15} CONFIG.CONST_VAL {0}] \
-        [get_bd_cells xlconstant_irq15]
+# IRQ-конкатенатор и константа создаются только если xdma имеет usr_irq_req пин
+# (pf0_interrupt_pin=NONE при MSI-X-only — пина нет).
+if {[get_bd_pins -quiet xdma_0/usr_irq_req] ne ""} {
+    if {[get_bd_cells -quiet xlconstant_irq15] eq ""} {
+        create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 xlconstant_irq15
+        set_property -dict [list CONFIG.CONST_WIDTH {15} CONFIG.CONST_VAL {0}] \
+            [get_bd_cells xlconstant_irq15]
+    }
+    if {[get_bd_cells -quiet xlconcat_irq] eq ""} {
+        create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_irq
+        set_property -dict [list CONFIG.NUM_PORTS {2} \
+            CONFIG.IN0_WIDTH {1} CONFIG.IN1_WIDTH {15}] [get_bd_cells xlconcat_irq]
+    }
+    connect_bd_net [get_bd_ports tdot_irq] [get_bd_pins xlconcat_irq/In0]
+    connect_bd_net [get_bd_pins xlconstant_irq15/dout] [get_bd_pins xlconcat_irq/In1]
+    connect_bd_net [get_bd_pins {xlconcat_irq/dout[0]}] [get_bd_pins xdma_0/usr_irq_req]
+    puts " tdot_irq -> usr_irq_req[0] (MSI-X), In1..15 = 0"
+} else {
+    puts " WARNING: xdma_0/usr_irq_req not found (MSI-X only) — IRQ not connected"
 }
-if {[get_bd_cells -quiet xlconcat_irq] eq ""} {
-    create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_irq
-    set_property -dict [list CONFIG.NUM_PORTS {2} \
-        CONFIG.IN0_WIDTH {1} CONFIG.IN1_WIDTH {15}] [get_bd_cells xlconcat_irq]
-}
-connect_bd_net [get_bd_ports tdot_irq] [get_bd_pins xlconcat_irq/In0]
-# BUG-048: квадратные скобки [0] в TCL экранируем фигурными — иначе
-# интерпретатор пытается выполнить 0 как команду (BD 5-4 "requires at least two pins").
-# xlconstant_irq15 не существует — In1 остаётся неподключенным (tied-off).
-connect_bd_net [get_bd_pins {xlconcat_irq/dout[0]}] [get_bd_pins xdma_0/usr_irq_req]
-puts " tdot_irq -> usr_irq_req[0] (MSI-X), In1..15 = 0"
 
 # ============================================================================
 # 6. Очистка legacy M_AXI_ICAP (если есть)
