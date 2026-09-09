@@ -14,14 +14,11 @@ set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]
 set_property BITSTREAM.CONFIG.SPI_FALL_EDGE Yes [current_design]
 
 # --- 50 MHz system clock (BD port clk50 → clk_wiz → 200 MHz for MIG) ---
-# IMPORTANT: clk50 — 1-битный порт (input [0:0]). Vivado различает
-# [get_ports clk50] и [get_ports {clk50[0]}] как разные объекты. clk_wiz IP
-# генерирует внутренний create_clock [get_ports {clk50[0]}].
-# Все 3 строки используют {clk50[0]} для согласованности — иначе Vivado
-# пишет CRITICAL WARNING [Constraints 18-1055]: clk50 completely overrides clk50[0],
-# и IBUF_LOW_PWR не "прилипает" к тому же объекту, на котором создан clock.
+# BUG-050: create_clock клока clk50 передаём BD clk_wiz (он сам создаёт
+# create_clock 20ns на своём входе clk_in1). Дублирующий наш create_clock
+# -name clk50 даёт CRITICAL [Constraints 18-1056] 'clk50 completely overrides
+# clk50[0]' + перекрывает BD-клок. Оставляем только PACKAGE_PIN + IBUF.
 set_property -dict {PACKAGE_PIN Y18 IOSTANDARD LVCMOS33} [get_ports {clk50[0]}]
-create_clock -name clk50 -period 20.000 [get_ports {clk50[0]}]
 set_property IBUF_LOW_PWR TRUE [get_ports {clk50[0]}]
 
 # --- MIG IDELAYCTRL REFCLK: 200 MHz от clk200_clk_wiz ---
