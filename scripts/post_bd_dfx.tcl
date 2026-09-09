@@ -135,11 +135,12 @@ if {[get_bd_pins -quiet xdma_0/usr_irq_req] ne ""} {
 puts "=== 5d. Tie-off mig_7series_0/device_temp_i (BD 41-759) ==="
 if {[get_bd_cells -quiet const_device_temp] eq ""} {
     create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 const_device_temp
-    set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {0}] \
+    # device_temp_i — 12 бит (температура от MIG при XADC). Tie-off = 12'b0
+    set_property -dict [list CONFIG.CONST_WIDTH {12} CONFIG.CONST_VAL {0}] \
         [get_bd_cells const_device_temp]
 }
 connect_bd_net [get_bd_pins const_device_temp/dout] [get_bd_pins mig_7series_0/device_temp_i]
-puts " const_device_temp(0) -> mig_7series_0/device_temp_i"
+puts " const_device_temp(12'b0) -> mig_7series_0/device_temp_i"
 
 # ============================================================================
 # 6. Очистка legacy M_AXI_ICAP (если есть)
