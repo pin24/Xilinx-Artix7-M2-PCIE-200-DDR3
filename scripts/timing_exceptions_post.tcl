@@ -70,8 +70,24 @@ if {![catch {
 
 puts "=== timing_exceptions_post.tcl DONE ==="
 
-# ---- GTPE2_CHANNEL: НЕ назначаем LOC вручную (BUG-047 fix) ----
-# XDMA IP при генерации сам расставляет GTPE2 по своим .xdc (PACKAGE_PIN +
-# LOC). Ручной LOC конфликтует (Vivado 12-2285 'bel occupied').
-# PACKAGE_PIN для lanes уже заданы в xdma_ddr3_pins.xdc — этого достаточно.
-puts "INFO: GTPE2 LOC не назначаем — XDMA IP сам (фикс 12-2285)"
+# ---- GTPE2_CHANNEL: отключаем IP-сгенерированный XDC (BUG-051) ----
+# XDMA IP генерирует PCIE_X0Y0.xdc с неправильным lane→GTP mapping
+# (12-2285 'bel occupied'). Отключаем и подаём правильные LOC.
+set pcie_xdc [get_files -quiet -of [current_fileset] *PCIE_X0Y0.xdc]
+if {${pcie_xdc} ne ""} {
+    set_property IS_ENABLED false ${pcie_xdc}
+    puts "INFO: IP PCIE_X0Y0.xdc disabled (12-2285 fix)"
+}
+# Правильные LOC (схема: GTPE2_X0Y4-7 = lane[3..0])
+set gt_cells [get_cells -hierarchical -quiet \
+    -filter {PRIMITIVE_TYPE =~ *.GTPE2_CHANNEL.* && INST_NAME =~ *pipe_lane*}]
+if {[llength $gt_cells] >= 4} {
+    set_property LOC GTPE2_CHANNEL_X0Y7 [lindex $gt_cells 0]
+    set_property LOC GTPE2_CHANNEL_X0Y6 [lindex $gt_cells 1]
+    set_property LOC GTPE2_CHANNEL_X0Y5 [lindex $gt_cells 2]
+    set_property LOC GTPE2_CHANNEL_X0Y4 [lindex $gt_cells 3]
+    puts "INFO: GTPE2 LOC assigned: lane[0..3] → GTP_X0Y7/Y6/Y5/Y4"
+} else {
+    puts "CRITICAL WARNING: only [llength $gt_cells] GTPE2 cells found"
+}
+puts "=== timing_exceptions_post.tcl DONE ==="

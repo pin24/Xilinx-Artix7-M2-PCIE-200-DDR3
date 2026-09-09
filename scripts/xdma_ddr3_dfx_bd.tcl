@@ -653,19 +653,20 @@ proc create_root_design { parentCell } {
   set_property CONFIG.C_BUF_TYPE {IBUFDSGTE} $util_ds_buf
 
   set xdma_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xdma:4.2 xdma_0 ]
-  # Выбранный вариант (просчёт LUT): XDMA 128→64 бит @ 250 МГц.
-  # Полоса НЕ режется: 64 бит × 250 МГц = 128 бит × 125 МГц = 2,0 ГБ/с.
-  # Каналы DMA 2+2 СОХРАНЕНЫ (xdma_rnum_chnl/xdma_wnum_chnl не тронуты).
-  # axi_aclk автоматически станет 250 МГц — вся периферия/ядро/RP выведены
-  # в отдельный домен 125 МГц (clk125_core_wiz, см. ниже; BUG-034).
+  # BUG-051: XDMA 64-бит @ 250 МГц НЕ закрывает тайминг на Artix-7
+  # (внутренний userclk1 dsc_eng/dma_pcie_rc: WNS=-2.2ns, 13375 endpoints).
+  # AMD community: "design simply cannot run at 250 MHz in Artix-7".
+  # Решение: 128-бит @ 125 МГц — та же полоса 16B×125М = 2.0 ГБ/с,
+  # userclk1 = 125 МГц — тайминг закрывается штатно.
+  # Каналы DMA 2+2 СОХРАНЕНЫ. Периферия/ядро/RP — домен 125 МГц.
   set_property -dict [list \
     CONFIG.PF0_DEVICE_ID_mqdma {9024} \
     CONFIG.PF0_SRIOV_VF_DEVICE_ID {A034} \
     CONFIG.PF2_DEVICE_ID_mqdma {9224} \
     CONFIG.PF3_DEVICE_ID_mqdma {9324} \
-    CONFIG.axi_data_width {64_bit} \
+    CONFIG.axi_data_width {128_bit} \
     CONFIG.axilite_master_en {true} \
-    CONFIG.axisten_freq {250} \
+    CONFIG.axisten_freq {125} \
     CONFIG.cfg_mgmt_if {false} \
     CONFIG.pciebar2axibar_axil_master {0x40000000} \
     CONFIG.pf0_Use_Class_Code_Lookup_Assistant {true} \
