@@ -642,6 +642,12 @@ proc create_root_design { parentCell } {
     CONFIG.XML_INPUT_FILE {mig_a.prj} \
   ] $mig_7series_0
 
+  # BUG-052: device_temp_i (12 бит) — MIG XADC_En=Off, пин не подключён.
+  # Константу создаём ЗДЕСЬ (до validate в этом скрипте), иначе BD 41-759.
+  set const_device_temp [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 const_device_temp]
+  set_property -dict [list CONFIG.CONST_WIDTH {12} CONFIG.CONST_VAL {0}] $const_device_temp
+  connect_bd_net [get_bd_pins $const_device_temp/dout] [get_bd_pins mig_7series_0/device_temp_i]
+
   set rst_mig_7series_0_100M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_mig_7series_0_100M ]
 
   # BUG-034: сброс fabric-домена 125 МГц (ядро/RP/периферия).

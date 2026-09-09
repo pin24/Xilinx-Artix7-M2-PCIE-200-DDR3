@@ -127,22 +127,6 @@ if {[get_bd_pins -quiet xdma_0/usr_irq_req] ne ""} {
 }
 
 # ============================================================================
-# 5d. Tie-off: MIG device_temp_i (неподключен при XADC_En=Off, BD 41-759)
-# ============================================================================
-# BUG-052: CONFIG.TIE_OFF на BD-пине не существует (BD 41-1411) — для MIG
-# device_temp_i нужно явно подключить константу. Агент-исследователь
-# подтвердил: типовой путь — create_bd_cell xlconstant + connect_bd_net.
-puts "=== 5d. Tie-off mig_7series_0/device_temp_i (BD 41-759) ==="
-if {[get_bd_cells -quiet const_device_temp] eq ""} {
-    create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 const_device_temp
-    # device_temp_i — 12 бит (температура от MIG при XADC). Tie-off = 12'b0
-    set_property -dict [list CONFIG.CONST_WIDTH {12} CONFIG.CONST_VAL {0}] \
-        [get_bd_cells const_device_temp]
-}
-connect_bd_net [get_bd_pins const_device_temp/dout] [get_bd_pins mig_7series_0/device_temp_i]
-puts " const_device_temp(12'b0) -> mig_7series_0/device_temp_i"
-
-# ============================================================================
 # 6. Очистка legacy M_AXI_ICAP (если есть)
 # ============================================================================
 puts "=== 6. Очистка legacy M_AXI_ICAP ==="
