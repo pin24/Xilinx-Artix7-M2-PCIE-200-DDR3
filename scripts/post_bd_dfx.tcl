@@ -111,32 +111,17 @@ _clk_connect core_resetn_out rst_core_125M/peripheral_aresetn
 # ============================================================================
 # tdot_axi4 выставляет УРОВЕНЬ (sched_irq, держится до irq_ack хоста);
 # 2-FF синхронизация уже сделана в xdma_ddr3_core_top (домен axi_aclk 250).
-# usr_irq_req[15:0]: bit0 = tdot_irq, In1..15 = 0 (xlconstant 15 бит).
+# BUG-049: usr_irq_req в XDMA-конфиге MSI-X-only (pf0_interrupt_pin=NONE) —
+# пин шириной 1 бит. Подключаем tdot_irq НАПРЯМУЮ (1 бит → 1 бит),
+# без xlconcat/xlconstant (BD 41-2383 width mismatch 1 vs 16).
 puts "=== 5c. tdot_irq -> xdma_0/usr_irq_req[0] ==="
 
 if {[get_bd_ports -quiet tdot_irq] eq ""} {
     create_bd_port -dir I -type intr tdot_irq
 }
-# IRQ-конкатенатор и константа создаются только если xdma имеет usr_irq_req пин
-# (pf0_interrupt_pin=NONE при MSI-X-only — пина нет).
 if {[get_bd_pins -quiet xdma_0/usr_irq_req] ne ""} {
-    if {[get_bd_cells -quiet xlconstant_irq15] eq ""} {
-        create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 xlconstant_irq15
-        set_property -dict [list CONFIG.CONST_WIDTH {15} CONFIG.CONST_VAL {0}] \
-            [get_bd_cells xlconstant_irq15]
-    }
-    if {[get_bd_cells -quiet xlconcat_irq] eq ""} {
-        create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_irq
-        set_property -dict [list CONFIG.NUM_PORTS {2} \
-            CONFIG.IN0_WIDTH {1} CONFIG.IN1_WIDTH {15}] [get_bd_cells xlconcat_irq]
-    }
-    connect_bd_net [get_bd_ports tdot_irq] [get_bd_pins xlconcat_irq/In0]
-    connect_bd_net [get_bd_pins xlconstant_irq15/dout] [get_bd_pins xlconcat_irq/In1]
-    # BUG-048: пин dout у xlconcat — вектор 16 бит. Отдельный бит dout[0]
-    # НЕ является BD-пином (BD хранит вектор целиком) — get_bd_pins {dout[0]}
-    # возвращает пусто → BD 5-4. Подключаем весь вектор dout[15:0] к usr_irq_req[15:0].
-    connect_bd_net [get_bd_pins xlconcat_irq/dout] [get_bd_pins xdma_0/usr_irq_req]
-    puts " tdot_irq -> usr_irq_req[0] (MSI-X), In1..15 = 0"
+    connect_bd_net [get_bd_ports tdot_irq] [get_bd_pins xdma_0/usr_irq_req]
+    puts " tdot_irq -> usr_irq_req[0] (MSI-X, 1-bit direct)"
 } else {
     puts " WARNING: xdma_0/usr_irq_req not found (MSI-X only) — IRQ not connected"
 }
