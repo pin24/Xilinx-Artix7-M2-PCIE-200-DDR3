@@ -6,6 +6,52 @@
 
 ---
 
+## 2026-09-09 — XDMA 64-bit @ 250 МГц не закрывает тайминг на Artix-7 → 128-bit @ 125 МГц
+
+### [BUG-051] XDMA userclk1 internal timing violation WNS=-2.208ns
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/xdma_ddr3_dfx_bd.tcl` — конфиг XDMA (axi_data_width, axisten_freq) |
+| **Симптом** | Внутренние пути XDMA IP (dsc_eng.DSC, dma_pcie_rc/tag_did_conti_en_even) на userclk1 (250 МГц, 4 нс) не закрывались: WNS=-2.208ns, TNS=-7556ns, 13375 endpoints. fabric-домен 125 МГц при этом MET. |
+| **Причина** | XDMA 64-бит @ Gen2 x4 фиксирует userclk1 на 250 МГц. На Artix-7 XC7A200T это не закрывается (AMD Community: «design simply cannot run at 250 MHz in Artix-7»). |
+| **Исправление** | (1) axi_data_width 64→128_bit, (2) axisten_freq 250→125. userclk1 становится 125 МГц (8 нс). Пропускная способность не меняется: 128 бит × 125 МГц = 64 бит × 250 МГц = 2,0 ГБ/с. Каналы DMA 2+2 сохранены. |
+| **Результат** | userclk1: WNS=+0.884ns ✅ MET. Все XDMA-внутренние пути закрыты. |
+| **Сопутствующий фикс** | GT LOC 12-2285: сгенерированный XDMA PCIE_X0Y0.xdc отключён (IS_ENABLED false), т.к. его LOC конфликтовал с bel-занятостью. PACKAGE_PIN на лейны достаточны — XDMA сам размещает. |
+| **Статус** | ✅ Исправлено |
+
+**Урок**: на Artix-7 XDMA Gen2 x4 не может работать на 250 МГц. Использовать 128 бит @ 125 МГц.
+
+---
+
+## 2026-09-09 — BD 41-759 неподключённые пины в DFX BDC
+
+### [BUG-052] MIG device_temp_i (12 бит) без источника при XADC_En=Off
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/xdma_ddr3_dfx_bd.tcl` (константа device_temp — перенесена до validate) |
+| **Симптом** | BD 41-759 (input pins not connected) + BD 41-2383 (width mismatch 1 vs 12 у const_device_temp) |
+| **Причина** | MIG 7-series с XADC_En=Off имеет пин device_temp_i для внешнего температурного мониторинга. При XADC_En=Off он никуда не подключён. Попытка затискать CONFIG.TIE_OFF не сработала (BD 41-1411 — параметр не существует). |
+| **Исправление** | xlconstant 12 бит со значением 0 → device_temp_i. Создаётся в базовом скрипте (до validate), а не в post_bd (там validate уже прошёл). |
+| **Статус** | ✅ Исправлено |
+
+---
+
+## 2026-09-09 — set_clock_groups не применялся (TCL.POST synth — клоков ещё нет)
+
+### [BUG-047 fix v2] Перенос set_clock_groups в PLACE_DESIGN.TCL.PRE
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `scripts/build_dfx.tcl` (STEPS.PLACE_DESIGN.TCL.PRE) |
+| **Симптом** | В пост-скрипте все группы клоков возвращались пустыми → set_clock_groups не применялся → кросс-доменные пути (fab→userclk1) не исключались |
+| **Причина** | На этапе TCL.POST синтеза не все порождённые клоки (MMCM outputs) ещё существуют в DCP. Клоки гарантированно есть на этапе place_design (после link_design). |
+| **Исправление** | Хук из STEPS.SYNTH_DESIGN.TCL.POST → STEPS.PLACE_DESIGN.TCL.PRE (impl_1) |
+| **Статус** | ✅ Исправлено |
+
+---
+
 ## 2026-09-06 — Сборка NUM_MAC=8: CARRY4 overflow, Place 30-487 (20346 слайсов)
 
 ### [BUG-037] NUM_MAC=8 превышает слайсы по CARRY4 — 16241 блоков, 20346 слайсов требуется
