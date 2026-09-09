@@ -386,11 +386,14 @@ if {[string first "complete" [string tolower $st]] == -1} {
     exit 1
 }
 
-# PCIe IP XDC demotion post-synth
+# PCIe IP XDC demotion post-synth + GT LOC disable (BUG-051)
 set pcie_ip_xdc [get_files -all -quiet *PCIE_X0Y0.xdc]
 if {$pcie_ip_xdc ne ""} {
     set_property PROCESSING_ORDER NORMAL ${pcie_ip_xdc}
-    puts "=== PCIE IP xdc set to NORMAL (post-synth): ${pcie_ip_xdc} ==="
+    # BUG-051: отключаем сгенерированный XDC (конфликт LOC lane→GTP),
+    # подаём кастомные LOC в PLACE_DESIGN.TCL.PRE.
+    set_property IS_ENABLED false ${pcie_ip_xdc}
+    puts "=== PCIE IP xdc set to NORMAL + DISABLED (post-synth): ${pcie_ip_xdc} ==="
 } else {
     puts "=== WARNING: PCIE IP xdc STILL not found after synth ==="
 }
