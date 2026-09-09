@@ -371,9 +371,10 @@ puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
-# BUG-047: set_clock_groups применяем в TCL.POST синтеза — на этапе чтения
-# констрейнов порождённые клоки BD ещё не существуют (MMCM не элаборирован).
-set_property STEPS.SYNTH_DESIGN.TCL.POST ${ROOT}/scripts/timing_exceptions_post.tcl [get_runs synth_1]
+# BUG-047: set_clock_groups применяем НЕ в TCL.POST synth (клоки BD в этой
+# точке ещё не все сформированы — диагностика показала пустые группы).
+# Применяем в PLACE_DESIGN.TCL.PRE (impl_1): клоки в DCP гарантированно есть.
+set_property STEPS.PLACE_DESIGN.TCL.PRE ${ROOT}/scripts/timing_exceptions_post.tcl [get_runs impl_1]
 
 launch_runs synth_1 -jobs ${JOBS}
 wait_on_run synth_1
