@@ -75,7 +75,6 @@ puts "=== timing_exceptions_post.tcl DONE ==="
 # Здесь задаём правильные LOC: lane[0..3] → GTP_X0Y7/6/5/4 (схема M.2).
 set gt_cells [get_cells -hierarchical -quiet \
     -filter {PRIMITIVE_TYPE =~ *.GTPE2_CHANNEL.* && INST_NAME =~ *pipe_lane*}]
-put_ok 0
 if {[llength $gt_cells] >= 4} {
     set_property LOC GTPE2_CHANNEL_X0Y7 [lindex $gt_cells 0]
     set_property LOC GTPE2_CHANNEL_X0Y6 [lindex $gt_cells 1]
