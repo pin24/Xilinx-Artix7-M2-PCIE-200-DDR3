@@ -13,7 +13,7 @@ REM FIX-5 (Task 32): single source of truth for the driver version.
 REM MUST match driver\XDMA.inx DriverVer. Bump on EVERY driver change:
 REM pnputil will not replace an already-staged package unless the new
 REM package's DriverVer (version part) is strictly newer.
-set DRIVER_VERSION=1.1.0.0
+set DRIVER_VERSION=1.1.1.0
 
 REM === FIX F2: Admin check ===
 REM certutil -addstore, bcdedit, sc create, copy to System32\drivers all require elevation.
@@ -61,6 +61,19 @@ if errorlevel 1 (
     exit /b 1
 )
 echo Exported certificate: %PKG_DIR%\XDMA.cer
+
+echo === FIX-6: stale-source guard ===
+REM Pre-63b97ee driver.c defined __security_cookie inline (volatile) -> C2373
+REM on VS2015 (vcruntime.h declares it plain). Since 63b97ee the cookie lives
+REM in security_cookie.c. If driver.c still contains an inline DEFINITION,
+REM the working copy is stale — fail fast with a clear message.
+findstr /C:"__security_cookie =" "%~dp0driver.c" >nul 2>&1
+if not errorlevel 1 (
+    echo ERROR: stale driver.c detected — it defines __security_cookie inline.
+    echo        The cookie lives in security_cookie.c since commit 63b97ee.
+    echo        Update the working copy: git fetch, then git pull --ff-only origin XDMA_DDR3_TMUL
+    exit /b 1
+)
 
 echo === Compiling XDMA.sys ===
 REM FIX BC-1 (DRV-5): compile driver/driver.c + security_cookie.c

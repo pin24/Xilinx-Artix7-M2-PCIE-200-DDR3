@@ -498,3 +498,18 @@ Stage Summary:
 - За стендом: пересобрать driver/build.cmd (проверить «Creating INF from INX (version 1.1.0.0)» и отсутствие fallback-сообщения), затем install.cmd от админа + reboot; вердикт полной сборки Cycle 7 (CARRY4/слайсы после pure-LUT) всё ещё ожидается.
 
 **Push-запись (Task 32, дополнение):** push выполнен по явной команде пользователя — origin/XDMA_DDR3_TMUL 268b9b2..10ef0be (Task 31 + FIX-5 + Task 32 worklog). Верификация: ahead/behind 0/0, рабочее дерево чистое.
+---
+Task ID: 33
+Agent: main (Super Z)
+Task: Стенд: driver.c(15) C2373 __security_cookie при build.cmd — диагностика + все доступные проверки Windows-кода + FIX-6
+
+Work Log:
+- ДИАГНОЗ (доказан): файл driver.c на стенде СТАРЫЙ (до 63b97ee от 2026-09-06). Ошибка «driver.c(15) C2373 __security_cookie: переопределение, различные модификаторы» точно совпадает со старым «Variant B»: строка 15 = «volatile ULONG_PTR __security_cookie = ...». В ТЕКУЩЕМ driver.c строка 15 = CTL_CODE (cookie вынесен в security_cookie.c коммитом 63b97ee, определений в driver.c НЕТ). Причина конфликта: wdf.h тянет vcruntime.h (decl __security_cookie plain), а volatile-определение конфликтует — воспроизведено gcc (conflicting type qualifiers), plain-def без конфликта.
+- ВЕРСИОННАЯ АРИФМЕТИКА: build.cmd у стенда НОВЫЙ (FIX-4/5 логика в логе), а driver.c старый — рабочая копия смешанная (клон из окна FIX-4..63b97ee либо частичная перезапись). Мгновенный фикс для стенда: git pull --ff-only.
+- ПРОВЕРКИ (все доступные вне Windows): собран gcc-харнесс со стаб-заголовками WDK (scripts/wdk_stub/: ntddk/wdf/ntintsafe, EVT_* функциональные typedef + PFN_* для полей, DRIVER_INITIALIZE как функциональный тип, CTL_CODE/DECLARE_CONST_UNICODE_STRING/MmMapIoSpace/LARGE_INTEGER и пр.) → driver.c (440 строк): 0 ошибок/0 критических замечаний, консистентность всех EVT-прототипов и присвоений колбэков подтверждена; security_cookie.c: см. фикс; repro C2373: volatile-def = ошибка, plain-def = OK; test_xdma.c: symlnk XDMA0 == \DosDevices\XDMA0 ✅, кодировка UTF-8 без BOM (MSVC безопасно), флаги cl /GS- /kernel /Gz согласованы с cookie-выносом; BAR-логика: bounds-проверки корректны (BAR2 «>» vs BAR0 «>=» — косметика, не эксплуатируется, bufferLen>=1 гарантирован).
+- НАЙДЕН и ИСПРАВЛЕН РЕАЛЬНЫЙ ДЕФЕКТ (был бы следующим сбое): security_cookie.c использовал uintptr_t — в km-инклудах WDK (ntddk.h) он НЕ определён (живёт в <stdint.h>/<vcruntime.h>) → C2061 на чистой сборке. Заменён на ULONG_PTR (basetsd.h, бинарно идентичен); функции помечены __cdecl.
+- FIX-6 (коммит): security_cookie.c (ULONG_PTR/__cdecl), build.cmd — stale-гард перед компиляцией (findstr «__security_cookie =» в driver.c → понятная ошибка «обновите рабочую копию» вместо криптичного C2373), версия 1.1.0.0→1.1.1.0 (правило bump), XDMA.inx DriverVer 1.1.1.0.
+Stage Summary:
+- Корень сбоя стенда — устаревший driver.c (смешанная рабочая копия), НЕ код в репо. Текущий код после всех доступных проверок чист: driver.c 0 ошибок, security_cookie.c 0/0 (после ULONG_PTR-фикса).
+- Коммит FIX-6 ЛОКАЛЬНО (по­сле Task 31/32: ahead 3 от origin). Push — по явной команде.
+- За стендом по порядку: (1) git pull --ff-only (получит и FIX-6 после пуша); (2) build.cmd — должно пройти «Stale-source guard: OK» и «Creating INF from INX (version 1.1.1.0)»; (3) install.cmd от админа → reboot → test_xdma.exe.
