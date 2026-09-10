@@ -6,11 +6,11 @@
 //   [0x04] VCCINT  {16'h0, raw_vccint[15:0]}    — внутреннее питание
 //   [0x08] VALID   {31'b0, valid_q}             — флаг валидности данных
 //
-// Источник данных: модуль ожидает external XADC Wizard IP, который пишет
-// raw_temp / raw_vccint / raw_valid в этом же такте. В текущей интеграции
-// (без XADC Wizard в BD) эти входы привязаны к 0 — TEMP=0, VCCINT=0, VALID=0.
-// Для активации monitor_temp.py нужно добавить xilinx.com:ip:xadc_wiz в BD
-// и подключить его выходы к u_xadc.raw_* (см. docs/ADDRESS_MAP.md §2.1).
+// Источник данных: xadc_prim.sv (DRP-FSM вокруг примитива XADC), который
+// раз в секунду сэмплит температуру (DADDR 0x00) и VCCINT (DADDR 0x06) и
+// подаёт raw_temp/raw_vccint/raw_valid в этот модуль. BUG-031: MIG с
+// XADC_En=Off — физический XADC свободен, примитив один (UTLZ-1 не будет).
+// Хост читает 0x46000000: TEMP/VCCINT/VALID (monitor_temp.py).
 //
 // AXI-Lite slave переписан по образцу tdot_axi4.sv: независимые защёлки AW/W
 // (приём в разных тактах не приводит к зависанию шины), корректная защита
