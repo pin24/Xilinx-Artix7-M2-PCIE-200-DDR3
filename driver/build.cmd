@@ -9,6 +9,12 @@ set WDK_VERSION=10.0.14393.0
 set VS_ROOT=C:\Program Files (x86)\Microsoft Visual Studio 14.0
 set SYS=%~dp0
 
+REM FIX-5 (Task 32): single source of truth for the driver version.
+REM MUST match driver\XDMA.inx DriverVer. Bump on EVERY driver change:
+REM pnputil will not replace an already-staged package unless the new
+REM package's DriverVer (version part) is strictly newer.
+set DRIVER_VERSION=1.1.0.0
+
 REM === FIX F2: Admin check ===
 REM certutil -addstore, bcdedit, sc create, copy to System32\drivers all require elevation.
 net session >nul 2>&1
@@ -99,13 +105,24 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-echo === Creating INF from INX ===
-stampinf -f "%SYS%\XDMA.inx" -d "*" -a "amd64" -v "*" -k "1.15" -x
-copy /Y "%TMP_DIR%\XDMA.inf" "%BUILD_DIR%\XDMA.inf" >nul 2>&1
+echo === Creating INF from INX (version %DRIVER_VERSION%) ===
+REM FIX-5 (Task 32): stampinf MUST write an explicit output via -o. The old
+REM call had no -o and -v "*" — stamped output went to stdout (or nowhere),
+REM %TMP_DIR%\XDMA.inf never appeared, the silent fallback copied the RAW
+REM .inx as .inf with the FROZEN version 1.0.0.0. Every rebuild then shipped
+REM the same DriverVer and pnputil silently kept the OLD staged package —
+REM the driver "did not install/upgrade". -v now passes DRIVER_VERSION
+REM explicitly; a missing output is a hard error, not a silent downgrade.
+stampinf -f "%SYS%\XDMA.inx" -o "%TMP_DIR%\XDMA.inf" -d "*" -a "amd64" -v "%DRIVER_VERSION%" -k "1.15" -x
 if %ERRORLEVEL% neq 0 (
-    echo stampinf failed, copying raw inx as inf...
-    copy /Y "%SYS%\XDMA.inx" "%BUILD_DIR%\XDMA.inf" >nul
+    echo ERROR: stampinf failed ^(INF not stamped^)
+    exit /b 1
 )
+if not exist "%TMP_DIR%\XDMA.inf" (
+    echo ERROR: stampinf did not produce %TMP_DIR%\XDMA.inf
+    exit /b 1
+)
+copy /Y "%TMP_DIR%\XDMA.inf" "%BUILD_DIR%\XDMA.inf" >nul
 
 echo === Creating catalog file ===
 inf2cat /driver:"%BUILD_DIR%" /os:10_x64 /verbose

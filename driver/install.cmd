@@ -63,32 +63,41 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM 3. Install the driver via PnP (preferred over sc create).
+REM 3. Remove any previously staged XDMA package (FIX-5, Task 32).
+REM    pnputil /add-driver does NOT replace an already-staged package when the
+REM    new DriverVer is not strictly newer — it silently keeps the OLD copy
+REM    and the "updated" driver never appears. Deleting the old oemNN.inf
+REM    first makes every install.cmd run a clean version upgrade.
+echo [3/5] Removing previously staged XDMA package (version upgrade)...
+powershell -NoProfile -Command "$out = pnputil /enum-drivers; $published = $null; foreach ($line in $out) { if ($line -match 'Published Name:\s+(oem\d+\.inf)') { $published = $matches[1] } elseif ($line -match 'Original Name:\s+xdma\.inf' -and $published) { Write-Host ('  removing previous ' + $published); pnputil /delete-driver $published /uninstall /force 2>$null; $published = $null } }"
+echo   (no output above = nothing previously staged — OK on first install)
+
+REM 4. Install the driver via PnP (preferred over sc create).
 REM    pnputil /add-driver copies XDMA.sys to DriverStore, registers the INF
 REM    as oemNN.inf, and binds it to the PCI device VEN_10ee&DEV_7024 when
 REM    the FPGA enumerates. Requires XDMA.inf to reference [XDMA_Inst.NT.Wdf]
 REM    (added by FIX F1) or WDF loader fails with STATUS_WDF_VERIFICATION_FAILURE.
-echo [3/4] Installing driver via pnputil...
+echo [4/5] Installing driver via pnputil...
 pnputil /add-driver "%SCRIPT_DIR%build\sys\XDMA.inf" /install
 if errorlevel 1 (
     echo WARNING: pnputil /add-driver returned non-zero.
-    echo        The INF may already be installed, or the device is not present yet.
-    echo        Falling back to manual sc-create path is available in build.cmd.
+    echo        The device may not be present yet — the package is staged and
+    echo        will bind automatically when the FPGA enumerates (VEN_10ee&DEV_7024).
 )
 
-REM 4. Optional: manual sc-create path (commented out by default).
+REM 5. Optional: manual sc-create path (commented out by default).
 REM    Use this only if pnputil fails AND you want to test without the FPGA
 REM    board physically present (e.g. for driver load smoke-testing).
 REM sc create XDMA type= kernel binpath= "%SCRIPT_DIR%build\sys\XDMA.sys" start= demand
 REM sc start XDMA
 
-echo [4/4] Done.
+echo [5/5] Done.
 echo.
 echo IMPORTANT: Reboot required for test signing to take effect.
 echo After reboot:
 echo   1. Insert the FPGA board (PCIe / M.2 slot).
 echo   2. Wait for PnP to enumerate (Device Manager -> System devices
-echo      -> "XDMA DDR3 Ternary Accelerator v1.0", no yellow bang).
+echo      -> "XDMA DDR3 Ternary Accelerator v1.1", no yellow bang).
 echo   3. Run test_xdma.exe to verify GPIO/TDOT/XADC/ICAP tests PASS.
 echo.
 echo To uninstall: run uninstall.cmd (also as Administrator).

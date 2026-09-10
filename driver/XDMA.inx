@@ -3,7 +3,11 @@ Signature="$WINDOWS NT$"
 Class=System
 ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
 Provider=%Provider%
-DriverVer=08/26/2026,1.0.0.0
+; FIX-5 (Task 32): version bumped 1.0.0.0 -> 1.1.0.0. REQUIRED for re-install:
+; pnputil /add-driver refuses to update an already-staged package when the
+; new package's DriverVer is not strictly newer. Every driver fix must bump
+; the version part (date part is re-stamped by stampinf -d * at build time).
+DriverVer=09/11/2026,1.1.0.0
 CatalogFile=XDMA.cat
 
 [Manufacturer]
@@ -42,4 +46,4 @@ CopyFiles=12
 
 [Strings]
 Provider="MultiTool"
-DeviceDesc="XDMA DDR3 Ternary Accelerator v1.0"
+DeviceDesc="XDMA DDR3 Ternary Accelerator v1.1"
