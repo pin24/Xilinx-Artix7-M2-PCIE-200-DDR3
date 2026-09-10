@@ -458,3 +458,22 @@ Stage Summary:
 - tfmul_raw/tbyte_mul переведены на pure-LUT: ожидаемо 16241 → ~0 CARRY4, RM 20346 → ~5–6k слайсов, NUM_MAC=8 влезает в pblock; бит-в-бит доказано (8/8 proofs).
 - MCP отключён (тайминговая честность); ADDERS=4 в сборке (Task 28) — вторая ручка по остатку.
 - Коммит + push по явной команде пользователя.
+---
+Task ID: 31
+Agent: main (Super Z)
+Task: «Прочитай последние обновления в репозитарии на GitHub» — fetch, ff-merge, разбор 22 коммитов стенда (c12fa73..268b9b2)
+
+Work Log:
+- fetch: XDMA_DDR3_TMUL c12fa73..268b9b2 (+22, работа стенда Cycle 7); ahead 0 / behind 22 → fast-forward, verified 0/0.
+- BUG-051: XDMA 64-bit @ 250 MHz НЕ закрывается на Artix-7 (userclk1 WNS=-2.208ns, TNS=-7556, 13375 endpoints) → axi_data_width 64→128_bit + axisten_freq 250→125 (= 128×125 = 2.0 ГБ/с, тот же канал); userclk1 WNS=+0.884 ✅. GT LOC: PCIE_X0Y0.xdc отключён (IS_ENABLED false), ручные GTP LOC добавлены и затем убраны (XDMA сам размещает; bel-occupied 12-2285).
+- BUG-052: MIG device_temp_i (12 бит) висел при XADC_En=Off (BD 41-759) → xlconstant 12'b0 tie-off в базовом BD-скрипте ДО validate (3 итерации: TIE_OFF не существует → xlconstant → ширина → перенос до validate).
+- BUG-047 v2: timing_exceptions.xdc → .tcl (XDC не парсит TCL, Designutils 20-1307); set_clock_groups перенесён в PLACE_DESIGN.TCL.PRE impl_1 — в TCL.POST synth групп клоков ещё НЕ СУЩЕСТВУЕТ (диагностика). Реальные имена клоков сняты с routed impl_1. FATAL-гейт: ТОЛЬКО fabric-домен 125 МГц (get_timing_paths -filter START_CLK/END_CLK, синтаксис 2025.2) — на routed impl_1 fabric violations = 0. Исключение userclk1 НЕ маскировка: BUG-051 починен по существу (WNS +0.884).
+- BUG-048/049/050: usr_irq_req подключён напрямую 1-бит tdot_irq (MSI-X only XDMA без пина → conditional; xlconcat/xlconstant убраны); дубль create_clock clk50 удалён (владелец BD clk_wiz, override 18-1056); мёртвый GT LOC блок убран.
+- tfadd_raw (BUG-042/043/045, коммит 2e03465): exp_code — 4 последовательных деления → case-LUT 81 значение [-40..40] (59 CARRY4 → 0, verified 81/81); 42-тритный ripple-ADD разбит на 3 секции по 14 тритов с регистровым переносом (carry_mid0_q/1_q); PH_NORM разбит на PH_NORM1/PH_NORM2 (разрыв комбинаторного контура sum_reg→norm→sum_reg). ЛАТЕНТНОСТЬ АДДЕРА 6 → 9 ТАКТОВ (FSM 6→9 фаз). Причина — закрытие 8ns@125MHz по RTL (наш принцип «чинить RTL, не констрейнт»).
+- compute_dot_par_raw: только косметика (duplicate t_dst, Synth 8-9339).
+- BUG-031 (XADC) ЗАКРЫТ реально: новый rtl/integration/xadc_prim.sv — примитив XADC напрямую (MIG XADC_En=Off → физический XADC свободен), DRP-FSM читает temp/VCCINT раз в 1 с @ clk50, отдаёт в xadc_temp.sv (AXI 0x46000000, карта не менялась). dfx_runtime: DFX CPU 5→27 с (мелочь).
+- НЕ ТРОНУТО стенда (пробелы): proof_tfadd_barrel.py / proof_tree_par.py / tb_tfadd_equiv / tb_compute_dot_par_raw / docs/worklog.md — обновлений НЕТ. tb latency-agnostic (ждут valid_out) — валидность сохраняется (инвариант «период ≥6» покрывает 9), но ТАБЛИЦА ЛАТЕНТНОСТЕЙ T3 устарела: период back-to-back аддера теперь 9, а не 6 → dot NUM_MAC=8/ADDERS=4 ≈ 86 → ~105–110 (оценка, tree-часть ×1.5).
+Stage Summary:
+- Локальный HEAD = 268b9b2 (синхрон). Стенд двигает Cycle 7 по всем фронтам: XDMA 128@125 ✅, BD tie-off ✅, clock-groups применяются ✅, fabric-гейт ✅ (violations=0), XADC ✅, tfadd_raw 125MHz-ready ✅ (цена: латентность 6→9).
+- Пробелы для следующего шага: (1) таблица латентностей Task 21/22 требует пересчёта под период 9 (модель proof_tree_par.py T3); (2) worklog стенда не ведётся — только ERROR_HISTORY; (3) финальный вердикт полной сборки (CARRY4 после pure-LUT, слайсы pblock) в записях пока НЕ зафиксирован — запрошено у стенда/следующий Cycle.
+- Push worklog Task 31 — по явной команде.
