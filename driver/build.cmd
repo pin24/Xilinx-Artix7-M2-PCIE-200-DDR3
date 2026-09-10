@@ -13,7 +13,7 @@ REM FIX-5 (Task 32): single source of truth for the driver version.
 REM MUST match driver\XDMA.inx DriverVer. Bump on EVERY driver change:
 REM pnputil will not replace an already-staged package unless the new
 REM package's DriverVer (version part) is strictly newer.
-set DRIVER_VERSION=1.1.1.0
+set DRIVER_VERSION=1.1.2.0
 
 REM === FIX F2: Admin check ===
 REM certutil -addstore, bcdedit, sc create, copy to System32\drivers all require elevation.
@@ -119,14 +119,22 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo === Creating INF from INX (version %DRIVER_VERSION%) ===
-REM FIX-5 (Task 32): stampinf MUST write an explicit output via -o. The old
-REM call had no -o and -v "*" — stamped output went to stdout (or nowhere),
-REM %TMP_DIR%\XDMA.inf never appeared, the silent fallback copied the RAW
-REM .inx as .inf with the FROZEN version 1.0.0.0. Every rebuild then shipped
-REM the same DriverVer and pnputil silently kept the OLD staged package —
-REM the driver "did not install/upgrade". -v now passes DRIVER_VERSION
-REM explicitly; a missing output is a hard error, not a silent downgrade.
-stampinf -f "%SYS%\XDMA.inx" -o "%TMP_DIR%\XDMA.inf" -d "*" -a "amd64" -v "%DRIVER_VERSION%" -k "1.15" -x
+REM FIX-5 (Task 32): -v now passes DRIVER_VERSION explicitly and a missing
+REM output is a hard error, not a silent downgrade. The pre-FIX-5 path
+REM copied the RAW .inx as .inf with the FROZEN version 1.0.0.0, so pnputil
+REM silently kept the OLD staged package - the driver "did not install".
+REM FIX-7 (Task 33): stampinf in WDK 14393 has NO output-file option at all
+REM (stand log: "Invalid argument o" + USAGE dump - valid args are only
+REM -f -s -d -a -n -c -v -k -u -i -x). stampinf ALWAYS stamps the -f file
+REM IN PLACE, so the correct WDK pattern is: copy the template .inx to the
+REM target .inf first, then stamp the copy. This also keeps XDMA.inx
+REM pristine in the git working tree (no build-time churn in the source).
+copy /Y "%~dp0XDMA.inx" "%TMP_DIR%\XDMA.inf" >nul
+if not exist "%TMP_DIR%\XDMA.inf" (
+    echo ERROR: failed to copy %~dp0XDMA.inx to %TMP_DIR%\XDMA.inf
+    exit /b 1
+)
+stampinf -f "%TMP_DIR%\XDMA.inf" -d "*" -a "amd64" -v "%DRIVER_VERSION%" -k "1.15" -x
 if %ERRORLEVEL% neq 0 (
     echo ERROR: stampinf failed ^(INF not stamped^)
     exit /b 1

@@ -513,3 +513,18 @@ Stage Summary:
 - Корень сбоя стенда — устаревший driver.c (смешанная рабочая копия), НЕ код в репо. Текущий код после всех доступных проверок чист: driver.c 0 ошибок, security_cookie.c 0/0 (после ULONG_PTR-фикса).
 - Коммит FIX-6 ЛОКАЛЬНО (по­сле Task 31/32: ahead 3 от origin). Push — по явной команде.
 - За стендом по порядку: (1) git pull --ff-only (получит и FIX-6 после пуша); (2) build.cmd — должно пройти «Stale-source guard: OK» и «Creating INF from INX (version 1.1.1.0)»; (3) install.cmd от админа → reboot → test_xdma.exe.
+---
+Task ID: 33-b (FIX-7)
+Agent: main (Super Z)
+Task: Стенд-лог №2: компиляция/линковка ОК, stampinf «Invalid argument o» + USAGE-дамп → FIX-7 (copy-then-stamp), версия 1.1.2.0
+
+Work Log:
+- НОВЫЙ ЛОГ СТЕНДА подтверждает диагноз FIX-6: C2373 больше нет — скомпилированы driver.c + security_cookie.c, линковка XDMA.sys прошла (стенд обновил рабочую копию: fresh driver.c с 63b97ee).
+- НОВЫЙ БЛОКЕР — дефект самого FIX-5: stampinf вызывался с несуществующим флагом `-o "%TMP_DIR%\XDMA.inf"`. В WDK 14393 у stampinf НЕТ опции вывода (лог стенда: «Invalid argument o» + USAGE; допустимы только -f -s -d -a -n -c -v -k -u -i -x; -x валиден — описан в NOTES). Комментарий FIX-5 в build.cmd («MUST write an explicit output via -o», «output went to stdout») был фактически неверен — переписан.
+- КОРРЕКТНЫЙ ПАТТЕРН WDK (FIX-7): stampinf ВСЕГДА штампует файл из -f НА МЕСТЕ → сначала copy /Y "%~dp0XDMA.inx" "%TMP_DIR%\XDMA.inf", затем stampinf -f "%TMP_DIR%\XDMA.inf" -d "*" -a "amd64" -v "%DRIVER_VERSION%" -k "1.15" -x. Бонус: XDMA.inx в git больше не может быть затёрт штамповкой (остаётся девственно чистым); на неудачный copy добавлен hard-error.
+- ПРАВИЛО ВЕРСИИ: 1.1.1.0 → 1.1.2.0 (build.cmd DRIVER_VERSION + XDMA.inx DriverVer). 1.1.x на стенде ещё ни разу не стейджился (stampinf падал на -o), но бамп — по букве правила «каждое изменение → бамп».
+- АВТОПРОВЕРКИ (scripts/check_driver_build.py, вне Windows, итог PASS=29 FAIL=0): версии build.cmd==inx==1.1.2.0; ровно один stampinf; нет -o; все флаги из валидного набора USAGE; -f указывает на TMP-копию; copy предшествует штамповке; FIX-6 stale-гард на месте; driver.c без inline-определения cookie; security_cookie.c: ntddk-only, ULONG_PTR, нет uintptr_t В КОДЕ (первые 2 FAIL чекера — ложные от текста комментариев; чекер научен стрипать комментарии); cl: /GS- /kernel; link: /nodefaultlib + ntoskrnl/hal/wdfldr/wdfdriverentry + security_cookie.obj; inx: HWID 7024, CatalogFile, Wdf-секция, KmdfLibraryVersion=1.15 == -k 1.15. CRLF: 4 файла LF — как в HEAD, стенд это ест.
+- ДОКАЗАНО СТЕНДОМ реальным тулчейном (VS2015+WDK 14393): компиляция обоих .c и линковка .sys прошли → после штамповки INF оставшиеся шаги (inf2cat 10_x64, signtool, упаковка, certutil, bcdedit, sc) исторически проходили на этом же INF-шаблоне (1.0.0.0-пакет успешно стейджился ранее — inf2cat принимает структуру этого INF).
+Stage Summary:
+- FIX-7 закрывает последний известный блокер цепочки build.cmd. Коммит локален (ahead 2: FIX-6 + FIX-7). Push — по явной команде пользователя.
+- Ожидание от стенда после pull + build.cmd: «Creating INF from INX (version 1.1.2.0)» БЕЗ USAGE-дампа → inf2cat/signtool/упаковка/сервис. Остаточный риск — только inf2cat/signtool (ранее проходили); далее install.cmd → reboot → test_xdma.exe.
