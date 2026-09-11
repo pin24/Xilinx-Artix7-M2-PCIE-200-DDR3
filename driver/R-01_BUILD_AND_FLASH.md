@@ -174,6 +174,28 @@ timing_FATAL.rpt, timing_summary.rpt, utilization.txt
   Vivado видит `xc7a200t_0` в Open Target.
 - Диагностика драйвера при проблемах: `driver/ROLLBACK.md`, `driver/HANDOFF.md`.
 
+## 5а. Известные помехи: антивирус и проверка подписи Vivado
+
+Vivado при старте проверяет цифровые подписи загружаемых библиотек. На машинах с
+агрессивным антивирусом (наблюдалось: **360 Total Security**, служба
+`QHActiveDefense`, процесс `QHSafeTray.exe`) эта проверка может **плавающе**
+падать с ошибкой:
+
+```
+Unknown error occured while verifying the digital signature. Error Code: -2146869232
+(0x80096010 = TRUST_E_BAD_DIGEST)
+```
+
+при том что подпись самого файла валидна (проверяется `Get-AuthenticodeSignature`).
+Подробный разбор — `driver/ERROR-FIX-LOG.md` (E-11), риск R-13.
+
+Что делать:
+1. Добавить в **360 Total Security** исключения: `C:\AMDDesignTools` и каталог проекта
+   (или временно отключить защиту на время сборки).
+2. **Просто повторить** команду `make build` — при повторном запуске проверка проходит.
+3. Диагностика: `powershell -ExecutionPolicy Bypass -File scripts\check_vivado_signatures.ps1`.
+4. Держать доступ в интернет (построение цепочки сертификатов); обновить корневые сертификаты Windows.
+
 ## 6. Связанные документы
 
 | Документ | О чём |

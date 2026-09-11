@@ -117,6 +117,19 @@
 
 ---
 
+## E-11 — Плавающий сбой запуска Vivado: «Unknown error occured while verifying the digital signature» (0x80096010)
+
+| Поле | Значение |
+|---|---|
+| **Симптом** | `make build` → Vivado печатает баннер и падает: `Unknown error occured while verifying the digital signature. Error Code: -2146869232` (= `0x80096010`, TRUST_E_BAD_DIGEST). Платформа/аргументы при этом корректны. |
+| **Диагностика** | Лог `Microsoft-Windows-CAPI2/Operational` показал WinVerifyTrust от `vivado.exe` на `C:\AMDDesignTools\2025.2\Vivado\lib\win64.o\xv_netlist.dll` → `TRUSTERROR_STEP_FINAL_OBJPROV` = 0x80096010. При этом `Get-AuthenticodeSignature` даёт **Valid** (подпись AMD, действ. до 2028-02-20; метка времени DigiCert 2025-11-15), а `HashMismatch` по `lib\win64.o` — **0 из 187**. Повторные запуски: 22:46 и 22:49 — сбой; 22:53 и 22:54 — успех (проверки `-> 0`, `TINY_OK`, exit 0). Сбой **плавающий**. |
+| **Первопричина (наиболее вероятная)** | Вмешательство антивируса **360 Total Security** (`QHActiveDefense`/`QHSafeTray.exe`, процесс виден в событиях CAPI2) в проверку подписи/чтение файлов; усугубляется «холодным» кэшем цепочки сертификатов. AMD описывает родственные случаи как таймаут проверки подписи (adaptivesupport AR 57386 / offline-темы). |
+| **Исправление/митигация** | (1) Добавить в **360 Total Security** исключения: `C:\AMDDesignTools` и `C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3` (или временно отключить защиту на время сборки). (2) Просто **повторить** запуск — при повторном прогоне проверка проходит. (3) Держать доступ в интернет (построение цепочки сертификатов), обновить корневые сертификаты Windows. (4) Диагностика: `scripts/check_vivado_signatures.ps1`. |
+| **Проверка** | `vivado.bat -mode batch -source <tiny.tcl>` → `TINY_OK`, exit 0 (2026-09-11 22:54); два прогона подряд — успешно. |
+| **Статус** | ⚙️ Среда (AD/AV): митигировано; при повторе сбоя — добавить исключения AV |
+
+---
+
 ## Отклонённые / снятые гипотезы
 
 | Гипотеза | Как проверена | Вывод |

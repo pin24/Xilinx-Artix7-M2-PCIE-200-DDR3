@@ -95,6 +95,13 @@ make build NUM_MAC=32 JOBS=8
 <li>Проблемы драйвера — <code>driver/ROLLBACK.md</code>, <code>driver/HANDOFF.md</code>.</li>
 </ul>
 
+<h2>Известные помехи: антивирус и проверка подписи</h2>
+<p>Vivado при старте проверяет подписи загружаемых библиотек. При агрессивном антивирусе (наблюдалось: <b>360 Total Security</b>, служба <code>QHActiveDefense</code>) проверка может <b>плавающе</b> падать:</p>
+<pre>Unknown error occured while verifying the digital signature. Error Code: -2146869232
+(0x80096010 = TRUST_E_BAD_DIGEST)</pre>
+<div class="warn">Подпись самого файла при этом <b>валидна</b> (проверено <code>Get-AuthenticodeSignature</code>), HashMismatch по <code>lib\win64.o</code> — 0 из 187; повторные запуски проходили успешно. Разбор — <code>driver/ERROR-FIX-LOG.md</code> (E-11), риск R-13.<br>
+<b>Что делать:</b> 1) исключения в 360 для <code>C:\AMDDesignTools</code> и каталога проекта; 2) просто повторить <code>make build</code>; 3) диагностика: <code>scripts\check_vivado_signatures.ps1</code>.</div>
+
 <h2>Ссылки</h2>
 <ul>
 <li><code>driver/R-01_BUILD_AND_FLASH.md</code> — эта инструкция (Markdown)</li>
