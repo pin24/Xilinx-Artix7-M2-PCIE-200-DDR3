@@ -25,7 +25,7 @@ import struct
 import sys
 import time
 
-from xdma_driver import XdmaLinux, XdmaWindows, XdmaError
+from xdma_driver import XdmaLinux, XdmaWindows, XdmaWinDriver, XdmaError
 
 ICAP_BASE = 0x4000_4000
 REG_CTRL = 0x00
@@ -117,7 +117,12 @@ class IcapLoader:
             try:
                 self._dev = XdmaLinux(f"/dev/{device}")
             except XdmaError:
-                self._dev = XdmaWindows()
+                # Windows: штатный драйвер проекта (\\.\XDMA0) — без xdma_rw.exe;
+                # xdma_rw остаётся fallback (например, для оригинального драйвера Xilinx).
+                try:
+                    self._dev = XdmaWinDriver()
+                except (XdmaError, OSError):
+                    self._dev = XdmaWindows()
         self._base = ICAP_BASE
 
     def _reg_w(self, off: int, val: int):

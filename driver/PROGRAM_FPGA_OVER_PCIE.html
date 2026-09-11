@@ -75,6 +75,13 @@ C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\partial_rp.bi
 <pre>FF x32 | 00 00 00 BB 11 22 00 44 | FF x8 | AA 99 55 66 (sync) | ...</pre>
 <p>Первое LE-слово = <code>0xFFFFFFFF</code>, а не sync → старый загрузчик падал. Исправлено: <code>find_sync_offset()</code> ищет sync в первых 1024 байтах и пропускает преамбулу (работает для полного и частичного образов). Ваши файлы: полный = <b>1 349 799 слов</b>, частичный = <b>505 901 слово</b>.</p>
 
+<h2>Результат проверки на железе (2026-09-12)</h2>
+<p>Полный образ передан по ICAP успешно (1 349 799 слов за 19 с, exit 0), ICAP STATUS до/после = <code>0x1</code>, плата не пострадала. Но <b>образ не применился</b>: BAR0 после remove+rescan = <b>1024 КБ</b>, GPIO_TRI без изменений, PnP-событий нет. При этом битстрим корректен (<code>pf0_bar0_size=128</code> в собранном <code>.xci</code>).</p>
+<div class="warn"><b>Вывод:</b> полная реконфигурация кристалла через ICAP не срабатывает. Штатные пути: полный образ -> JTAG/флеш (<code>scripts/flash_program.tcl</code>, R-01); частичный (RP) -> ICAP/DFX; постоянное обновление без JTAG -> SPI-over-PCIe + IPROG (нет в проекте, R-14).</div>
+
+<h2>Windows: штатный драйвер вместо xdma_rw.exe</h2>
+<p>На Windows Python-слой работает с вашим драйвером напрямую (<code>\\.\XDMA0</code> через <code>XdmaWinDriver</code>) — xdma_rw.exe для регистров/ICAP не нужен (проверено: ICAP STATUS=0x1). xdma_rw остаётся только для DMA.</p>
+
 <h2>Ограничения</h2>
 <ul>
 <li>ICAP-прошивка <b>временная</b> (сбрасывается питанием); постоянно — только JTAG/флеш.</li>

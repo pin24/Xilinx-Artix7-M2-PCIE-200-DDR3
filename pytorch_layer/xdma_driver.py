@@ -206,6 +206,109 @@ class XdmaLinux(XdmaDevice):
         return bytes(out)
 
 
+class XdmaWinDriver(XdmaDevice):
+    r"""Windows-бэкенд через ШТАТНЫЙ драйвер проекта (driver/driver.c, \\.\XDMA0).
+
+    Контракт (FIX-1): file offset = ПОЛНЫЙ AXI-адрес; драйвер сам маршрутизирует:
+      AXI_LITE_BASE <= addr < DDR3_BASE  -> BAR0 (вычитает AXI_LITE_BASE)
+      addr >= DDR3_BASE                  -> BAR2 (вычитает 0x80000000)
+    Регистры — ReadFile/WriteFile с OVERLAPPED (4-байтные, выровненные).
+    Не требует xdma_rw.exe. DMA (h2c/c2h) этот драйвер не умеет —
+    write_dma/read_dma поднимают XdmaError (для DMA — XdmaWindows/xdma_rw).
+    """
+
+    def __init__(self, devpath: str = r"\\.\XDMA0"):
+        import ctypes
+        from ctypes import wintypes
+        self._c = ctypes
+        self._w = wintypes
+        self.devpath = devpath
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._k32 = k32
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.HANDLE]
+        k32.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                 ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        k32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                  ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        k32.GetOverlappedResult.argtypes = [wintypes.HANDLE, ctypes.c_void_p,
+                                            ctypes.POINTER(wintypes.DWORD), wintypes.BOOL]
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.ResetEvent.argtypes = [wintypes.HANDLE]
+        k32.CreateEventW.restype = wintypes.HANDLE
+        k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
+                                     wintypes.LPCWSTR]
+
+        class _OVERLAPPED(ctypes.Structure):
+            _fields_ = [("Internal", ctypes.c_void_p),
+                        ("InternalHigh", ctypes.c_void_p),
+                        ("Offset", wintypes.DWORD),
+                        ("OffsetHigh", wintypes.DWORD),
+                        ("hEvent", wintypes.HANDLE)]
+        self._ov_t = _OVERLAPPED
+
+        GENERIC_RW = 0x80000000 | 0x40000000
+        OPEN_EXISTING, FILE_FLAG_OVERLAPPED = 3, 0x40000000
+        INVALID = ctypes.c_void_p(-1).value
+        h = k32.CreateFileW(devpath, GENERIC_RW, 0, None, OPEN_EXISTING,
+                            FILE_FLAG_OVERLAPPED, None)
+        if not h or h == INVALID:
+            raise XdmaError(f"не удалось открыть {devpath}: "
+                            f"WinError {ctypes.get_last_error()}")
+        self._h = h
+        self._ev = k32.CreateEventW(None, True, False, None)
+        if not self._ev:
+            raise XdmaError("CreateEventW failed")
+
+    def _xfer(self, is_write: bool, addr: int, data: bytes, length: int) -> bytes:
+        c = self._c
+        ov = self._ov_t()
+        ov.Offset = addr & 0xFFFFFFFF
+        ov.OffsetHigh = (addr >> 32) & 0xFFFFFFFF
+        ov.hEvent = self._ev
+        self._k32.ResetEvent(self._ev)
+        n = c.wintypes.DWORD(0)
+        if is_write:
+            buf = c.create_string_buffer(data, len(data))
+            ok = self._k32.WriteFile(self._h, buf, len(data), c.byref(n), c.byref(ov))
+        else:
+            buf = c.create_string_buffer(length)
+            ok = self._k32.ReadFile(self._h, buf, length, c.byref(n), c.byref(ov))
+        if not ok:
+            err = c.get_last_error()
+            if err != 997:  # ERROR_IO_PENDING
+                raise XdmaError(f"I/O error at 0x{addr:X}: WinError {err}")
+            if self._k32.WaitForSingleObject(self._ev, 10000) != 0:
+                raise XdmaError(f"timeout at 0x{addr:X}")
+            done = c.wintypes.DWORD(0)
+            if not self._k32.GetOverlappedResult(self._h, c.byref(ov),
+                                                 c.byref(done), False):
+                raise XdmaError(f"overlapped failed at 0x{addr:X}: "
+                                f"WinError {c.get_last_error()}")
+            n = done
+        else:
+            done = c.wintypes.DWORD(0)
+            self._k32.GetOverlappedResult(self._h, c.byref(ov), c.byref(done), False)
+            n = done
+        return bytes(buf.raw[:n.value])
+
+    def read(self, addr: int, length: int) -> bytes:
+        return self._xfer(False, addr, b"", length)
+
+    def write(self, addr: int, data: bytes) -> None:
+        self._xfer(True, addr, data, len(data))
+
+    def write_dma(self, ddr_off: int, data: bytes) -> None:
+        raise XdmaError("DMA (h2c) не поддерживается штатным драйвером — "
+                        "используйте XdmaWindows/xdma_rw или Linux-путь (R-05)")
+
+    def read_dma(self, ddr_off: int, length: int) -> bytes:
+        raise XdmaError("DMA (c2h) не поддерживается штатным драйвером — "
+                        "используйте XdmaWindows/xdma_rw или Linux-путь (R-05)")
+
+
 class XdmaWindows(XdmaDevice):
     r"""Windows: вызывает xdma_rw.exe (из XDMA_Driver_App).
 

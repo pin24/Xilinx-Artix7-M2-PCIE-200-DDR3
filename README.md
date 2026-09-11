@@ -207,6 +207,10 @@ C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\xdma_ddr3_cor
 Работает, когда FPGA уже сконфигурирована (есть PCIe+ICAP). Прошивка временная
 (volatile); постоянно — только SPI-флеш (JTAG, `scripts/flash_program.tcl`).
 
+> ⚠️ Проверено на железе (12.09.2026): **полный образ через ICAP не применяется**
+> (BAR0 остаётся 1024 КБ, плата не страдает) — для полного образа используйте JTAG/флеш;
+> ICAP здесь — путь для **частичных (RP)** образов (§9 в `driver/PROGRAM_FPGA_OVER_PCIE.md`).
+
 ## Драйвер Windows
 `driver/build.cmd` (WDK) → `XDMA.sys`; тест: `test_xdma.exe`.
 Известные исправленные проблемы — см. `xdma_driver_win_src_2017/DRIVER_DEVLOG.md` и `docs/ERROR_HISTORY.md`.

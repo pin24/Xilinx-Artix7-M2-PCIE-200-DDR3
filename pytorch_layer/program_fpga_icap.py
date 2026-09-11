@@ -38,7 +38,7 @@ import struct
 import sys
 import time
 
-from xdma_driver import XdmaLinux, XdmaWindows, XdmaDevice, XdmaError
+from xdma_driver import XdmaLinux, XdmaWindows, XdmaWinDriver, XdmaDevice, XdmaError
 from icap_load import (
     parse_bitstream, iter_words_le, IcapError,
     ICAP_BASE, REG_CTRL, REG_STATUS, REG_DATA,
@@ -90,7 +90,13 @@ def _open_device(device: str, mock: bool) -> XdmaDevice:
     try:
         return XdmaLinux(f"/dev/{device}")
     except (XdmaError, NameError, OSError):
-        return XdmaWindows()
+        pass
+    try:
+        # Windows: штатный драйвер проекта (\\.\XDMA0) — без xdma_rw.exe
+        return XdmaWinDriver()
+    except (XdmaError, OSError):
+        pass
+    return XdmaWindows()
 
 
 def _reg_r(dev: XdmaDevice, off: int) -> int:
