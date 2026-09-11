@@ -54,3 +54,6 @@ xdma_driver_win_src_2017/buildbuild_buckup/
 *.exe
 parser.out
 parsetab.py
+
+# local snapshots (audit 2026-09-11)
+_backup_*/

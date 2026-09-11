@@ -7,6 +7,16 @@
 // to get BAR0 offset within the 64KB/128MB mapped window.
 #define AXI_LITE_BASE 0x40000000ULL
 
+// FIX-11 (BSOD 0x124, minidump 091126-39734-01): in the DFX build the SECOND
+// memory BAR is the 64 KB MSI-X table BAR (pf0_msix_cap_table_bir = BAR_3:2),
+// NOT a DDR3 bridge. docs/ADDRESS_MAP.md 1/1.2: DDR3 is reachable ONLY through
+// the XDMA DMA channels (h2c/c2h). Treating that BAR as a DDR3 window made the
+// host poke the MSI-X table; the root port raised a fatal PCIe AER
+// (WHEA_UNCORRECTABLE_ERROR 0x124). Only accept the second BAR as a DDR3
+// window when its aperture is plausibly large; otherwise leave it unmapped and
+// fail DDR3-range requests fast with STATUS_DEVICE_NOT_CONNECTED (no HW touch).
+#define DDR3_MIN_WINDOW_BYTES 0x01000000ULL    /* 16 MB */
+
 // Security cookie (__security_cookie, __security_init_cookie, __security_check_cookie)
 // вынесены в отдельный файл security_cookie.c (без wdf.h, чтобы не было
 // C2373 conflict с vcruntime.h). DEVLOG #18, CHANGELOG [1.0.0].
@@ -180,6 +190,18 @@ EvtDevicePrepareHardware(
             }
             bar0Found = TRUE;
         } else if (!bar2Found) {
+            // FIX-11: never accept the MSI-X/aux BAR as a DDR3 window.
+            if ((ULONG64)resDesc->u.Memory.Length < DDR3_MIN_WINDOW_BYTES) {
+                DbgPrint("XDMA: second memory BAR too small (0x%llx bytes) -- "
+                         "not a DDR3 window (DFX build keeps MSI-X on BAR2); "
+                         "DDR3 MMIO disabled, use DMA channels (ADDRESS_MAP 1.2)\n",
+                         (unsigned long long)resDesc->u.Memory.Length);
+                devCtx->Bar2PhysAddr = resDesc->u.Memory.Start;
+                devCtx->Bar2Length = 0;
+                devCtx->Bar2Va = NULL;
+                bar2Found = TRUE;
+                continue;
+            }
             devCtx->Bar2PhysAddr = resDesc->u.Memory.Start;
             devCtx->Bar2Length = resDesc->u.Memory.Length;
             devCtx->Bar2Va = MmMapIoSpace(resDesc->u.Memory.Start,
@@ -194,12 +216,24 @@ EvtDevicePrepareHardware(
                 devCtx->Bar2Length = 0;
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
+            DbgPrint("XDMA: BAR2(DDR3 window) mapped: phys=0x%llx len=0x%lx\n",
+                     (unsigned long long)devCtx->Bar2PhysAddr.QuadPart,
+                     devCtx->Bar2Length);
             bar2Found = TRUE;
         }
     }
 
     if (devCtx->Bar0Va == NULL) {
         return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+
+    // FIX-11: informational -- XADC lives at AXI 0x46000000 (offset 0x6000000
+    // inside BAR0). A smaller BAR0 aperture means the loaded bitstream does not
+    // match docs/ADDRESS_MAP.md (BAR0 = 128 MB) and XADC is unreachable.
+    if ((ULONG64)devCtx->Bar0Length < 0x6000010ULL) {
+        DbgPrint("XDMA: WARNING BAR0 window 0x%lx cannot cover XADC @0x46000000; "
+                 "bitstream/BAR map mismatch (expected BAR0=128MB, ADDRESS_MAP)\n",
+                 devCtx->Bar0Length);
     }
 
     return STATUS_SUCCESS;

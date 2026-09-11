@@ -39,7 +39,7 @@ ifeq ($(OS),Windows_NT)
 endif
 
 BUILD_DFX      := scripts/build_dfx.tcl
-GEN_BITSTREAM  := scripts/gen_bitstream.tcl
+GEN_BITSTREAM  := scripts/build_dfx.tcl   # full refresh (BD+synth+impl+bitstream) = master build
 GEN_BIN_MCS    := scripts/gen_bin_mcs.tcl
 
 .PHONY: build proj artifacts bitstream clean help
@@ -61,7 +61,7 @@ artifacts:
 
 # Полный цикл для существующего проекта: synth+impl+bitstream+экспорт
 bitstream:
-	"$(VIVADO)" -mode batch -source $(GEN_BITSTREAM)
+	"$(VIVADO)" -mode batch -source $(GEN_BITSTREAM) -tclargs NUM_MAC=$(NUM_MAC) ADDERS=$(ADDERS) JOBS=$(JOBS)
 
 clean:
 ifeq ($(OS),Windows_NT)

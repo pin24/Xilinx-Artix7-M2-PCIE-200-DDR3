@@ -2,11 +2,12 @@
 
 Инкапсулирует взаимодействие хоста с картой:
   - регистры tdot_axi4   (AXI-Lite, через XDMA control / xdma_user на BAR)
-  - DDR3 (XDMA M_AXI, 0x8000_0000) — векторы data/weights и результат.
+  - DDR3 (XDMA M_AXI, 0x8000_0000) — векторы data/weights и результат
+    (в DFX-сборке — ТОЛЬКО через DMA-каналы h2c/c2h, см. комментарий ниже).
 
 Два бэкенда:
-  - Linux  : файлы устройства /dev/xdma0_control, /dev/xdma0_user (dma).
-  - Windows: утилита xdma_rw (exe/xdma_rw), читает/пишет BAR по адресу.
+  - Linux  : /dev/xdma0_control (регистры) + /dev/xdma0_h2c_0|c2h_0 (DDR3 DMA).
+  - Windows: утилита xdma_rw (exe/xdma_rw): регистры по адресу, DDR3 — DMA-канал.
 
 Формат данных в DDR3 (согласовано с tdot_axi4.sv):
   каждый TFloat48 занимает 64-битное слово, младшие 48 бит = число:
@@ -36,13 +37,17 @@
 from __future__ import annotations
 import os, subprocess, struct, time
 
-# Границы AXI-окна (согласовано с driver/driver.c FIX-1):
-#   BAR0 = AXI-Lite  [0x4000_0000 .. 0x7FFF_FFFF]  (GPIO/TDOT/ICAP/XADC regs)
-#   BAR2 = DDR3      [0x8000_0000 .. ]             (data/weights/result)
-# Хост шлёт ПОЛНЫЕ AXI-адреса. Драйвер Linux/Windows сам маршрутизирует по этим
-# границам и вычитает базу BAR'а, чтобы получить offset внутри BAR-окна.
-AXI_LITE_BASE = 0x4000_0000   # начало BAR0 (AXI-Lite): GPIO/TDOT/ICAP/XADC
-DDR3_BASE     = 0x8000_0000   # начало BAR2 (DDR3)
+# Границы AXI-окна (согласовано с driver/driver.c FIX-1 и FIX-11):
+#   AXI-Lite [0x4000_0000 .. 0x7FFF_FFFF] — GPIO/TDOT/ICAP/XADC регистры (BAR0)
+#   DDR3     [0x8000_0000 ..]            — окно DDR3
+# ВАЖНО (docs/ADDRESS_MAP.md 1.2): в DFX-сборке ВТОРОГО BAR-моста к DDR3 НЕТ —
+# BAR2 занят таблицей MSI-X, и драйвер (FIX-11) намеренно НЕ маппит его как
+# DDR3-окно. DDR3 на хосте доступна ТОЛЬКО через DMA-каналы (h2c/c2h):
+# в XdmaLinux — /dev/xdma0_h2c_0|c2h_0, в XdmaWindows — `xdma_rw.exe ... h2c_0`.
+# Для DDR3 хост передаёт СМЕЩЕНИЯ (write_dma/read_dma от DDR3_BASE), не MMIO.
+# Полные AXI-адреса используются только для AXI-Lite (регистры).
+AXI_LITE_BASE = 0x4000_0000   # начало AXI-Lite окна (BAR0)
+DDR3_BASE     = 0x8000_0000   # база DDR3 (от неё отсчитываются смещения DMA)
 
 # адресная база AXI-Lite регистров ядра (DFX BD, xdma_axi_lite_smc):
 #   M00 GPIO  0x4000_0000    M03 TDOT   0x4000_3000

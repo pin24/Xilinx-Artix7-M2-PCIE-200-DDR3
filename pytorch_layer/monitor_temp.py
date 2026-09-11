@@ -82,24 +82,35 @@ class XadcMonitor:
         print(f"{'Timestamp':<26}  {'Temp(C)':>8}  {'VCCINT(V)':>9}  Status")
         print("-" * 56)
 
+        samples = 0
+        invalid = 0
         while self._running:
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:23]
             temp = self.read_temperature()
             vcc = self.read_vccint()
             valid = self._read_status()
+            samples += 1
 
-            warn_str = ""
-            if temp >= CRIT_TEMP:
-                warn_str = "*** CRITICAL ***"
-            elif temp >= WARN_TEMP:
-                warn_str = "WARNING"
-
-            line = f"{ts:<26}  {temp:>8.2f}  {vcc:>9.3f}  {warn_str}"
-            print(line, flush=True)
-
-            if writer:
-                writer.writerow([ts, f"{temp:.2f}", f"{vcc:.3f}", warn_str])
-                fout.flush()
+            # FIX-13 (BUG-031): в этой сборке XADC занят MIG (XADC_En=Off),
+            # u_xadc отдаёт raw=0 и valid=0. Выдавать «0.00 °C» за измерение
+            # нельзя — явно помечаем отсчёт как INVALID.
+            if not valid:
+                invalid += 1
+                warn_str = "*** XADC INVALID (BUG-031: XADC занят MIG) ***"
+                print(f"{ts:<26}  {'--':>8}  {'--':>9}  {warn_str}", flush=True)
+                if writer:
+                    writer.writerow([ts, "", "", warn_str])
+                    fout.flush()
+            else:
+                warn_str = ""
+                if temp >= CRIT_TEMP:
+                    warn_str = "*** CRITICAL ***"
+                elif temp >= WARN_TEMP:
+                    warn_str = "WARNING"
+                print(f"{ts:<26}  {temp:>8.2f}  {vcc:>9.3f}  {warn_str}", flush=True)
+                if writer:
+                    writer.writerow([ts, f"{temp:.2f}", f"{vcc:.3f}", warn_str])
+                    fout.flush()
 
             if callback:
                 callback(temp, vcc, valid)
@@ -112,6 +123,12 @@ class XadcMonitor:
         if fout:
             fout.close()
         print("\nMonitor stopped.")
+        if samples and invalid == samples:
+            print("ВНИМАНИЕ: все отсчёты INVALID — XADC недоступен в этой сборке "
+                  "(BUG-031). Реальную температуру смотреть через MIG status / "
+                  "GPIO2 (docs/ADDRESS_MAP.md §7).", file=sys.stderr)
+            return 3
+        return 0
 
 
 def main():
@@ -123,6 +140,8 @@ def main():
                         help="интервал опроса в секундах (по умолч. 2)")
     parser.add_argument("--device", default="xdma0",
                         help="имя XDMA-устройства (по умолч. xdma0)")
+    parser.add_argument("--allow-invalid", action="store_true",
+                        help="не считать INVALID-отсчёты ошибкой (XADC недоступен — BUG-031)")
     args = parser.parse_args()
 
     monitor = XadcMonitor(device=args.device)
@@ -133,10 +152,13 @@ def main():
     signal.signal(signal.SIGINT, sigint_handler)
 
     try:
-        monitor.poll_loop(interval=args.interval, csv_path=args.log)
+        rc = monitor.poll_loop(interval=args.interval, csv_path=args.log)
     except XdmaError as e:
         print(f"Ошибка XDMA: {e}", file=sys.stderr)
         sys.exit(1)
+    if rc == 3 and args.allow_invalid:
+        rc = 0
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

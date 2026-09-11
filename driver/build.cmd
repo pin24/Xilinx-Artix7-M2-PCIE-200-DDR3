@@ -13,7 +13,7 @@ REM FIX-5 (Task 32): single source of truth for the driver version.
 REM MUST match driver\XDMA.inx DriverVer. Bump on EVERY driver change:
 REM pnputil will not replace an already-staged package unless the new
 REM package's DriverVer (version part) is strictly newer.
-set DRIVER_VERSION=1.1.2.0
+set DRIVER_VERSION=1.1.4.0
 
 REM === FIX F2: Admin check ===
 REM certutil -addstore, bcdedit, sc create, copy to System32\drivers all require elevation.
@@ -107,7 +107,13 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo === Linking XDMA.sys ===
-link.exe /nologo /entry:DriverEntry /subsystem:native /machine:x64 /driver /kernel /nodefaultlib ^
+REM FIX-8 (BSOD 0x1000007E, minidumps 091026-38171-01 / 091126-44296-01): KMDF entry point
+REM must be FxDriverEntry (wdfdriverentry.lib stub). The stub calls WdfVersionBind
+REM which initializes WdfFunctions/WdfDriverGlobals BEFORE our DriverEntry runs.
+REM With /entry:FxDriverEntry the stub was never linked in, WdfFunctions stayed NULL,
+REM and the very first WdfDriverCreate call jumped through the NULL table at
+REM XDMA+0x1067 (call qword ptr [rax+3A0h], rax=0) => SYSTEM_THREAD_EXCEPTION_NOT_HANDLED.
+link.exe /nologo /entry:FxDriverEntry /subsystem:native /machine:x64 /driver /kernel /nodefaultlib ^
     "%TMP_DIR%\driver.obj" "%TMP_DIR%\security_cookie.obj" ^
     /out:"%BUILD_DIR%\XDMA.sys" ^
     /LIBPATH:"%KIT_ROOT%\Lib\%WDK_VERSION%\km\x64" ^
@@ -134,7 +140,11 @@ if not exist "%TMP_DIR%\XDMA.inf" (
     echo ERROR: failed to copy %~dp0XDMA.inx to %TMP_DIR%\XDMA.inf
     exit /b 1
 )
-stampinf -f "%TMP_DIR%\XDMA.inf" -d "*" -a "amd64" -v "%DRIVER_VERSION%" -k "1.15" -x
+REM FIX-10: inf2cat rejects postdated DriverVer (compares against UTC date; local GMT+3 runs ahead between 00:00-03:00). Stamp yesterday's UTC date - always safe.
+powershell -NoProfile -Command "(Get-Date).ToUniversalTime().AddDays(-1).ToString('MM\/dd\/yyyy',[Globalization.CultureInfo]::InvariantCulture)" > "%TMP_DIR%\infdate.txt"
+set /p INF_DATE=<"%TMP_DIR%\infdate.txt"
+del "%TMP_DIR%\infdate.txt" >nul 2>&1
+stampinf -f "%TMP_DIR%\XDMA.inf" -d %INF_DATE% -a "amd64" -v "%DRIVER_VERSION%" -k "1.15" -x
 if %ERRORLEVEL% neq 0 (
     echo ERROR: stampinf failed ^(INF not stamped^)
     exit /b 1
@@ -211,37 +221,9 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-echo === Installing driver binary ===
-copy /Y "%BUILD_DIR%\XDMA.sys" "C:\Windows\System32\drivers\XDMA.sys"
-if errorlevel 1 (
-    echo ERROR: failed to copy XDMA.sys to System32\drivers (run as admin?)
-    exit /b 1
-)
-
-echo === Creating kernel service ===
-REM NOTE: This is the manual sc-create path for quick local testing on the
-REM dev machine. For target machines use driver\install.cmd (pnputil-based).
-REM Spaces after '=' are MANDATORY for sc.exe (DRV-5 #11).
-sc stop XDMA >nul 2>&1
-sc delete XDMA >nul 2>&1
-sc create XDMA type= kernel binpath= "C:\Windows\System32\drivers\XDMA.sys" start= demand
-if %ERRORLEVEL% neq 0 (
-    sc query XDMA >nul 2>&1
-    if !ERRORLEVEL! equ 0 (
-        echo Service XDMA already exists, replacing binpath...
-        sc config XDMA binpath= "C:\Windows\System32\drivers\XDMA.sys" start= demand
-    ) else (
-        echo ERROR: failed to create service
-        exit /b 1
-    )
-)
-
-echo === Starting service ===
-sc start XDMA
-if %ERRORLEVEL% neq 0 (
-    echo WARNING: sc start failed (need re-enumeration or testsigning=Yes)
-)
-
+REM FIX-9: legacy sc-create/System32 tail removed. It conflicts with the PnP
+REM install path (install.cmd / pnputil): stale XDMA service + orphaned
+REM System32\drivers\XDMA.sys copy prevented clean version upgrades. Use install.cmd.
 echo.
 echo === Build FULL SUCCESS ===
 dir "%BUILD_DIR%\"

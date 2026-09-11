@@ -42,7 +42,7 @@ if not exist "%SCRIPT_DIR%build\sys\XDMA.cer" (
 REM 1. Install the test certificate into Root + TrustedPublisher.
 REM    Without this, Windows rejects the test-signed driver with
 REM    STATUS_INVALID_IMAGE_HASH (error 0xC0000428 / code 39 in Device Manager).
-echo [1/4] Installing certificate into Root and TrustedPublisher...
+echo [1/5] Installing certificate into Root and TrustedPublisher...
 certutil -addstore -f Root "%SCRIPT_DIR%build\sys\XDMA.cer"
 if errorlevel 1 (
     echo WARNING: certutil -addstore Root returned non-zero (already present?)
@@ -55,7 +55,7 @@ if errorlevel 1 (
 REM 2. Enable kernel test signing (REQUIRES REBOOT).
 REM    Without this, even with the cert in Root, Windows 10/11 refuses to
 REM    load test-signed kernel drivers. Secure Boot must be OFF for this to stick.
-echo [2/4] Enabling test signing (requires reboot)...
+echo [2/5] Enabling test signing (requires reboot)...
 bcdedit /set testsigning on
 if errorlevel 1 (
     echo ERROR: bcdedit /set testsigning on failed.
@@ -69,7 +69,11 @@ REM    new DriverVer is not strictly newer — it silently keeps the OLD copy
 REM    and the "updated" driver never appears. Deleting the old oemNN.inf
 REM    first makes every install.cmd run a clean version upgrade.
 echo [3/5] Removing previously staged XDMA package (version upgrade)...
-powershell -NoProfile -Command "$out = pnputil /enum-drivers; $published = $null; foreach ($line in $out) { if ($line -match 'Published Name:\s+(oem\d+\.inf)') { $published = $matches[1] } elseif ($line -match 'Original Name:\s+xdma\.inf' -and $published) { Write-Host ('  removing previous ' + $published); pnputil /delete-driver $published /uninstall /force 2>$null; $published = $null } }"
+REM FIX-14: the old parser matched English labels ("Published Name"/"Original
+REM Name"); on a localized Windows (e.g. Russian: "Опубликованное имя"/"Исходное
+REM имя") it silently did nothing and the update kept the OLD staged package.
+REM Now we match ASCII patterns only: published = oemNN.inf, original = xdma.inf.
+powershell -NoProfile -Command "$out = pnputil /enum-drivers; $pub = $null; foreach ($line in $out) { if ($line -match '(oem\d+\.inf)') { $pub = $matches[1] } elseif ($line -match 'xdma\.inf' -and $pub) { Write-Host ('  removing previous ' + $pub); pnputil /delete-driver $pub /uninstall /force 2>$null; $pub = $null } }"
 echo   (no output above = nothing previously staged — OK on first install)
 
 REM 4. Install the driver via PnP (preferred over sc create).

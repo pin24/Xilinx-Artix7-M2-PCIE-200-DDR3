@@ -35,7 +35,7 @@
 | `rtl/block/` | Блочное ядро: `tbyte_add/mul.sv`, `tfmul_raw.sv`, `tfadd_raw.sv`, `compute_dot_par_raw.sv` (параллельный dot, параметр NUM_MAC) |
 | `rtl/integration/` | `tdot_axi4.sv` (AXI4-мастер + AXI-Lite), `icap_ctrl.sv`, `xadc_temp.sv`, `xdma_ddr3_core_top.sv` |
 | `constraints/` | XDC-файлы: `xdma_ddr3_pins.xdc` (пины), `xdma_ddr3_early.xdc` (PCIe GT-lane LOC), `pblock.xdc` (DFX RP pblock) |
-| `scripts/` | `build_dfx.tcl` — главная сборка DFX, `post_bd_dfx.tcl` — постобработка BD, `build.bat` — Windows wrapper |
+| `scripts/` | `build_dfx.tcl` — главная сборка DFX, `post_bd_dfx.tcl` — постобработка BD, `gen_bin_mcs.tcl` — экспорт артефактов из impl_1, `flash_program.tcl` — прошивка SPI-флеша |
 | `dfx_block_designs/` | `default.tcl` (DataMover loopback demo), `test.tcl` (GPIO test) — DFX Partition BDC |
 | `third_party/m2-artix7-accelerator-card/` | Встроенные HDL из [rigoorozco/m2-artix7-accelerator-card](https://github.com/rigoorozco/m2-artix7-accelerator-card) (up_axi.v, datamover_ctrl.v, DataMover wrappers) |
 | `pytorch_layer/` | Хост-софт: `fpga_backend.py`, `xdma_driver.py`, `icap_load.py`, `dfx_swap.py` (горячая замена RP), `ternary_dot_layer.py` |
@@ -152,9 +152,45 @@ build/artifacts_dfx/                                — финальные ар�
 # Симуляция AXI4-мастера (требует Vivado xsim):
 C:\Python39\python.exe rtl\integration\verify_tdot_axi4.py 32
 
-# Статический lint RTL (без Vivado):
-python3 scripts/rtl_lint.py
+# Модельные проверки (Vivado не нужен; rtl_lint.py в репозитории отсутствует):
+C:\Python39\python.exe rtl\block\rtl_vs_arith48.py
+C:\Python39\python.exe pytorch_layer\verify_fpga_backend.py
+C:\Python39\python.exe driver\emulate_test.py
+C:\Python39\python.exe driver\edge_cases.py
 ```
+
+## R-01: пересборка и прошивка платы (BAR0 = 128 МБ)
+
+> На плате обнаружен устаревший битстрим (измерено BAR0 = 1 МБ вместо 128 МБ),
+> из-за чего не работают регистры периферии. Полная пошаговая инструкция:
+> [`driver/R-01_BUILD_AND_FLASH.md`](driver/R-01_BUILD_AND_FLASH.md)
+> (HTML-версия: [`driver/R-01-build-and-flash.html`](driver/R-01-build-and-flash.html)).
+
+Сборка (Vivado 2025.2, из корня репозитория):
+
+```cmd
+make build NUM_MAC=32 JOBS=8
+```
+
+Прошивка SPI-флеша (W25Q128JV, часть Vivado `w25q128jvq-spi-x1_x2_x4`):
+
+```cmd
+"C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat" -mode batch ^
+  -source scripts\flash_program.tcl -tclargs build\artifacts_dfx\xdma_ddr3_core_top.bin
+```
+
+Проверка после полного power-cycle: `driver\build\test_xdma.exe gpio` → строка
+`BAR map: BAR0=131072 KB, BAR2=64 KB`.
+
+### Документация аудита и журналы (каталог `driver/`)
+- [`driver/xdma-bsod-report.html`](driver/xdma-bsod-report.html) — отчёт по BSOD (0x7E / 0x124): причины, адреса, исправления
+- [`driver/ERROR-FIX-LOG.md`](driver/ERROR-FIX-LOG.md) · [`driver/error-fix-log.csv`](driver/error-fix-log.csv) — журнал ошибок и исправлений (E-01…E-10)
+- [`driver/AUDIT-REPORT.md`](driver/AUDIT-REPORT.md) — повторный аудит кода (до/после)
+- [`driver/RISK_REGISTER.md`](driver/RISK_REGISTER.md) — реестр рисков (R-01 — пересборка/прошивка)
+- [`driver/PROJECT_MAP.md`](driver/PROJECT_MAP.md) — карта проекта
+- [`driver/ENVIRONMENT_MANIFEST.md`](driver/ENVIRONMENT_MANIFEST.md) — версии инструментов
+- [`driver/HANDOFF.md`](driver/HANDOFF.md) · [`driver/ROLLBACK.md`](driver/ROLLBACK.md) — передача и откат
+- [`driver/VERIFY.cmd`](driver/VERIFY.cmd) — проверка драйвера и Python одной командой
 
 ## Драйвер Windows
 `driver/build.cmd` (WDK) → `XDMA.sys`; тест: `test_xdma.exe`.

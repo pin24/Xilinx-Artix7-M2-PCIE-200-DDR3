@@ -41,7 +41,15 @@ REM   ...
 REM "Published Name:" precedes "Original Name:", so we track the most recent
 REM published name and delete it when we see "Original Name: xdma.inf".
 REM Robust against multiple installs (loops until none remain).
-powershell -NoProfile -Command "$out = pnputil /enum-drivers; $published = $null; foreach ($line in $out) { if ($line -match 'Published Name:\s+(oem\d+\.inf)') { $published = $matches[1] } elseif ($line -match 'Original Name:\s+xdma\.inf' -and $published) { Write-Host ('  removing ' + $published); pnputil /delete-driver $published /uninstall /force 2>$null; $published = $null } }"
+REM FIX-14: match ASCII patterns only (published = oemNN.inf, original =
+REM xdma.inf); English label matching silently failed on localized Windows.
+powershell -NoProfile -Command "$out = pnputil /enum-drivers; $pub = $null; foreach ($line in $out) { if ($line -match '(oem\d+\.inf)') { $pub = $matches[1] } elseif ($line -match 'xdma\.inf' -and $pub) { Write-Host ('  removing ' + $pub); pnputil /delete-driver $pub /uninstall /force 2>$null; $pub = $null } }"
+
+echo [3b/4] Removing legacy service binary copy (if any)...
+if exist "%SystemRoot%\System32\drivers\XDMA.sys" (
+    del /q "%SystemRoot%\System32\drivers\XDMA.sys"
+    echo   removed System32\drivers\XDMA.sys
+)
 
 echo [4/4] Disable test signing (optional, requires reboot)...
 REM Uncomment the next line to turn test signing OFF. Leave it commented to

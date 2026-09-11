@@ -5,16 +5,21 @@ import time
 import threading
 
 # ============================================================
-# 1. МОДЕЛЬ FPGA (AXI-Lite BAR0 128MB, BAR2 256MB)
+# 1. МОДЕЛЬ FPGA — каноническая DFX-карта (docs/ADDRESS_MAP.md)
+#    BAR0 = 128 MB AXI-Lite (GPIO/HWICAP/DFX socket/TDOT/ICAP/XADC);
+#    DDR3 — ТОЛЬКО DMA-окно (256 MB), MMIO-моста к DDR3 в DFX-сборке нет (§1.2).
 # ============================================================
 class FpgaEmulator:
     def __init__(self):
-        self.bar0 = bytearray(128 * 1024 * 1024)  # 128MB BAR0
-        self.bar2 = bytearray(256 * 1024 * 1024)  # 256MB BAR2 (DDR3)
+        self.bar0 = bytearray(128 * 1024 * 1024)  # BAR0: AXI-Lite 128MB
+        self.bar2 = bytearray(256 * 1024 * 1024)  # DDR3 DMA-окно (256MB, смещения от 0x8000_0000)
         self._busy = False
         self._done = False
         self._go_pending = False
         self._timer = None
+        # канонические регионы AXI-Lite (DFX-карта)
+        self._hwicap  = {'cr': 0, 'sr': 0x1, 'wfv': 0}       # 0x4000_1000 axi_hwicap
+        self._dfxsock = {'data': 0, 'tri': 0xFF, 'data2': 0} # 0x4000_2000 dfx_socket
 
         # по умолчанию
         self._tdot = {
@@ -80,22 +85,32 @@ class FpgaEmulator:
         addr = offset
         if addr < 0x80000000:  # BAR0 (AXI-Lite)
             # декодирование периферии
-            if 0x40000000 <= addr < 0x40001000:  # GPIO
+            if 0x40000000 <= addr < 0x40001000:  # M00 GPIO
                 off = addr - 0x40000000
                 if off == 0x00:  # DATA
                     return struct.pack('<I', self._gpio['data'])
                 elif off == 0x04:  # TRI
                     return struct.pack('<I', self._gpio['tri'])
-            elif 0x40001000 <= addr < 0x40002000:  # TDOT
+            elif 0x40001000 <= addr < 0x40002000:  # M02 HWICAP (axi_hwicap)
                 off = addr - 0x40001000
+                if off == 0x00: return struct.pack('<I', self._hwicap['cr'])
+                elif off == 0x04: return struct.pack('<I', self._hwicap['sr'])
+                elif off == 0x08: return struct.pack('<I', self._hwicap['wfv'])
+            elif 0x40002000 <= addr < 0x40003000:  # M01 DFX Socket (axi_gpio dual)
+                off = addr - 0x40002000
+                if off == 0x00: return struct.pack('<I', self._dfxsock['data'])
+                elif off == 0x04: return struct.pack('<I', self._dfxsock['tri'])
+                elif off == 0x08: return struct.pack('<I', self._dfxsock['data2'])
+            elif 0x40003000 <= addr < 0x40004000:  # M03 TDOT regs
+                off = addr - 0x40003000
                 val = self._tdot_read(off)
                 return struct.pack('<I', val)
-            elif 0x40002000 <= addr < 0x40003000:  # ICAP
-                off = addr - 0x40002000
+            elif 0x40004000 <= addr < 0x40005000:  # M04 ICAP regs (icap_ctrl)
+                off = addr - 0x40004000
                 if off == 0x00: return struct.pack('<I', self._icap['ctrl'])
                 elif off == 0x04: return struct.pack('<I', self._icap['status'])
                 elif off == 0x08: return struct.pack('<I', self._icap['data'])
-            elif 0x46000000 <= addr < 0x46001000:  # XADC
+            elif 0x46000000 <= addr < 0x46001000:  # M05 XADC
                 off = addr - 0x46000000
                 if off == 0x00: return struct.pack('<I', self._xadc['temp'])
                 elif off == 0x04: return struct.pack('<I', self._xadc['vccint'])
@@ -111,21 +126,31 @@ class FpgaEmulator:
     def write(self, offset, data):
         addr = offset
         if addr < 0x80000000:  # BAR0
-            if 0x40000000 <= addr < 0x40001000:  # GPIO
+            if 0x40000000 <= addr < 0x40001000:  # M00 GPIO
                 off = addr - 0x40000000
                 val = struct.unpack('<I', data[:4])[0]
                 if off == 0x00: self._gpio['data'] = val
                 elif off == 0x04: self._gpio['tri'] = val
-            elif 0x40001000 <= addr < 0x40002000:  # TDOT
+            elif 0x40001000 <= addr < 0x40002000:  # M02 HWICAP
                 off = addr - 0x40001000
                 val = struct.unpack('<I', data[:4])[0]
-                self._tdot_write(off, val)
-            elif 0x40002000 <= addr < 0x40003000:  # ICAP
+                if off == 0x00: self._hwicap['cr'] = val
+                elif off == 0x08: self._hwicap['wfv'] = val
+            elif 0x40002000 <= addr < 0x40003000:  # M01 DFX Socket
                 off = addr - 0x40002000
+                val = struct.unpack('<I', data[:4])[0]
+                if off == 0x00: self._dfxsock['data'] = val
+                elif off == 0x04: self._dfxsock['tri'] = val
+            elif 0x40003000 <= addr < 0x40004000:  # M03 TDOT regs
+                off = addr - 0x40003000
+                val = struct.unpack('<I', data[:4])[0]
+                self._tdot_write(off, val)
+            elif 0x40004000 <= addr < 0x40005000:  # M04 ICAP regs
+                off = addr - 0x40004000
                 val = struct.unpack('<I', data[:4])[0]
                 if off == 0x00: self._icap['ctrl'] = val
                 elif off == 0x08: self._icap['data'] = val
-            elif 0x46000000 <= addr < 0x46001000:  # XADC (read-only)
+            elif 0x46000000 <= addr < 0x46001000:  # M05 XADC (read-only)
                 pass
             else:
                 self.bar0[addr:addr+len(data)] = data
@@ -172,7 +197,7 @@ GPIO_BASE   = 0x40000000
 GPIO_DATA   = GPIO_BASE + 0x00
 GPIO_TRI    = GPIO_BASE + 0x04
 
-TDOT_BASE   = 0x40001000
+TDOT_BASE   = 0x40003000
 TDOT_CTRL   = TDOT_BASE + 0x00
 TDOT_STATUS = TDOT_BASE + 0x04
 TDOT_N_IN   = TDOT_BASE + 0x08
@@ -187,7 +212,7 @@ TDOT_RESULT_ADDR_HI  = TDOT_BASE + 0x28
 TDOT_CORE_RES0 = TDOT_BASE + 0x2C
 TDOT_CORE_RES1 = TDOT_BASE + 0x30
 
-ICAP_BASE   = 0x40002000
+ICAP_BASE   = 0x40004000
 ICAP_GO     = ICAP_BASE + 0x00
 ICAP_READY  = ICAP_BASE + 0x04
 
@@ -267,12 +292,12 @@ def test_tdot_protocol(drv):
     n = drv.read_reg(TDOT_N_IN)
     print(f"  N_IN readback = {n}")
 
-    # Проверяем RTL-баг: GO затирает N_IN через [16:8]
+    # BUG-003 (исправлен в RTL): GO НЕ должен затирать N_IN через WDATA[16:8].
     drv.write_reg(TDOT_CTRL, 0x01)  # GO
     n_after_go = drv.read_reg(TDOT_N_IN)
-    print(f"  N_IN after GO = {n_after_go} (RTL bug: GO overwrites N_IN via [16:8])")
+    print(f"  N_IN after GO = {n_after_go} (должно остаться 8 — BUG-003 исправлен)")
     if n_after_go != 8:
-        print(f"  ⚠ RTL BUG CONFIRMED: GO wrote 0x00, n_in_reg = 0, n_in_eff = 32")
+        print(f"  ⚠ РЕГРЕССИЯ BUG-003: GO затер N_IN (n_in_eff станет 32)")
 
     # Ждём DONE
     for _ in range(500):
@@ -301,12 +326,15 @@ def test_icap(drv):
     print(f"  ICAP_READY=0x{ready:08X} (bit0={'1' if ready & 0x01 else '0'})")
     return True
 
-def test_bar2_ddr3(drv):
-    print("\n--- BAR2 DDR3 Test ---")
-    # Запись в DDR3
-    drv.write_block(DDR3_BASE + 0x1000, b'\xAA\xBB\xCC\xDD\xEE\xFF')
+def test_ddr3_dma(drv):
+    print("\n--- DDR3 (DMA-окно) Test ---")
+    # В DFX-сборке DDR3 доступна ТОЛЬКО через DMA-каналы (h2c/c2h); MMIO-моста
+    # к DDR3 (BAR2) нет (docs/ADDRESS_MAP.md §1.2). В модели DMA-окно — массив
+    # со смещениями от 0x8000_0000.
+    off = 0x1000
+    drv.write_block(DDR3_BASE + off, b'\xAA\xBB\xCC\xDD\xEE\xFF')
     # Чтение обратно
-    data = drv.read_block(DDR3_BASE + 0x1000, 6)
+    data = drv.read_block(DDR3_BASE + off, 6)
     print(f"  Written/read back: {data.hex()} (expect aabbccddeeff)")
     if data != b'\xAA\xBB\xCC\xDD\xEE\xFF':
         return False
@@ -329,7 +357,7 @@ tests = [
     ("[XADC]", test_xadc),
     ("[TDOT_PROTO]", test_tdot_protocol),
     ("[ICAP]", test_icap),
-    ("[BAR2_DDR3]", test_bar2_ddr3),
+    ("[DDR3_DMA]", test_ddr3_dma),
 ]
 
 for name, fn in tests:

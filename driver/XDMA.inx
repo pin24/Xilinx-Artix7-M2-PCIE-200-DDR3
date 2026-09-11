@@ -7,7 +7,7 @@ Provider=%Provider%
 ; pnputil /add-driver refuses to update an already-staged package when the
 ; new package's DriverVer is not strictly newer. Every driver fix must bump
 ; the version part (date part is re-stamped by stampinf -d * at build time).
-DriverVer=09/11/2026,1.1.2.0
+DriverVer=09/11/2026,1.1.4.0
 CatalogFile=XDMA.cat
 
 [Manufacturer]
@@ -44,6 +44,13 @@ XDMA.sys
 [DestinationDirs]
 CopyFiles=12
 
+[SourceDisksNames]
+1 = %DiskId1%
+
+[SourceDisksFiles]
+XDMA.sys = 1
+
 [Strings]
 Provider="MultiTool"
 DeviceDesc="XDMA DDR3 Ternary Accelerator v1.1"
+DiskId1="XDMA Driver Installation Disk"

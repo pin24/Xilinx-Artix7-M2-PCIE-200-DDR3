@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Edge-case тестирование эмуляции XDMA драйвера + FPGA"""
+"""Edge-case тестирование эмуляции XDMA драйвера + FPGA.
+
+Модель соответствует канонической DFX-карте (docs/ADDRESS_MAP.md):
+GPIO 0x4000_0000, HWICAP 0x4000_1000, DFX socket 0x4000_2000,
+TDOT 0x4000_3000, ICAP 0x4000_4000, XADC 0x4600_0000;
+DDR3 — только DMA-окно 256 MB (MMIO-моста в DFX нет, §1.2).
+"""
 import struct
 import time
 import threading
@@ -11,12 +17,14 @@ class FpgaEmulator:
     NUM_MAC = 32
 
     def __init__(self):
-        self.bar0 = bytearray(128 * 1024 * 1024)
-        self.bar2 = bytearray(256 * 1024 * 1024)
+        self.bar0 = bytearray(128 * 1024 * 1024)  # BAR0: AXI-Lite 128MB (DFX-карта)
+        self.bar2 = bytearray(256 * 1024 * 1024)  # DDR3 DMA-окно 256MB (смещения от 0x8000_0000)
         self._busy = False
         self._done = False
         self._go_pending = False
         self._timer = None
+        self._hwicap  = {'cr': 0, 'sr': 0x1, 'wfv': 0}       # 0x4000_1000
+        self._dfxsock = {'data': 0, 'tri': 0xFF, 'data2': 0} # 0x4000_2000
 
         self._tdot = {
             'ctrl': 0, 'status': 0, 'n_in': 0,
@@ -77,19 +85,28 @@ class FpgaEmulator:
     def read(self, offset, length=4):
         addr = offset
         if addr < 0x80000000:
-            if 0x40000000 <= addr < 0x40001000:
+            if 0x40000000 <= addr < 0x40001000:          # M00 GPIO
                 off = addr - 0x40000000
                 if off == 0x00: return struct.pack('<I', self._gpio['data'])
                 elif off == 0x04: return struct.pack('<I', self._gpio['tri'])
-            elif 0x40001000 <= addr < 0x40002000:
+            elif 0x40001000 <= addr < 0x40002000:        # M02 HWICAP
                 off = addr - 0x40001000
-                return struct.pack('<I', self._tdot_read(off))
-            elif 0x40002000 <= addr < 0x40003000:
+                if off == 0x00: return struct.pack('<I', self._hwicap['cr'])
+                elif off == 0x04: return struct.pack('<I', self._hwicap['sr'])
+            elif 0x40002000 <= addr < 0x40003000:        # M01 DFX socket
                 off = addr - 0x40002000
+                if off == 0x00: return struct.pack('<I', self._dfxsock['data'])
+                elif off == 0x04: return struct.pack('<I', self._dfxsock['tri'])
+                elif off == 0x08: return struct.pack('<I', self._dfxsock['data2'])
+            elif 0x40003000 <= addr < 0x40004000:        # M03 TDOT regs
+                off = addr - 0x40003000
+                return struct.pack('<I', self._tdot_read(off))
+            elif 0x40004000 <= addr < 0x40005000:        # M04 ICAP regs (icap_ctrl)
+                off = addr - 0x40004000
                 if off == 0x00: return struct.pack('<I', self._icap['ctrl'])
                 elif off == 0x04: return struct.pack('<I', self._icap['status'])
                 elif off == 0x08: return struct.pack('<I', self._icap['data'])
-            elif 0x46000000 <= addr < 0x46001000:
+            elif 0x46000000 <= addr < 0x46001000:        # M05 XADC
                 off = addr - 0x46000000
                 if off == 0x00: return struct.pack('<I', self._xadc['temp'])
                 elif off == 0x04: return struct.pack('<I', self._xadc['vccint'])
@@ -104,20 +121,29 @@ class FpgaEmulator:
     def write(self, offset, data):
         addr = offset
         if addr < 0x80000000:
-            if 0x40000000 <= addr < 0x40001000:
+            if 0x40000000 <= addr < 0x40001000:          # M00 GPIO
                 off = addr - 0x40000000
                 val = struct.unpack('<I', data[:4])[0]
                 if off == 0x00: self._gpio['data'] = val
                 elif off == 0x04: self._gpio['tri'] = val
-            elif 0x40001000 <= addr < 0x40002000:
+            elif 0x40001000 <= addr < 0x40002000:        # M02 HWICAP
                 off = addr - 0x40001000
-                self._tdot_write(off, struct.unpack('<I', data[:4])[0])
-            elif 0x40002000 <= addr < 0x40003000:
+                val = struct.unpack('<I', data[:4])[0]
+                if off == 0x00: self._hwicap['cr'] = val
+            elif 0x40002000 <= addr < 0x40003000:        # M01 DFX socket
                 off = addr - 0x40002000
+                val = struct.unpack('<I', data[:4])[0]
+                if off == 0x00: self._dfxsock['data'] = val
+                elif off == 0x04: self._dfxsock['tri'] = val
+            elif 0x40003000 <= addr < 0x40004000:        # M03 TDOT regs
+                off = addr - 0x40003000
+                self._tdot_write(off, struct.unpack('<I', data[:4])[0])
+            elif 0x40004000 <= addr < 0x40005000:        # M04 ICAP regs
+                off = addr - 0x40004000
                 val = struct.unpack('<I', data[:4])[0]
                 if off == 0x00: self._icap['ctrl'] = val
                 elif off == 0x08: self._icap['data'] = val
-            elif 0x46000000 <= addr < 0x46001000:
+            elif 0x46000000 <= addr < 0x46001000:        # M05 XADC (RO)
                 pass
             else:
                 self.bar0[addr:addr+len(data)] = data
@@ -145,7 +171,7 @@ GPIO_BASE   = 0x40000000
 GPIO_DATA   = GPIO_BASE + 0x00
 GPIO_TRI    = GPIO_BASE + 0x04
 
-TDOT_BASE   = 0x40001000
+TDOT_BASE   = 0x40003000
 TDOT_CTRL   = TDOT_BASE + 0x00
 TDOT_STATUS = TDOT_BASE + 0x04
 TDOT_N_IN   = TDOT_BASE + 0x08
@@ -160,7 +186,7 @@ TDOT_RESULT_ADDR_HI  = TDOT_BASE + 0x28
 TDOT_CORE_RES0 = TDOT_BASE + 0x2C
 TDOT_CORE_RES1 = TDOT_BASE + 0x30
 
-ICAP_BASE   = 0x40002000
+ICAP_BASE   = 0x40004000
 ICAP_GO     = ICAP_BASE + 0x00
 ICAP_READY  = ICAP_BASE + 0x04
 
@@ -255,9 +281,8 @@ def edge_bar0_boundary(drv):
           f"wrote 0x{marker:08X}, read {rb.hex()}  ok={ok1}")
     all_ok &= ok1
 
-    # 2b. Граница BAR0/BAR2: адрес 0x80000000 — первый байт BAR2 (DDR3).
-    #     По факту эмулятора барьер декодирования = 0x80000000 (см. память проекта).
-    #     Любой адрес < 0x80000000 — AXI-Lite, >= 0x80000000 — BAR2/AXI-MM (DDR3).
+    # 2b. Граница AXI-Lite/DDR3: адрес 0x80000000 — начало DDR3 (в DFX-сборке
+    #     это DMA-окно; MMIO-моста нет, но модель одна для обоих режимов).
     drv.write_block(0x80000000, struct.pack('<I', 0xDEADBEEF))
     rb2 = drv.read_block(0x80000000, 4)
     ok2 = (rb2 == struct.pack('<I', 0xDEADBEEF))
@@ -444,8 +469,8 @@ def edge_periph_ranges(drv):
     if d != 0xFF or t != 0x00:
         all_ok = False
 
-    # TDOT REGS: 0x40001000-0x40001030
-    print("\n  -- TDOT REGS (0x40001000-0x40001030) --")
+    # TDOT REGS: 0x40003000-0x40003030 (каноническая DFX-карта, M03)
+    print("\n  -- TDOT REGS (0x40003000-0x40003030) --")
     for offset in [0x00, 0x04, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0x30]:
         addr = TDOT_BASE + offset
         if offset in (0x00,):  # CTRL: only GO bit[0] stored
@@ -466,8 +491,8 @@ def edge_periph_ranges(drv):
                 all_ok = False
             print(f"    [0x{addr:08X}] RW: wrote 0x{expect:08X}, read 0x{v:08X}")
 
-    # ICAP: 0x40002000-0x40002008
-    print("\n  -- ICAP (0x40002000-0x40002008) --")
+    # ICAP: 0x40004000-0x40004008 (каноническая DFX-карта, M04)
+    print("\n  -- ICAP (0x40004000-0x40004008) --")
     for offset in [0x00, 0x04, 0x08]:
         addr = ICAP_BASE + offset
         if offset == 0x04:  # ready — RO

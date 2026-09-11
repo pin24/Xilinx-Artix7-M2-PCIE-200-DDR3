@@ -1,5 +1,6 @@
-#include <stdio.h>
+﻿#include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include <windows.h>
 #include <winioctl.h>
 
@@ -42,11 +43,43 @@
 #define XADC_TEMP       (XADC_BASE + 0x00)
 #define XADC_VCCINT     (XADC_BASE + 0x04)
 
-/* DDR3 */
+/* DDR3 -- in the DFX build NOT mapped into PCIe space: reachable only via the
+ * XDMA DMA channels (h2c/c2h), docs/ADDRESS_MAP.md 1.2. This legacy MMIO path
+ * is valid only for the old non-DFX bitstream (BAR2 = DDR3 bridge). */
 #define DDR3_BASE       0x80000000ULL
 
 /* Device path (XDMA Win driver — single device, BAR0 + BAR2 through same handle) */
 #define DEVICE_CONTROL  L"\\\\.\\XDMA0"
+
+/* FIX-12 (BSOD 0x124): pre-flight BAR query. The driver (FIX-11) refuses a
+ * too-small second BAR as a DDR3 window (DFX build keeps the MSI-X table on
+ * BAR2; DDR3 is DMA-only -- docs/ADDRESS_MAP.md 1.2). Query the real BAR sizes
+ * before hardware tests so DDR3/XADC SKIP instead of poking memory that can
+ * raise a fatal PCIe AER (WHEA 0x124). */
+#define IOCTL_XDMA_GET_BAR_INFO \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+typedef struct _XDMA_BAR_INFO {
+    ULONG64 Bar0PhysAddr;
+    ULONG   Bar0Length;
+    ULONG64 Bar2PhysAddr;
+    ULONG   Bar2Length;
+} XDMA_BAR_INFO;
+
+static ULONG g_bar0_len = 0;   /* BAR0 aperture, bytes */
+static ULONG g_bar2_len = 0;   /* second BAR aperture (0 = no DDR3 window) */
+
+static BOOL QueryBarInfo(HANDLE hDev)
+{
+    XDMA_BAR_INFO info;
+    DWORD br = 0;
+    if (!DeviceIoControl(hDev, IOCTL_XDMA_GET_BAR_INFO, NULL, 0,
+                         &info, sizeof(info), &br, NULL))
+        return FALSE;
+    g_bar0_len = info.Bar0Length;
+    g_bar2_len = info.Bar2Length;
+    return TRUE;
+}
 
 /* Timing */
 #define POLL_INTERVAL_MS    10
@@ -557,10 +590,44 @@ static const char* PassFail(BOOL ok)
 /*  Main                                                                       */
 /* ========================================================================== */
 
-int main(void)
+/* FIX T5 (BSOD 0x124): per-test selection.
+ *   test_xdma.exe                 -- run all (old behavior)
+ *   test_xdma.exe gpio tdot xadc  -- run only the listed tests
+ * ICAP and DDR3 touch FPGA paths that can raise a fatal PCIe AER
+ * (bugcheck 0x124) when the design does not answer correctly. Run them
+ * individually while isolating the board. */
+static int want(const char* name, int argc, char** argv)
+{
+    int i;
+    if (argc < 2) return 1;
+    for (i = 1; i < argc; i++) {
+        if (_stricmp(argv[i], "all") == 0) return 1;
+        if (_stricmp(argv[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+int main(int argc, char** argv)
 {
     HANDLE hDev;
-    int pass = 0, fail = 0;
+    int pass = 0, fail = 0, skip = 0;
+
+    if (argc >= 2) {
+        int a, j, m;
+        const char* kTests[7] = { "gpio", "tdot", "xadc", "proto", "icap", "ddr3", "all" };
+        for (a = 1; a < argc; a++) {
+            m = 0;
+            for (j = 0; j < 7; j++)
+                if (_stricmp(argv[a], kTests[j]) == 0) m = 1;
+            if (!m) {
+                printf("Unknown test: %s\n", argv[a]);
+                printf("Usage: test_xdma.exe [all|gpio|tdot|xadc|proto|icap|ddr3]\n");
+                printf("NOTE: icap/ddr3 can bugcheck the OS (0x124 PCIe AER) if the\n");
+                printf("FPGA design does not answer correctly. Run them one at a time.\n");
+                return 2;
+            }
+        }
+    }
 
     printf("=== XDMA Ternary Accelerator Test ===\n\n");
     printf("Device: %ws\n", DEVICE_CONTROL);
@@ -573,59 +640,94 @@ int main(void)
 
     printf("Device opened OK.\n\n");
 
+    if (QueryBarInfo(hDev)) {
+        printf("BAR map: BAR0=%lu KB, BAR2=%lu KB%s\n",
+               g_bar0_len / 1024, g_bar2_len / 1024,
+               (g_bar2_len == 0) ? "  (no DDR3 MMIO window -- DFX build)" : "");
+    } else {
+        printf("WARNING: BAR-info IOCTL failed -- cannot pre-check DDR3/XADC\n");
+    }
+
     /* ------------------------------------------------------------------ */
     /*  GPIO test                                                         */
     /* ------------------------------------------------------------------ */
+    if (want("gpio", argc, argv)) {
     printf("[GPIO]      ");
     BOOL ok = TestGpio(hDev);
     printf("  -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
+    }
 
     /* ------------------------------------------------------------------ */
     /*  TDOT register test                                                */
     /* ------------------------------------------------------------------ */
+    if (want("tdot", argc, argv)) {
     printf("[TDOT_REGS] ");
-    ok = TestTdotRegs(hDev);
+    BOOL ok = TestTdotRegs(hDev);
     printf("  -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
+    }
 
     /* ------------------------------------------------------------------ */
     /*  XADC test                                                         */
     /* ------------------------------------------------------------------ */
+    if (want("xadc", argc, argv)) {
     printf("[XADC]      ");
-    ok = TestXadc(hDev);
-    printf("  -> %s\n", PassFail(ok));
-    if (ok) pass++; else fail++;
+    if (g_bar0_len != 0 && g_bar0_len < 0x6000010UL) {
+        printf("  -> SKIP (XADC @0x46000000 outside BAR0 window %lu KB; "
+               "bitstream/BAR map mismatch, ADDRESS_MAP expects BAR0=128 MB)\n",
+               g_bar0_len / 1024);
+        skip++;
+    } else {
+        BOOL ok = TestXadc(hDev);
+        printf("  -> %s\n", PassFail(ok));
+        if (ok) pass++; else fail++;
+    }
+    }
 
     /* ------------------------------------------------------------------ */
     /*  TDOT protocol test                                                */
     /* ------------------------------------------------------------------ */
+    if (want("proto", argc, argv)) {
     printf("[TDOT_PROTO]");
-    ok = TestTdotProtocol(hDev);
+    BOOL ok = TestTdotProtocol(hDev);
     printf("  -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
+    }
 
     /* ------------------------------------------------------------------ */
     /*  ICAP test                                                         */
     /* ------------------------------------------------------------------ */
+    if (want("icap", argc, argv)) {
     printf("[ICAP]      ");
-    ok = TestIcap(hDev);
+    BOOL ok = TestIcap(hDev);
     printf("  -> %s\n", PassFail(ok));
     if (ok) pass++; else fail++;
+    }
 
     /* ------------------------------------------------------------------ */
     /*  DDR3 test (FIX T4)                                                */
     /* ------------------------------------------------------------------ */
+    if (want("ddr3", argc, argv)) {
     printf("[DDR3]      ");
-    ok = TestDdr3(hDev);
-    printf("  -> %s\n", PassFail(ok));
-    if (ok) pass++; else fail++;
+    if (g_bar2_len == 0) {
+        printf("  -> SKIP (DFX build: no BAR2/DDR3 MMIO bridge; use DMA "
+               "channels h2c/c2h -- docs/ADDRESS_MAP.md 1.2)\n");
+        skip++;
+    } else {
+        BOOL ok = TestDdr3(hDev);
+        printf("  -> %s\n", PassFail(ok));
+        if (ok) pass++; else fail++;
+    }
+    }
 
     /* ================================================================== */
     /*  Summary                                                            */
     /* ================================================================== */
-    printf("\n=== Summary: %d PASS, %d FAIL (%d total) ===\n",
-           pass, fail, pass + fail);
+    printf("\n=== Summary: %d PASS, %d FAIL, %d SKIP (%d total) ===\n",
+           pass, fail, skip, pass + fail + skip);
+    if (skip)
+        printf("(SKIP = not applicable to the loaded bitstream; see messages above)\n");
 
     CloseHandle(hDev);
     return (fail > 0) ? 1 : 0;

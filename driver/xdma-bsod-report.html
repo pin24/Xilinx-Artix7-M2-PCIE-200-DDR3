@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XDMA Artix-7 — отчёт об ошибках и исправлениях (BSOD 0x7E / 0x124)</title>
+<style>
+  :root{--bg:#ffffff;--ink:#141414;--muted:#666;--hair:#dcdcdc;--hair2:#ececec;--accent:#8b1a1a;--ok:#1a6b3c;--warn:#8a5a00;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15.5px/1.6 "Segoe UI",Arial,sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:44px 26px 72px;}
+  header{border-bottom:2px solid var(--ink);padding-bottom:16px;}
+  h1{font-size:26px;line-height:1.2;margin:0 0 8px;font-weight:600;letter-spacing:-.01em;}
+  .sub{color:var(--muted);font-size:13.5px;}
+  h2{font-size:19px;margin:34px 0 10px;font-weight:600;}
+  h3{font-size:15px;margin:20px 0 6px;font-weight:600;}
+  p{margin:0 0 12px;max-width:80ch;}
+  table{border-collapse:collapse;width:100%;margin:12px 0 18px;font-size:13.5px;}
+  th{background:#f5f5f5;text-align:left;border:1px solid var(--hair);padding:7px 9px;font-weight:600;font-size:12.5px;}
+  td{border:1px solid var(--hair);padding:7px 9px;vertical-align:top;}
+  code,.mono{font-family:Consolas,"Courier New",monospace;font-size:12.8px;}
+  pre{background:#f6f6f6;border:1px solid var(--hair);padding:12px 14px;overflow-x:auto;font-size:12.8px;line-height:1.5;}
+  .bad{color:var(--accent);font-weight:600}.good{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}
+  .box{border-left:3px solid var(--ink);background:#f8f8f8;padding:10px 14px;margin:14px 0;}
+  .box.red{border-color:var(--accent);background:#fdf5f5;}
+  .box.green{border-color:var(--ok);background:#f4faf6;}
+  ul{margin:0 0 12px;padding-left:22px}
+  li{margin:4px 0}
+  .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .chip{border:1px solid var(--hair);padding:4px 8px;font-family:Consolas,monospace;font-size:12px;color:var(--muted)}
+  .chip b{color:var(--ink)}
+  footer{border-top:2px solid var(--ink);margin-top:40px;padding-top:12px;color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body><div class="wrap">
+<header>
+  <h1>XDMA Artix-7 — отчёт об ошибках (BSOD) и исправлениях</h1>
+  <div class="sub">Проект: C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3 · драйвер v1.1.4.0 · аудит 2026-09-11</div>
+  <div class="meta">
+    <span class="chip"><b>Хост:</b> DESKTOP-27KRDOC · Win10 19041 (RU)</span>
+    <span class="chip"><b>Плата:</b> Artix-7 XC7A200T · PCIe VEN_10EE/DEV_7024</span>
+    <span class="chip"><b>Драйвер:</b> KMDF 1.15, тест-подпись</span>
+  </div>
+</header>
+
+<h2>1. Итог</h2>
+<p>Разобраны <b>три</b> синих экрана. Два первых — дефект сборки драйвера (цикл загрузки), третье — аппаратная ошибка PCIe, вызванная обращением драйвера/теста к чужому BAR. В ходе аудита проекта найдено и исправлено ещё четыре дефекта (эмуляторы, установщик, монитор температуры, документация). Драйвер пересобран (v1.1.4.0), установлен, работает; тест DDR3 корректно пропускается и больше не роняет систему.</p>
+
+<table>
+<tr><th>#</th><th>Сбой</th><th>Что случилось</th><th>Причина</th><th>Статус</th></tr>
+<tr><td>BSOD-1</td><td class="mono">0x1000007E<br>c0000005</td><td><span class="mono">XDMA.sys+0x1067</span> · <span class="mono">call [rax+3A0h]</span>, rax=0 · System/IRQL0 · 10.09 22:22 · каждое включение драйвера</td><td>Линковка с <span class="mono">/entry:DriverEntry</span> — таблица WdfFunctions NULL</td><td class="good">исправлено (FIX-8)</td></tr>
+<tr><td>BSOD-2</td><td class="mono">0x1000007E<br>c0000005</td><td>Та же точка: <span class="mono">XDMA.sys+0x1067</span> · 11.09 00:55</td><td>То же</td><td class="good">исправлено (FIX-8)</td></tr>
+<tr><td>BSOD-3</td><td class="mono">0x124 WHEA<br>Arg1=4 PCIe</td><td><span class="mono">pci!ExpressRootPortAerInterruptRoutine → WheaReportHwError</span> · 11.09 05:09 · во время теста DDR3</td><td>Запись в BAR2 (64-КБ MSI-X), который драйвер считал окном DDR3 → Completer Abort → фатальный AER</td><td class="good">исправлено (FIX-11/12)</td></tr>
+</table>
+
+<h2>2. BSOD-1/2 — почему падало на 0x1067</h2>
+<p>Дизассемблирование показало: падение — вызов <span class="mono">WdfDriverCreate</span> в <span class="mono">DriverEntry</span>. Индекс таблицы: <span class="mono">0x3A0 / 8 = 116</span> = <span class="mono">WdfDriverCreateTableIndex</span> (wdffuncenum.h, KMDF 1.15). Таблица <span class="mono">WdfFunctions</span> заполняется заглушкой <span class="mono">FxDriverEntry</span> (wdfdriverentry.lib) через <span class="mono">WdfVersionBind</span> (импорт из WDFLDR.SYS). В собранном образе импортов из WDFLDR не было вовсе, т.к. линковка шла с <span class="mono">/entry:DriverEntry</span>.</p>
+<pre>; XDMA+0x1000 (DriverEntry, старая сборка)
+mov  rcx, [XDMA+0x3088]   ; WdfDriverGlobals = NULL
+mov  rax, [XDMA+0x3090]   ; WdfFunctions     = NULL
+call qword ptr [rax+3A0h] ; -> чтение [0x3A0] -> c0000005</pre>
+<div class="box green"><b>Исправление (FIX-8):</b> в <code>build.cmd</code> точка входа — <code>/entry:FxDriverEntry</code> (как в WDK: <code>WindowsDriver.KernelMode.KMDF.props</code>). После пересборки в образе есть импорты <code>WDFLDR.SYS: WdfVersionBind/Unbind/BindClass/UnbindClass</code>, точка входа <code>0x1988</code>, драйвер загружается без падения.</div>
+
+<h2>3. BSOD-3 — фатальная ошибка PCIe (аппаратный уровень)</h2>
+<p>Стек дампа не содержит кадров XDMA.sys — bugcheck поднял <b>корневой порт PCIe</b> по сигналу AER от платы. Источник — обращение к <b>BAR2</b>. Измерения через собственный IOCTL драйвера:</p>
+<table>
+<tr><th>BAR</th><th>Физадрес</th><th>Размер (факт)</th><th>Что ожидалось по документации</th></tr>
+<tr><td>BAR0 (AXI-Lite)</td><td class="mono">0xA8100000</td><td class="mono">0x100000 — 1 МБ</td><td>128 МБ (<code>pf0_bar0_size=128</code> в build_dfx.tcl)</td></tr>
+<tr><td>второй BAR</td><td class="mono">0xA80F0000</td><td class="mono">0x10000 — 64 КБ</td><td>в DFX-сборке это таблица MSI-X (DDR3 — только через DMA, ADDRESS_MAP §1.2)</td></tr>
+</table>
+<p>Драйвер без проверки принимал второй BAR как окно DDR3; тест DDR3 писал в него → неподдерживаемая транзакция → Completer Abort → AER → bugcheck 0x124.</p>
+<div class="box green"><b>Исправление:</b> <b>FIX-11</b> (driver.c) — второй BAR принимается только при размере ≥ 16 МБ, иначе не маппится и DDR3-запросы возвращают <code>STATUS_DEVICE_NOT_CONNECTED</code> без обращения к железу (+ <code>DbgPrint</code>-диагностика). <b>FIX-12</b> (test_xdma.c) — предполётный опрос BAR; тесты <code>DDR3</code> и <code>XADC</code> печатают <b>SKIP</b>, если область недоступна.</div>
+<div class="box red"><b>Важно (R-01):</b> измеренный BAR0 = 1 МБ противоречит скриптам (128 МБ) — <b>на плате загружен устаревший битстрим</b>. Это объясняет и то, что записи GPIO_TRI/TDOT_N_IN не залипают. Требуется пересборка в Vivado 2025.2 и перепрошивка.</div>
+
+<h2>4. Найденные и исправленные дефекты (журнал)</h2>
+<table>
+<tr><th>ID</th><th>Компонент</th><th>Дефект</th><th>Исправление</th><th>Проверка</th></tr>
+<tr><td>E-01</td><td>build.cmd</td><td>/entry:DriverEntry → NULL WdfFunctions → BSOD 0x7E</td><td>FIX-8: /entry:FxDriverEntry</td><td>импорты WDFLDR; загрузка без BSOD</td></tr>
+<tr><td>E-02</td><td>INF/сборка</td><td>inf2cat: нет SourceDisks*, «дата из будущего», формат даты в RU-локали</td><td>SourceDisks*; FIX-10 (вчера-UTC, InvariantCulture)</td><td>Signability OK; cat подписан</td></tr>
+<tr><td>E-03</td><td>build.cmd</td><td>sc-create-хвост конфликтовал с PnP</td><td>FIX-9: только PnP-установка</td><td>нет второй копии/сервиса</td></tr>
+<tr><td>E-04</td><td>driver.c + test_xdma.c</td><td>BAR2 как DDR3 → BSOD 0x124</td><td>FIX-11 (порог 16 МБ) + FIX-12 (SKIP)</td><td>ddr3 → SKIP, 0 новых дампов</td></tr>
+<tr><td>E-05</td><td>emulate_test.py, edge_cases.py</td><td>устаревшая карта (TDOT 0x40001000, ICAP 0x40002000, BAR2=DDR3)</td><td>каноническая DFX-карта + DDR3 DMA-окно</td><td>6/6 и 6/6 PASS</td></tr>
+<tr><td>E-06</td><td>install.cmd, uninstall.cmd</td><td>разбор pnputil по англ. меткам — не работал на RU Windows</td><td>FIX-14: ASCII-шаблоны (oemNN.inf / xdma.inf)</td><td>удаление oem10.inf выполнено</td></tr>
+<tr><td>E-07</td><td>monitor_temp.py</td><td>«0.00 °C» как измерение при недоступном XADC</td><td>FIX-13: INVALID + exit 3 + --allow-invalid</td><td>py_compile; логика проверена</td></tr>
+<tr><td>E-08</td><td>xdma_driver.py</td><td>шапка «BAR2 = DDR3» противоречила карте</td><td>шапка приведена к DFX-карте (DMA-only)</td><td>согласовано с ADDRESS_MAP</td></tr>
+<tr><td>E-09</td><td>FPGA/битстрим</td><td>BAR0=1 МБ вместо 128 МБ; записи не залипают</td><td>требуется пересборка+перепрошивка (R-01)</td><td>отложено</td></tr>
+</table>
+
+<h2>5. Проверки (после правок)</h2>
+<table>
+<tr><th>Проверка</th><th>Результат</th></tr>
+<tr><td>Сборка драйвера</td><td class="good">Build FULL SUCCESS · v1.1.4.0 · cat подписан</td></tr>
+<tr><td>Установка</td><td class="good">oem10.inf v1.1.4.0 · сервис XDMA RUNNING · устройство Status OK</td></tr>
+<tr><td>test_xdma.exe ddr3</td><td class="good">SKIP (нет DDR3-окна в DFX) · EXIT 0 · BSOD нет</td></tr>
+<tr><td>test_xdma.exe gpio tdot xadc</td><td>FAIL/SKIP штатно (AXI-Lite не отвечает на устаревшем битстриме) · без сбоя ОС</td></tr>
+<tr><td>Минидампы</td><td class="good">не изменилось (3), новых нет</td></tr>
+<tr><td>Python: py_compile (71 файл)</td><td class="good">0 ошибок</td></tr>
+<tr><td>ternary_sw tests</td><td class="good">10/10</td></tr>
+<tr><td>verify_fpga_backend (mock)</td><td class="good">OK (diff 0.0)</td></tr>
+<tr><td>ternary_dot_layer</td><td class="good">OK (diff 4.8e-07)</td></tr>
+<tr><td>emulate_test / edge_cases</td><td class="good">6/6 · 6/6 (на канонической карте)</td></tr>
+</table>
+
+<h2>6. Что осталось (требует действия человека/железа)</h2>
+<ul>
+<li><b>R-01 (высокий):</b> пересобрать/перепрошить битстрим (BAR0=128 МБ) — после этого повторить <code>test_xdma.exe</code> и <code>xdma_driver.py --selftest</code>.</li>
+<li><b>R-02:</b> подтвердить калибровку MIG и DMA-паттерн h2c/c2h.</li>
+<li><b>R-03:</b> прогнать <code>icap</code>/<code>proto</code> по одному на актуальном битстриме.</li>
+<li><b>R-04:</b> температурный мониторинг через MIG DRP (XADC занят MIG, BUG-031).</li>
+<li><b>R-05:</b> обеспечить наличие <code>xdma_rw.exe</code> для Windows-пути Python-обвязки.</li>
+<li><b>R-07:</b> для продакшна — подпись драйвера не тестовым сертификатом.</li>
+</ul>
+
+<h2>7. Файлы-спутники</h2>
+<ul>
+<li><span class="mono">ERROR-FIX-LOG.md</span> + <span class="mono">error-fix-log.csv</span> — журнал ошибок/исправлений (машиночитаемый + текстовый).</li>
+<li><span class="mono">PROJECT_MAP.md</span> — инвентаризация projektu.</li>
+<li><span class="mono">ENVIRONMENT_MANIFEST.md</span> — версии инструментов.</li>
+<li><span class="mono">RISK_REGISTER.md</span> — реестр рисков.</li>
+<li><span class="mono">AUDIT-REPORT.md</span> — повторный аудит до/после.</li>
+<li><span class="mono">HANDOFF.md</span> — итоговая передача; <span class="mono">ROLLBACK.md</span> — откат.</li>
+<li><span class="mono">VERIFY.cmd</span> — воспроизводимая проверка одной командой.</li>
+</ul>
+
+<footer>AutoClaw · отчёт об ошибках XDMA Artix-7 · драйвер v1.1.4.0 · дампы: C:\Windows\Minidump · 2026-09-11</footer>
+</div></body>
+</html>
