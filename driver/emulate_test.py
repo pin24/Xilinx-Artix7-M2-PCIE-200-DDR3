@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Интеграционная эмуляция: драйвер ↔ RTL-модель FPGA"""
 import struct
 import time
@@ -297,7 +297,7 @@ def test_tdot_protocol(drv):
     n_after_go = drv.read_reg(TDOT_N_IN)
     print(f"  N_IN after GO = {n_after_go} (должно остаться 8 — BUG-003 исправлен)")
     if n_after_go != 8:
-        print(f"  ⚠ РЕГРЕССИЯ BUG-003: GO затер N_IN (n_in_eff станет 32)")
+        print(f"   РЕГРЕССИЯ BUG-003: GO затер N_IN (n_in_eff станет 32)")
 
     # Ждём DONE
     for _ in range(500):

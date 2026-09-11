@@ -70,6 +70,11 @@ C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\partial_rp.bi
 </ul>
 <div class="ok">Проверка после прошивки: <code>driver\build\test_xdma.exe gpio</code> (строка <code>BAR map</code>), <code>python pytorch_layer\xdma_driver.py --selftest</code>, <code>python pytorch_layer\dfx_swap.py --status</code>.</div>
 
+<h2>Ошибка «неверный sync word 0xFFFFFFFF» (E-13)</h2>
+<p>Vivado-овские <code>.bin</code>/<code>.bit</code> для 7-серии начинаются с <b>48-байтовой преамбулы</b>:</p>
+<pre>FF x32 | 00 00 00 BB 11 22 00 44 | FF x8 | AA 99 55 66 (sync) | ...</pre>
+<p>Первое LE-слово = <code>0xFFFFFFFF</code>, а не sync → старый загрузчик падал. Исправлено: <code>find_sync_offset()</code> ищет sync в первых 1024 байтах и пропускает преамбулу (работает для полного и частичного образов). Ваши файлы: полный = <b>1 349 799 слов</b>, частичный = <b>505 901 слово</b>.</p>
+
 <h2>Ограничения</h2>
 <ul>
 <li>ICAP-прошивка <b>временная</b> (сбрасывается питанием); постоянно — только JTAG/флеш.</li>

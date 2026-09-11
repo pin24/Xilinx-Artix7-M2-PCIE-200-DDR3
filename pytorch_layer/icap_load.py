@@ -69,7 +69,7 @@ def parse_bitstream(path: str) -> bytes:
         while pos < len(data):
             key = data[pos]
             pos += 1
-            if key == 0x65:  # 'e' — секция данных
+            if key == 0x65:  # 'e' - секция данных
                 ln = struct.unpack(">I", data[pos:pos + 4])[0]
                 pos += 4
                 return data[pos:pos + ln]
@@ -85,9 +85,30 @@ def iter_words_le(body: bytes):
     return [struct.unpack_from("<I", body, i)[0] for i in range(0, n, 4)]
 
 
+# FIX (E-13): Vivado .bin/.bit для 7-серии содержат 48-байтовую ПРЕАМБУЛУ
+# перед sync-словом: 32x0xFF + паттерн автоопределения ширины шины
+# (00 00 00 BB 11 22 00 44) + 8x0xFF, и только потом AA995566.
+# ICAP принимает поток начиная с sync-слова, поэтому преамбулу пропускаем.
+PREAMBLE_SCAN_LIMIT = 1024
+_SYNC_BE = b"\xAA\x99\x55\x66"
+
+
+def find_sync_offset(body: bytes, limit: int = PREAMBLE_SCAN_LIMIT) -> int:
+    """Смещение sync-слова (BE 0xAA995566) в теле в байтах, или -1.
+
+    Ищем только выровненные по 4 байта позиции в первых `limit` байтах."""
+    end = min(len(body), limit)
+    i = body.find(_SYNC_BE)
+    while i != -1 and i < end:
+        if i % 4 == 0:
+            return i
+        i = body.find(_SYNC_BE, i + 1)
+    return -1
+
+
 class IcapLoader:
     def __init__(self, device: str = "xdma0", dev=None):
-        # dev: уже открытое устройство (XdmaDevice) — переиспользуется
+        # dev: уже открытое устройство (XdmaDevice) - переиспользуется
         # вызывающим кодом (например dfx_swap.py), чтобы не открывать
         # повторное соединение. Иначе открываем своё (Linux -> Windows).
         if dev is not None:
@@ -116,19 +137,28 @@ class IcapLoader:
 
     def load(self, bit_path: str, show_progress: bool = True):
         body = parse_bitstream(bit_path)
-        words = iter_words_le(body)
+
+        # FIX (E-13): пропускаем 48-байтовую преамбулу Vivado (bus-width
+        # detect), ICAP принимает поток от sync-слова. Работает и для полного,
+        # и для частичного образа, и для .bin, и для .bit.
+        off = find_sync_offset(body)
+        if off < 0:
+            raise IcapError(
+                f"Sync word (BE 0xAA995566) не найден в первых "
+                f"{PREAMBLE_SCAN_LIMIT} байтах {bit_path}: файл повреждён "
+                f"или это не тело битстрима.")
+        if off:
+            print(f"Преамбула: пропущено {off} байт до sync-слова "
+                  f"(bus-width detect)")
+        words = iter_words_le(body[off:])
 
         if not words:
             raise IcapError(f"Файл {bit_path} пуст")
 
-        # sync word приходит первым (LE-вид 0x665599AA == BE 0xAA995566).
-        # Для .bin он обязан быть в нулевом смещении; для .bit — сразу после
-        # заголовка (parse_bitstream уже отрезал заголовок).
         if words[0] != ICAP_SYNC_LE:
             raise IcapError(
                 f"Неверный sync word в {bit_path}: 0x{words[0]:08X}, "
-                f"ожидался 0x{ICAP_SYNC_LE:08X} (BE 0xAA995566). "
-                f"Файл повреждён или это не тело битстрима.")
+                f"ожидался 0x{ICAP_SYNC_LE:08X} (BE 0xAA995566).")
 
         print(f"Битстрим: {bit_path}")
         print(f"Размер: {len(words)} слов ({len(words) * 4} байт)")
@@ -149,7 +179,7 @@ class IcapLoader:
                 raise IcapError(f"Таймаут READY на слове {i}")
             self._reg_w(REG_DATA, w)
 
-        # Отправка STOP — закрыть сессию ICAP (см. icap_ctrl.sv:11-17).
+        # Отправка STOP - закрыть сессию ICAP (см. icap_ctrl.sv:11-17).
         # Протокол: после последнего DATA хост пишет CTRL.STOP=1 → BUSY=0,
         # CSIB принудительно поднимается. Даже при full-bitstream перезагрузке
         # STOP успевает дойти до падения PCIe-линка (CDC toggle-handshake
@@ -157,7 +187,7 @@ class IcapLoader:
         # 5-10 секундного окна PCIe reset).
         # Оборачиваем в try/except: при partial reconfig PCIe не падает, и STOP
         # обязателен; при full reload возможна OSError/XdmaError на уже
-        # исчезнувшем устройстве — это нормально, игнорируем.
+        # исчезнувшем устройстве - это нормально, игнорируем.
         try:
             self._reg_w(REG_CTRL, CTRL_STOP)
             time.sleep(0.01)   # короткая пауза для CDC (toggle-handshake)
@@ -184,10 +214,17 @@ def main():
 
     try:
         body = parse_bitstream(args.bitstream)
-        words = iter_words_le(body)
+        off = find_sync_offset(body)
+        if off < 0:
+            raise IcapError(
+                f"Sync word (BE 0xAA995566) не найден в первых "
+                f"{PREAMBLE_SCAN_LIMIT} байтах {args.bitstream}")
+        words = iter_words_le(body[off:])
         if not words:
             raise IcapError(f"Файл {args.bitstream} пуст")
         print(f"Файл: {args.bitstream}, слов: {len(words)}")
+        if off:
+            print(f"Преамбула: пропущено {off} байт (bus-width detect)")
         print("Первые 8 слов в DATA (LE-вид; BE в скобках):")
         for w in words[:8]:
             be = struct.pack("<I", w)

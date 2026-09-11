@@ -43,6 +43,7 @@ from icap_load import (
     parse_bitstream, iter_words_le, IcapError,
     ICAP_BASE, REG_CTRL, REG_STATUS, REG_DATA,
     CTRL_GO, CTRL_STOP, STATUS_READY, STATUS_BUSY, ICAP_SYNC_LE,
+    find_sync_offset, PREAMBLE_SCAN_LIMIT,
 )
 
 FULL_IMAGE_MIN_BYTES = 2 << 20     # >= 2 МБ считаем полным образом (XC7A200T ~4.5 МБ)
@@ -115,22 +116,31 @@ def main(argv=None) -> int:
     ap.add_argument("--mock", action="store_true", help="прогон без железа (in-memory ICAP)")
     ap.add_argument("--timeout-ms", type=float, default=READY_TIMEOUT_S * 1000.0,
                     help="таймаут READY на слово, мс")
+    ap.add_argument("--strict-sync", action="store_true",
+                    help="требовать sync-слово в позиции 0 (не пропускать преамбулу)")
     args = ap.parse_args(argv)
 
     # ---- 1. файл ---------------------------------------------------------
     try:
         body = parse_bitstream(args.bitstream)
-        words = iter_words_le(body)
     except (IcapError, OSError) as e:
         print(f"ОШИБКА файла: {e}", file=sys.stderr)
         return 3
-    if not words:
-        print("ОШИБКА: файл пуст", file=sys.stderr)
+    off = 0 if args.strict_sync else find_sync_offset(body)
+    if off < 0:
+        print(f"ОШИБКА: sync word (BE 0xAA995566) не найден в первых "
+              f"{PREAMBLE_SCAN_LIMIT} байтах файла. Это не тело битстрима?",
+              file=sys.stderr)
         return 3
-    if words[0] != ICAP_SYNC_LE:
-        print(f"ОШИБКА: неверный sync word 0x{words[0]:08X} "
+    words = iter_words_le(body[off:])
+    if not words or words[0] != ICAP_SYNC_LE:
+        got = f"0x{words[0]:08X}" if words else "нет данных"
+        print(f"ОШИБКА: неверный sync word {got} "
               f"(ожидался 0x{ICAP_SYNC_LE:08X} = BE 0xAA995566)", file=sys.stderr)
         return 3
+    if off:
+        print(f"Преамбула: пропущено {off} байт (bus-width detect)  поток "
+              f"начинается с sync-слова")
 
     nbytes = len(words) * 4
     is_full = args.full or (not args.partial and nbytes >= FULL_IMAGE_MIN_BYTES)
@@ -214,7 +224,7 @@ def main(argv=None) -> int:
         print("Полный образ: подождите ~5-10 с (PCIe переинициализируется), затем проверьте:")
     else:
         print("Частичный образ: PCIe остаётся активным. Проверьте:")
-    print("   1) диспетчер устройств -> «XDMA DDR3 Ternary Accelerator v1.1»;")
+    print("   1) диспетчер устройств -> XDMA DDR3 Ternary Accelerator v1.1;")
     print("   2) driver\\build\\test_xdma.exe gpio   (строка BAR map) - Linux: python icap_load.py --dry-run")
     print("   3) python pytorch_layer\\xdma_driver.py --selftest")
     return 0
