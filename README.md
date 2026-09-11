@@ -165,6 +165,8 @@ C:\Python39\python.exe driver\edge_cases.py
 > из-за чего не работают регистры периферии. Полная пошаговая инструкция:
 > [`driver/R-01_BUILD_AND_FLASH.md`](driver/R-01_BUILD_AND_FLASH.md)
 > (HTML-версия: [`driver/R-01-build-and-flash.html`](driver/R-01-build-and-flash.html)).
+>
+> ⚠️ Работайте в каталоге `C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3`. В `C:\A7_M2\EXAMPLES\Xilinx-Artix7-M2-PCIE-200-DDR3` лежит устаревший клон того же репозитория с другим (include-based) `Makefile` — `make build` там падает с `No such file or directory`.
 
 Сборка (Vivado 2025.2, из корня репозитория):
 

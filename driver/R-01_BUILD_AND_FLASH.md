@@ -11,6 +11,29 @@
 
 ---
 
+## ⚠️ ВАЖНО: в системе ДВА каталога проекта — не перепутайте
+
+| Каталог | Что это | Годится для сборки? |
+|---|---|---|
+| **`C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3`** | **рабочий проект** (HEAD с исправлениями, self-contained `Makefile` ~3.5 КБ) | ✅ ДА — собирать здесь |
+| `C:\A7_M2\EXAMPLES\Xilinx-Artix7-M2-PCIE-200-DDR3` | устаревший клон того же репозитория (commit `8dfaa68`); `Makefile` = `include ../../scripts/make/common.mk` (файла нет в этом дереве) | ❌ НЕТ — `make` падает с `No such file or directory` |
+
+Быстрая проверка, что вы в правильном каталоге:
+
+```bat
+cd C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3
+dir Makefile            :: должно быть ~3.5 КБ, НЕ 38 байт
+dir scripts\build_dfx.tcl
+git log --oneline -1    :: должен быть коммит с аудитом (c74dd53 или новее)
+```
+
+Если нужен именно тот клон в `EXAMPLES\`, сначала обновите его
+(`git -C C:\A7_M2\EXAMPLES\Xilinx-Artix7-M2-PCIE-200-DDR3 pull --ff-only`) —
+тогда Makefile станет self-contained. Работать одновременно в двух клонах не
+рекомендуется: артефакты и `C:\build_dfx` у них общие.
+
+---
+
 ## 0. Версии (проверено на этой машине)
 
 | Компонент | Версия / значение |
@@ -36,9 +59,10 @@
 
 ## 2. Шаг 1 — пересборка битстрима
 
-Из корня репозитория `C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3`:
+Из корня репозитория `C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3` (проверьте путь командой `cd` + `dir Makefile` из раздела выше):
 
 ```bat
+cd /d C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3
 :: Вариант A (рекомендуемый, обёртка Makefile; авто-поиск Vivado 2025.2)
 make build NUM_MAC=32 JOBS=8
 ```

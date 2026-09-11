@@ -32,6 +32,16 @@
 <h2>Зачем</h2>
 <p>На плате обнаружен устаревший битстрим: измеренный BAR0 = 1 МБ против <code>pf0_bar0_size=128</code> (128 МБ) в <code>scripts/build_dfx.tcl</code>. Следствия — недоступны регистры периферии (GPIO/TDOT/XADC не отвечают корректно). Нужно пересобрать и перепрошить флеш актуальным образом.</p>
 
+<h2>⚠️ ВАЖНО: два каталога проекта</h2>
+<table>
+<tr><th>Каталог</th><th>Что это</th><th>Сборка?</th></tr>
+<tr><td><b><code>C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3</code></b></td><td>рабочий проект (HEAD с исправлениями; self-contained Makefile ~3.5 КБ)</td><td>✅ здесь</td></tr>
+<tr><td><code>C:\A7_M2\EXAMPLES\Xilinx-Artix7-M2-PCIE-200-DDR3</code></td><td>устаревший клон (commit 8dfaa68); Makefile = <code>include ../../scripts/make/common.mk</code> (файла нет) → <code>make</code> падает</td><td>❌ нет</td></tr>
+</table>
+<pre>cd C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3
+dir Makefile            :: ~3.5 КБ, НЕ 38 байт
+dir scripts\build_dfx.tcl</pre>
+
 <h2>Версии</h2>
 <table>
 <tr><th>Компонент</th><th>Значение</th></tr>
@@ -45,7 +55,8 @@
 </table>
 
 <h2>Шаг 1 — пересборка</h2>
-<pre>make build NUM_MAC=32 JOBS=8
+<pre>cd /d C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3
+make build NUM_MAC=32 JOBS=8
 :: либо напрямую:
 "C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat" -mode batch -source scripts\build_dfx.tcl -tclargs NUM_MAC=32 JOBS=8</pre>
 <p><code>NUM_MAC=32</code> согласован с хост-софтом (<code>TdotCore(num_mac=32)</code>, <code>FpgaBackend(num_mac=32)</code>). Дефолт Makefile — 8.</p>
