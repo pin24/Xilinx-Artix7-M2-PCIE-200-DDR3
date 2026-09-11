@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Прошивка FPGA без JTAG (по PCIe, ICAP)</title>
+<style>
+  :root{--ink:#141414;--muted:#666;--hair:#dcdcdc;--accent:#8b1a1a;--ok:#1a6b3c}
+  body{margin:0;background:#fff;color:var(--ink);font:15.5px/1.6 "Segoe UI",Arial,sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:42px 24px 70px}
+  h1{font-size:25px;margin:0 0 6px;font-weight:600}
+  h2{font-size:19px;margin:28px 0 8px;font-weight:600}
+  p{margin:0 0 11px;max-width:82ch}
+  table{border-collapse:collapse;width:100%;margin:10px 0 16px;font-size:13.5px}
+  th{background:#f5f5f5;text-align:left;border:1px solid var(--hair);padding:7px 9px;font-size:12.5px;font-weight:600}
+  td{border:1px solid var(--hair);padding:7px 9px;vertical-align:top}
+  code,pre{font-family:Consolas,"Courier New",monospace;font-size:12.8px}
+  pre{background:#f6f6f6;border:1px solid var(--hair);padding:11px 13px;overflow-x:auto;line-height:1.5}
+  .warn{border-left:3px solid var(--accent);background:#fdf5f5;padding:9px 13px;margin:12px 0}
+  .ok{border-left:3px solid var(--ok);background:#f4faf6;padding:9px 13px;margin:12px 0}
+  ul{margin:0 0 11px;padding-left:21px} li{margin:4px 0}
+  header{border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:6px}
+  .sub{color:var(--muted);font-size:13.5px}
+  footer{border-top:2px solid var(--ink);margin-top:36px;padding-top:11px;color:var(--muted);font-size:12.5px}
+</style></head><body><div class="wrap">
+<header>
+  <h1>Прошивка FPGA без JTAG — по PCIe через ICAP</h1>
+  <div class="sub">Скрипт <code>pytorch_layer/program_fpga_icap.py</code> · контроллер <code>rtl/integration/icap_ctrl.sv</code> (0x4000_4000)</div>
+</header>
+
+<h2>Что возможно</h2>
+<table>
+<tr><th>Способ</th><th>Инструмент</th><th>Когда</th><th>Живёт после выключения?</th></tr>
+<tr><td>ICAP по PCIe — полный образ</td><td><code>program_fpga_icap.py top.bin --full --yes</code></td><td>FPGA уже жива, залить образ по PCIe</td><td>❌ нет (volatile)</td></tr>
+<tr><td>ICAP по PCIe — частичный RP</td><td><code>… --partial</code> / <code>dfx_swap.py</code></td><td>DFX-обновление ускорителя</td><td>❌ нет</td></tr>
+<tr><td>JTAG (HW Manager)</td><td><code>scripts/flash_program.tcl</code></td><td>флеш (persistent), восстановление, «пустая» плата</td><td>✅ да (SPI-флеш)</td></tr>
+<tr><td>SPI-флеш из фабрики (без JTAG)</td><td>—</td><td>не реализовано (нужен спец. дизайн STARTUPE2)</td><td>— (R-14)</td></tr>
+</table>
+<div class="warn">По PCIe <b>нельзя</b> прошить «пустую» FPGA — без работающего PCIe-эндпойнта нет канала. Для этого только JTAG/флеш (см. <code>driver/R-01_BUILD_AND_FLASH.md</code>).</div>
+
+<h2>Как запускать</h2>
+<pre>cd C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3\pytorch_layer
+
+:: разбор файла без обращения к железу
+C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\xdma_ddr3_core_top.bin --dry-run
+
+:: прогон без железа (in-memory ICAP) — smoke-тест скрипта
+C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\xdma_ddr3_core_top.bin --mock
+
+:: ПОЛНЫЙ образ по PCIe (линк просядет на ~5–10 c)
+C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\xdma_ddr3_core_top.bin --full --yes
+
+:: частичный (RP) — линк не рвётся
+C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\partial_rp.bin --partial</pre>
+<p>Скрипт: разбор (sync <code>0xAA995566</code>, LE-слова) → precheck <code>STATUS</code> (BUSY/READY) → GO → поток слов с ожиданием READY → STOP → отчёт. Коды возврата: 0 ok · 2 нужно <code>--yes</code> · 3 файл/формат · 4 precheck · 5 загрузка.</p>
+
+<h2>Регистры ICAP</h2>
+<table>
+<tr><th>Адрес (BAR0-rel)</th><th>Имя</th><th>Смысл</th></tr>
+<tr><td><code>0x40004000 +0x00</code></td><td>CTRL</td><td>bit0 GO (самосброс), bit1 STOP</td></tr>
+<tr><td><code>+0x04</code></td><td>STATUS</td><td>bit0 READY (mailbox свободен), bit1 BUSY</td></tr>
+<tr><td><code>+0x08</code></td><td>DATA</td><td>write-only, 32-бит слово (LE)</td></tr>
+</table>
+<p>RTL: <code>icap_ctrl.sv</code> (ICAPE2 X32 @62.5 МГц). Альтернатива — Xilinx <code>axi_hwicap</code> на <code>0x40001000</code>.</p>
+
+<h2>Ожидания и восстановление</h2>
+<ul>
+<li><b>Полный образ:</b> PCIe отвалится на ~5–10 с; устройство вернётся. Если нет — <b>power-cycle</b>: FPGA поднимется из SPI-флеша (флеш не тронут) → безопасно.</li>
+<li><b>Частичный:</b> PCIe остаётся активным.</li>
+</ul>
+<div class="ok">Проверка после прошивки: <code>driver\build\test_xdma.exe gpio</code> (строка <code>BAR map</code>), <code>python pytorch_layer\xdma_driver.py --selftest</code>, <code>python pytorch_layer\dfx_swap.py --status</code>.</div>
+
+<h2>Ограничения</h2>
+<ul>
+<li>ICAP-прошивка <b>временная</b> (сбрасывается питанием); постоянно — только JTAG/флеш.</li>
+<li>Полный образ должен быть совместим по PCIe/ICAP-инфраструктуре; иначе — power-cycle + JTAG.</li>
+<li>Скорость mailbox-прошивки ~10–30 тыс. слов/с → полный образ ~40–100 с. Для скорости — JTAG/флеш.</li>
+<li>Windows-путь требует <code>xdma_rw.exe</code> (риск R-05); Linux — <code>/dev/xdma0_user</code>.</li>
+</ul>
+
+<footer>AutoClaw · прошивка FPGA по PCIe (ICAP) · 2026-09-11</footer>
+</div></body></html>

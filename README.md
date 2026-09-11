@@ -194,6 +194,19 @@ make build NUM_MAC=32 JOBS=8
 - [`driver/HANDOFF.md`](driver/HANDOFF.md) · [`driver/ROLLBACK.md`](driver/ROLLBACK.md) — передача и откат
 - [`driver/VERIFY.cmd`](driver/VERIFY.cmd) — проверка драйвера и Python одной командой
 
+## Прошивка FPGA без JTAG (по PCIe, через ICAP)
+
+> Скрипт: `pytorch_layer/program_fpga_icap.py`; инструкция — [`driver/PROGRAM_FPGA_OVER_PCIE.md`](driver/PROGRAM_FPGA_OVER_PCIE.md)
+> (HTML: [`driver/PROGRAM_FPGA_OVER_PCIE.html`](driver/PROGRAM_FPGA_OVER_PCIE.html)).
+
+```cmd
+cd pytorch_layer
+C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\xdma_ddr3_core_top.bin --full --yes
+```
+
+Работает, когда FPGA уже сконфигурирована (есть PCIe+ICAP). Прошивка временная
+(volatile); постоянно — только SPI-флеш (JTAG, `scripts/flash_program.tcl`).
+
 ## Драйвер Windows
 `driver/build.cmd` (WDK) → `XDMA.sys`; тест: `test_xdma.exe`.
 Известные исправленные проблемы — см. `xdma_driver_win_src_2017/DRIVER_DEVLOG.md` и `docs/ERROR_HISTORY.md`.
