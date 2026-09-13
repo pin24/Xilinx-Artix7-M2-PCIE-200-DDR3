@@ -28,7 +28,19 @@ set_property IBUF_LOW_PWR TRUE [get_ports {clk50[0]}]
 # Реальное создание mig_refclk выполняется в scripts/build_dfx.tcl
 # в TCL.POST шага synth_1 (после link_design). См. AUDIT-02 в ERROR_HISTORY.md.
 
-# --- Vivado 2025.2: demote REQP-123 to Warning (FP on clk_wiz MMCM CLKINSEL=VCC) ---
+# --- Vivado 2025.2: demote REQP-123 (ERROR class) to Warning ---
+# JUSTIFICATION (audit t178, 2026-09-13):
+#   REQP-123 flags an MMCM clock-select pin tied to a constant.
+#   Audit of the whole BD/RTL found: CLKINSEL appears ONLY in comments;
+#   CLKIN2 has 0 occurrences (secondary input unused); both clk_wiz IPs
+#   (clk200_clk_wiz, clk125_core_wiz) use PRIM_IN_FREQ=50 +
+#   MMCM_CLKIN1_PERIOD=20 with a single CLKOUT1. So CLKINSEL=VCC (select
+#   CLKIN1) is the only valid config; there is NO runtime clock switch.
+#   => REQP-123 is a benign/formal trigger here; design impact = none.
+#   Refs: git blame origin bfffbf1 (pin24, 2026-09-02); audit task t178.
+#   If REQP-123 later fires on a real issue, remove this demote and re-run
+#   report_drc (do NOT silence blindly).
+# ----------------------------------------------------------------
 set_property SEVERITY {Warning} [get_drc_checks REQP-123]
 
 # --- PCIe reset_n input ---
@@ -80,3 +92,14 @@ set_property PACKAGE_PIN C9 [get_ports {pcie_7x_mgt_rtl_0_rxn[3]}]
 set_property PACKAGE_PIN D9 [get_ports {pcie_7x_mgt_rtl_0_rxp[3]}]
 set_property PACKAGE_PIN D7 [get_ports {pcie_7x_mgt_rtl_0_txp[3]}]
 set_property PACKAGE_PIN C7 [get_ports {pcie_7x_mgt_rtl_0_txn[3]}]
+
+# ============================================================================
+# R-14 SPI-over-PCIe: QSPI flash pins (W25Q128JV), regular fabric IO.
+# CCLK (L12) is NOT here: driven internally via STARTUPE2.USRCCLKO.
+# Pin map from spi_over_pcie.sv header: FCS_B=T19, D00=P22, D01=R22, D02=P21, D03=R21.
+# ============================================================================
+set_property -dict {PACKAGE_PIN T19 IOSTANDARD LVCMOS33} [get_ports qspi_cs_n]
+set_property -dict {PACKAGE_PIN P22 IOSTANDARD LVCMOS33} [get_ports qspi_d0]
+set_property -dict {PACKAGE_PIN R22 IOSTANDARD LVCMOS33} [get_ports qspi_d1]
+set_property -dict {PACKAGE_PIN P21 IOSTANDARD LVCMOS33} [get_ports qspi_d2]
+set_property -dict {PACKAGE_PIN R21 IOSTANDARD LVCMOS33} [get_ports qspi_d3]
