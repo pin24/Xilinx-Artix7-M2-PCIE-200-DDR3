@@ -5,6 +5,7 @@
 *.dmp
 .Xil/
 build/
+build_tmp/
 .images/
 
 # xsim бинарные журналы (бинарные логи xelab/xvlog)
