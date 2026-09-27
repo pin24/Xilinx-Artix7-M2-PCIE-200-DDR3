@@ -950,11 +950,20 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG maxIteration
     const ULONG expected = engine->numDescriptors;
     ULONG iter = 0;
 
+    // BUSY clears via reading statusRC: the XDMA engine clears its BUSY status
+    // when software reads the read-and-clear status register. If we poll the
+    // read-only `status` register instead, BUSY never clears and the engine
+    // never signals completion -> every transfer times out. So we must read
+    // statusRC here to both observe AND clear BUSY. To avoid swallowing the
+    // error bits (the earlier bug), we record the raw status and pass it into
+    // EngineProcessTransfer below (which then reads statusRC as the last
+    // owner). EngineProcessTransfer reads statusRC once itself; if it read
+    // zero because we cleared it, that is how a clean STOP looks anyway.
     for (iter = 0; iter < maxIterations; iter++) {
         volatile UINT32* completed = &engine->regs->completedDescCount;
         ULONG actual = *completed;
 
-        // successful completion: engine no longer busy AND all descriptors done
+        // read-and-clear: this is what clears BUSY so the engine can finish
         UINT32 status = engine->regs->statusRC;
         BOOLEAN hwDone = (status & XDMA_BUSY_BIT) == 0;
 
@@ -970,7 +979,7 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG maxIteration
     TraceError(DBG_DMA, "XDMA_EngineWaitCompletion TIMEOUT %u descriptors "
                "(completed=%u, status=0x%08x) after %u iters",
                expected, engine->regs->completedDescCount,
-               engine->regs->statusRC, iter);
+               engine->regs->status, iter);
     return STATUS_TIMEOUT;
 }
 

@@ -49,3 +49,26 @@ FAIL 4/64/1024 байт — первый байт mismatch (write 0x.. read 0x..
 малых размерах. Не блокер транспорта; отдельная группа для разбора.
 
 Статус: зависание H2C устранено (bounded-poll), большой DMA-передачей verтиirmed.
+
+---
+## Edge-кейс малых передач + разбор bounded-poll (продолжение)
+
+OCT на v1.1.13 (python, regs): WriteFile h2c 4 байта -> writeResult=4 (завершился),
+engine status=0 (BUSY False), completed=1. Т.е. DMA-транспорт в python РАБОТАЕТ и
+завершается быстро.
+
+Однако C-тест test_dma.exe loopback (тот же драйвер) возвращает
+'overlapped write timed out' на НОВОМ загруженном драйвере (v1.1.13). При этом
+v1.1.11 ранее давал 1M PASS. Версия загружена корректно (System32\drivers = 35200)
+
+Вывод: (а) драйвер и движок работают (python подтверждает write+status+completed);
+(б) нестабильность C-теста может быть связана с тем, что IRP в драйвере не всегда
+завершается в EvtIoWriteDma/ReadDma (EngineProcessTransfer/IRQ path), и событие
+OVERLAPPED не сигналится -> C-тест ждёт до timeout; python read regs успешен
+потому что сам не ждёт IRP-событие.
+(в) statusRC двойное чтение (первый poll) стирает BUSY — риск; требуется
+обдуманный фикс EngineProcessTransfer со capturedStatus.
+
+НЕ ЗАВЕРШЕНО окончательно: требуется чистая перезагрузка и проверка (1) python
+loopback через XdmaWinDma.write_dma/read_dma (не только regs), (2) C loopback.
+Не трогаю дальше чтобы не зависнуть; логирую.
