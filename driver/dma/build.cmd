@@ -34,7 +34,7 @@ set VS_ROOT=C:\Program Files (x86)\Microsoft Visual Studio 14.0
 
 REM ������ ��������: ����� ��� ������ ������ (pnputil �� �������� �����,
 REM ���� ����� DriverVer �� ������ ����� �������������).
-set DRIVER_VERSION=1.1.10.0
+set DRIVER_VERSION=1.1.11.0
 
 REM FIX F2: ����� ����� �������������� (certutil -addstore, bcdedit).
 net session >nul 2>&1

@@ -27,3 +27,25 @@ Arg1=2 Arg2=5, faulting XDMA_DMA!EvtInterruptDpc+0x101, Wdf01000+0x38f6.
 Следующий шаг (предложить): проверить, действительно ли h2c_0-движок сконфигурирован
 в прошивке и работает DMA-de скриптор (читать дескриптор/CFG в mmio), либо собрать
 test-битстрим где h2c/c2h явно активен.
+
+---
+
+## БOUNDED-COMPLETION-POLL РЕАЛИЗОВАН; H2C-TAЙMАУТ УСТРАНЁН (28.09)
+
+OCT-диагностика (oct_diag.py, лог oct_diag.log): движок H2C0 жив (id 0x1FC00006),
+сигналит через completedDescCount/status, но channel-MSI-X не доходит до хоста
+(chReq/Pend висят) -> IRQ-завершение не прилетало.
+
+Решение: XDMA_EngineWaitCompletion в dma_engine.c — bounded-poll по
+engine->regs->completedDescCount + statusRC (!BUSY), затем EngineProcessTransfer;
+вызывается из EvtIoWriteDma/EvtIoReadDma (file_io.c) вместо EnginePollTransfer.
+Жёсткий лимит итераций (~10с) — мёртвая FPGA не подвесит запрос.
+
+Собран v1.1.11.0 (oem161.inf), устройство OK.
+
+PASS 1М/256/8 байт loopback (1048576/256/8 identical) — DMA-транспорт работает.
+FAIL 4/64/1024 байт — первый байт mismatch (write 0x.. read 0x..) — похоже на
+дескрипторную оптимизацию (OptimizeDescriptors/firstDescAdj) при невыровненных
+малых размерах. Не блокер транспорта; отдельная группа для разбора.
+
+Статус: зависание H2C устранено (bounded-poll), большой DMA-передачей verтиirmed.

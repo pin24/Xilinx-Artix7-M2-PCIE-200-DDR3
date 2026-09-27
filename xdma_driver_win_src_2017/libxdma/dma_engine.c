@@ -934,6 +934,46 @@ NTSTATUS EnginePollTransfer(IN XDMA_ENGINE* engine) {
     return STATUS_SUCCESS;
 }
 
+NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG maxIterations)
+// Bounded completion poll: wait (with a hard iteration cap) until the engine
+// finishes the current transfer by reading its completedDescCount register,
+// then invoke EngineProcessTransfer. Fallback for when the channel interrupt
+// does not reach the host (MSI-X not delivered). Differs from
+// EnginePollTransfer (which spins forever on the writeback buffer) by using
+// the SGDMA status register with a finite iteration bound, so a dead FPGA
+// cannot hang the system.
+{
+    if (engine == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    const ULONG expected = engine->numDescriptors;
+    ULONG iter = 0;
+
+    for (iter = 0; iter < maxIterations; iter++) {
+        volatile UINT32* completed = &engine->regs->completedDescCount;
+        ULONG actual = *completed;
+
+        // successful completion: engine no longer busy AND all descriptors done
+        UINT32 status = engine->regs->statusRC;
+        BOOLEAN hwDone = (status & XDMA_BUSY_BIT) == 0;
+
+        if (hwDone && actual >= expected) {
+            EngineProcessTransfer(engine);
+            return STATUS_SUCCESS;
+        }
+
+        // short busy-wait; each iteration ~50-100us via KeStallExecutionProcessor
+        KeStallExecutionProcessor(50); // 50us
+    }
+
+    TraceError(DBG_DMA, "XDMA_EngineWaitCompletion TIMEOUT %u descriptors "
+               "(completed=%u, status=0x%08x) after %u iters",
+               expected, engine->regs->completedDescCount,
+               engine->regs->statusRC, iter);
+    return STATUS_TIMEOUT;
+}
+
 NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine) {
     XDMA_POLL_WB* writeback_data = (XDMA_POLL_WB*)WdfCommonBufferGetAlignedVirtualAddress(engine->pollWbBuffer);
     volatile ULONG completed = 0;

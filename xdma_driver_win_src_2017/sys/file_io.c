@@ -572,12 +572,14 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
         goto ErrExit;
     }
 
-    if (queue->engine->poll) {
-        status = EnginePollTransfer(queue->engine);
-        if (!NT_SUCCESS(status)) {
-            TraceError(DBG_IO, "EnginePollTransfer failed: %!STATUS!", status);
-            // EnginePollTransfer cleans-up/completes request on error, so no need for goto ErrExit
-        }
+    // Bounded completion poll as a robust fallback: even when the channel
+    // interrupt does not reach the host (MSI-X/line unreliable on this board),
+    // we complete the transaction by polling the engine's completedDescCount
+    // register. Bounded iterations (~10s worst case at 50us/stall) prevent a
+    // dead FPGA from hanging the request (KeStallExecutionProcessor polls).
+    status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed: %!STATUS!", status);
     }
 
     return; // success
@@ -622,12 +624,14 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
         goto ErrExit;
     }
 
-    if (queue->engine->poll) {
-        status = EnginePollTransfer(queue->engine);
-        if (!NT_SUCCESS(status)) {
-            TraceError(DBG_IO, "EnginePollTransfer failed: %!STATUS!", status);
-            // EnginePollTransfer cleans-up/completes request on error, so no need for goto ErrExit
-        }
+    // Bounded completion poll as a robust fallback: even when the channel
+    // interrupt does not reach the host (MSI-X/line unreliable on this board),
+    // we complete the transaction by polling the engine's completedDescCount
+    // register. Bounded iterations (~10s worst case at 50us/stall) prevent a
+    // dead FPGA from hanging the request (KeStallExecutionProcessor polls).
+    status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed: %!STATUS!", status);
     }
 
     return; // success

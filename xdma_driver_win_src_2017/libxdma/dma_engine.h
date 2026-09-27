@@ -174,6 +174,12 @@ VOID EngineRingTeardown(IN XDMA_ENGINE *engine);
 /// Poll the write-back buffer for DMA transfer completion
 NTSTATUS EnginePollTransfer(IN XDMA_ENGINE* engine);
 
+/// Bounded completion poll: wait (with a hard timeout) for the engine to finish
+/// the current transfer by reading its completedDescCount register, then invoke
+/// EngineProcessTransfer. Fallback for when the channel interrupt does not reach
+/// the host (BSOD case / MSI-X not delivered). Safe to call from EvtIoWriteDma.
+NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG timeoutUs);
+
 /// Poll the write-back buffer for DMA transfer completion
 NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine);
 
