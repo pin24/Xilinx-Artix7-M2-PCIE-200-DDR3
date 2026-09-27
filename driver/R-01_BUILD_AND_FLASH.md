@@ -1,4 +1,4 @@
-# R-01 — Пересборка битстрима и прошивка платы (BAR0 = 128 МБ)
+﻿# R-01 — Пересборка битстрима и прошивка платы (BAR0 = 128 МБ)
 
 > Кому: инженеру за машиной с платой. Цель R-01 — заменить устаревший битстрим
 > актуальным (BAR0 = 128 МБ), после чего станут доступны регистры периферии
@@ -42,7 +42,7 @@ git log --oneline -1    :: должен быть коммит с аудитом 
 | Часть (FPGA) | `xc7a200tfbg484-2` (Artix-7 XC7A200T) |
 | XDMA IP | `xilinx.com:ip:xdma:4.2` (AXI 128 бит @ 125 МГц, 2 H2C + 2 C2H) |
 | MIG DDR3 | 7-series, 256 МБ, MT41J128M16XX-125 |
-| SPI-флеш | **W25Q128JV** (128 Мбит, SPIx4) · Vivado-part: `w25q128jvq-spi-x1_x2_x4` |
+| SPI-флеш | **W25Q128JV** (128 Мбит, SPIx4) · Vivado-part: `w25q128jv-spi-x1_x2_x4` |
 | JTAG | кабель Digilent/FTDI (драйверы `xpcwinusb`, Digilent USB установлены) |
 | Сборка-скрипт | `scripts/build_dfx.tcl` (мастер), обёртка `Makefile` |
 | Проект сборки | `C:\build_dfx` (создаётся заново; MAX_PATH-обход) |
@@ -113,14 +113,14 @@ timing_FATAL.rpt, timing_summary.rpt, utilization.txt
 ```
 
 Скрипт: подключается к hw_server/target, находит `xc7a200t_0`, создаёт cfgmem
-`w25q128jvq-spi-x1_x2_x4`, делает Erase → Program → Verify (≈ 2 мин). Полностью
+`w25q128jv-spi-x1_x2_x4`, делает Erase → Program → Verify (≈ 2 мин). Полностью
 повторяет проверенную последовательность из `C:\build_dfx\vivado.log` (10.09.2026).
 
 ### Вариант B (GUI, Vivado Hardware Manager)
 
 1. Vivado → **Open Hardware Manager** → **Open Target** → **Auto Connect**.
 2. Правый клик по `xc7a200t_0` → **Add Configuration Memory Device…** →
-   выбрать **w25q128jvq-spi-x1_x2_x4** → OK.
+   выбрать **w25q128jv-spi-x1_x2_x4** → OK.
 3. В диалоге Program Configuration Memory Device: **Configuration file** =
    `build\artifacts_dfx\xdma_ddr3_core_top.mcs` (или `.bin`), галочки
    **Erase / Program / Verify** → **Program**.
