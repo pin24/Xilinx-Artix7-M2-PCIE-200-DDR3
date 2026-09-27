@@ -93,18 +93,24 @@ DFX/SPI/XADC ✅.
 ---
 
 ## 4. Статус готовности (снимок)
+---
 
-**Резюме**: регистровый путь Windows работает (MMIO: регистры TDOT/ICAP/SPI/
-DFX-сокет/XADC/GPIO); **DMA→DDR3 и вычисления на Windows — блокер** до
-реализации DMA в драйвере. Linux — полный стек (DMA + регистры) готов на
-стороне FPGA. **Сборка:** единственный известный блокер сборки (F7,
-`xadc_prim.sv` в fileset) закрыт; тайминг после правок не верифицирован —
-требуется прогон `build_dfx.tcl`.
+## 4a. Доводим до полной функциональности — DMA-драйвер + тесты (этот день, позже)
 
-| Стек | Каналы/capability | Статус |
-|---|---|---|
-| Windows (ммio) | Регистры, ICAP-загрузка, SPI-hotflash, DFX-swap, XADC | ✅ работает (регистровый путь) |
-| Windows (DMA) | H2C/C2H → DDR3, tdot-вычисления | ❌ блокер: драйвер без DMA |
-| Linux | DMA + регистры + полный стек | ✅ готов на стороне FPGA |
-| Сборка (synth/impl) | `build_dfx.tcl` после F7/F8 | 🟡 готова к запуску; блокер fileset закрыт, тайминг-гейт требует прогона |
-| Аппаратная верификация XADC | raw_temp/raw_vccint | 🟡 не прогонялась на стенде (планово) |
+Коммит `4c0cadb` снял главный блокер Windows («драйвер без DMA»):
+
+| Элемент | Результат |
+|---|---|
+| driver\dma\dma_driver.c | автономный KMDF-гейтвей, переиспользует ПОДЛИННЫЙ upstream file_io.c+libxdma; симлинк \\.\XDMA0dma, ноды control/h2c_0/c2h_0 |
+| Анти-BSOD | userBarIdx=bypassBarIdx=-1 после XDMA_DeviceOpen — \user/\bypass отклоняются (MSI-X не экспонируется), драйвер загружается |
+| Сборка | BUILD FULL SUCCESS (WDK 10.0.14393, KMDF 1.15): XDMA_DMA.sys 24 472 B + .inf/.cat/.cer, подписан WDKTestCert |
+| Тесты | test_dma.c → test_dma.exe (собран, запускается, даёт справку); test_dma_win.py (XdmaWinDma); VERIFY_DMA.cmd, DMA_TEST_README.md |
+| Инфра | sys\driver.c → driver.c.substituted (анти-риск), sys\driver.h заполнен (был 0 байт), .gitignore + build_tmp\ |
+
+**Циклические аудиты C4/C5 выявили и устранили (реальной компиляцией):**
+- h2c_*/c2h_* внутри /* */-комментария досрочно закрывал блок — заменено на h2c_N/c2h_N;
+- VS2015 cl НЕ поддерживает /utf-8 (D9002) — файлы приведены к CP1251/CRLF как рабочий driver.c;
+- DECLARE_CONST_UNICODE_STRING внутри функции не объявляет var → UNICODE_STRING+RtlInitUnicodeString;
+- WdfRequestWriteToRequestMemory (несуществ. API) → WdfRequestRetrieveOutputBuffer+RtlCopyMemory.
+
+**Подтверждено компиляцией:** dma_driver.c + file_io.c + device.c + dma_engine.c + interrupt.c — все EXIT 0; .sys-линковка и подпись — SUCCESS; test_dma.exe собрался и выполняется (без установленного драйвера корректно сообщает об ошибке).
