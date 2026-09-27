@@ -252,16 +252,24 @@ EvtDevicePrepareHardware(
         goto ErrClose;
     }
 
-    // ---- ВКЛЮЧАЕМ POLL-режим завершения DMA (анти-тупик) ----
-    // Стенд: DFX-прошивка, BAR2 = MSI-X (64KB). Прерывания DMA (channel-IRQ)
-    // могут не доходить до драйвера в этой конфигурации -> engine->poll=FALSE
-    // default (device.c:99) делает transfer с EngineEnableInterrupt и ждёт DPC;
-    // если прерывание не приходит, WdfDmaTransaction никогда не завершится и
-    // host-чтение/запись висит (test_dma.exe: "overlapped write timed out").
-    // Решение: XDMA_EngineSetPollMode(engine, TRUE) — downstream dma_engine
-    // будет опрашивать статус передачи (EnginePollTransfer), без зависимости
-    // от MSI-X. Для MM-каналов H2C/C2H это штатно и надёжно. Прерывания для
-    // user-event остаются доступны (не нужны для каналов).
+    // ---- РЕЖИМ ЗАВЕРШЕНИЯ DMA: INTERRUPT (по умолчанию), poll только как fallback ----
+    // Стенд: DFX, BAR2=MSI-X. Ранее временно принудительно включали
+    // XDMA_EngineSetPollMode(TRUE), т.к. "write timed out". НО диагностика
+    // показала две вещи:
+    //   (1) истинная причина таймаута была НЕ в режиме завершения, а в
+    //       НЕВЕРНОМ card-адресе: host передавал raw offset (0x100000), а
+    //       Windows-upstream драйвер кладёт DeviceOffset в дескриптор КАК ЕСТЬ
+    //       (dma_engine.c:465) БЕЗ pci->axi базы (0x80000000) -> движок не
+    //       находил DDR3 и не завершал дескриптор;
+    //   (2) EnginePollTransfer - это бесконечный busy-loop, который ждёт, что
+    //       FPGA запишет completedDescCount во writeback-буфер; если битстрим
+    //       не реализует poll-mode writeback, engine никогда не завершится ->
+    //       вечный цикл -> host-таймаут. Т.е. poll на этом железе НЕ быстрее.
+    // Решение: вернуть interrupt-режим (engine->poll=FALSE, по умолчанию) +
+    // правильный card-адрес (0x80000000+off, см. test_dma/XdmaWinUpstream).
+    // Если прерывания не приходят - единственный оставшийся путь — включить
+    // poll вручную для ИССЛЕДОВАНИЯ (раскомментировать блок ниже) НЕ в продакшене.
+#if 0  // poll-режим выключен (см. выше); оставлен как fallback для отладки
     for (UINT dirIdx = H2C; dirIdx < XDMA_NUM_DIRECTIONS; dirIdx++) {
         for (ULONG ch = 0; ch < XDMA_MAX_NUM_CHANNELS; ch++) {
             XDMA_ENGINE *engine = &devCtx->xdma.engines[ch][dirIdx];
@@ -271,6 +279,7 @@ EvtDevicePrepareHardware(
             }
         }
     }
+#endif
 
     return STATUS_SUCCESS;
 

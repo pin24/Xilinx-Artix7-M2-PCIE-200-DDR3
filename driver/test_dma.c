@@ -36,6 +36,13 @@
 /* ========================================================================== */
 #define AXI_LITE_BASE   0x40000000UL
 
+/* DDR3 lives in the XDMA M_AXI space at 0x80000000. The upstream 2017
+ * Windows driver puts DeviceOffset into the DMA descriptor as the CARD AXI
+ * address (no pci->axi translation, unlike Linux), so the host MUST add
+ * 0x80000000 to reach DDR3. Density test_dma passes ddr_off (raw), helpers
+ * add this base. */
+#define DDR3_BASE       0x80000000ULL
+
 #define GPIO_BASE       0x40000000UL
 #define GPIO_DATA       (GPIO_BASE + 0x00)
 #define GPIO_TRI        (GPIO_BASE + 0x04)
@@ -171,7 +178,7 @@ static BOOL DmaWrite(HANDLE hDev, UINT64 ddr_off, const void* data, size_t len)
     size_t done = 0;
     while (done < len) {
         size_t n = (len - done > DMA_CHUNK) ? DMA_CHUNK : (len - done);
-        if (!RawXfer(hDev, g_ov_h2c, TRUE, ddr_off + done,
+        if (!RawXfer(hDev, g_ov_h2c, TRUE, DDR3_BASE + ddr_off + done,
                      (void*)(p + done), (DWORD)n, POLL_TIMEOUT_MS))
             return FALSE;
         done += n;
@@ -185,7 +192,7 @@ static BOOL DmaRead(HANDLE hDev, UINT64 ddr_off, void* data, size_t len)
     size_t done = 0;
     while (done < len) {
         size_t n = (len - done > DMA_CHUNK) ? DMA_CHUNK : (len - done);
-        if (!RawXfer(hDev, g_ov_c2h, FALSE, ddr_off + done,
+        if (!RawXfer(hDev, g_ov_c2h, FALSE, DDR3_BASE + ddr_off + done,
                      (void*)(p + done), (DWORD)n, POLL_TIMEOUT_MS))
             return FALSE;
         done += n;

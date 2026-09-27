@@ -226,3 +226,32 @@ TRUE) (dma_engine.c:983 сам пишет XDMA_CTRL_POLL_MODE и отключа�
 test_dma regs PASS. loopback: старый процесс зависшки на 1.1.6 -> введён
 poll -> требует перезагрузки, чтобы выгрузить застрявший драйвер/процесс.
 ОЗУ не очищена из-за зависшего в ядре test_dma(9100) — снимается reboot.
+
+---
+
+## 4h. DMA-адресация исправлена (0x80000000+off); interrupt-режим восстановлен (28.09)
+
+ПРОБЛЕМА: loopback "overlapped write timed out". Диагноз:
+- Windows-upstream драйвер кладёт DeviceOffset в DMA-дескриптор КАК card-адрес
+  (dma_engine.c:465 dstAddrLo = LIMIT_TO_32(deviceOffset)), БЕЗ pci->axi базы
+  (в отличие от Linux-драйвера). DDR3 мапится на 0x80000000 -> host обязан
+  передавать ПОЛНЫЙ адрес 0x80000000+off.
+- Ранний "фикс" e67a877 убрал +DDR3_BASE в XdmaWinUpstream/test_dma - это была
+  ОШИБКА: для Windows-added надо ДОБАВЛЯТЬ базу. Из-за этого передача шла на
+  card-адрес 0x100000 (вне MIG DDR3) -> движок не находил цель -> не завершал.
+
+ИСПРАВЛЕНИЕ (offset):
+- pytorch_layer/xdma_driver.py: XdmaWinUpstream.write_dma/read_dma -> base=DDR3_BASE+ddr_off.
+- pytorch_layer/test_dma_win.py: XdmaWinDma.write_dma/read_dma -> base=0x80000000+ddr_off.
+- driver/test_dma.c: добавлен #define DDR3_BASE 0x80000000ULL; DmaWrite/DmaRead
+  передают DDR3_BASE+ddr_off.
+
+ПОЛЛ-РЕЖИМ ВЫКЛЮЧЕН (был в 1.1.7):
+- EnginePollTransfer - БЕСКОНЕЧНЫЙ busy-loop (while(expected!=actual)), ждёт что
+  FPGA запишет completedDescCount в writeback-буфер. Если битстрим не реализует
+  poll-writeback -> engine не завершится никогда. Вернули interrupt-режим
+  (engine->poll=FALSE default), оставив poll как #if 0 fallback.
+
+ВЕРСИИ: 1.1.8.0 (interrupt + правильный offset). Открыт PDB/MAP.
+СТАТУС: пакет установлен (oem13.inf), активный драйвер 1.1.8.0 после reboot.
+Зависший тест-процесс в kernel-path требует reboot для выгрузки.

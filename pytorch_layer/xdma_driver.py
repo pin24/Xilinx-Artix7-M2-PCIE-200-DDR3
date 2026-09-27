@@ -500,18 +500,24 @@ class XdmaWinUpstream(XdmaDevice):
         self._xfer(self._ctl, True, addr - self.AXI_LITE_BASE, data, len(data))
 
     def write_dma(self, ddr_off, data):
+        # Windows-upstream (2017) driver places DeviceOffset into the DMA
+        # descriptor dstAddrLo AS-IS (dma_engine.c:465) — no pci->axi base
+        # translation like the Linux driver. DDR3 is mapped at 0x80000000, so
+        # the host must pass the FULL AXI address (0x80000000 + ddr_off).
+        base = self.DDR3_BASE + ddr_off
         off = 0
         while off < len(data):
             chunk = data[off:off + self.DMA_CHUNK]
-            self._xfer(self._h2c, True, ddr_off + off, chunk, len(chunk))
+            self._xfer(self._h2c, True, base + off, chunk, len(chunk))
             off += len(chunk)
 
     def read_dma(self, ddr_off, length):
+        base = self.DDR3_BASE + ddr_off
         out = bytearray()
         off = 0
         while off < length:
             chunk = min(self.DMA_CHUNK, length - off)
-            out += self._xfer(self._c2h, False, ddr_off + off, b"", chunk)
+            out += self._xfer(self._c2h, False, base + off, b"", chunk)
             off += chunk
         return bytes(out)
 
