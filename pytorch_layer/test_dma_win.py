@@ -271,6 +271,29 @@ DDR3_BASE = 0x80000000
 TF48_ONE = 0x001000000000  # bits48 of 1.0 (verified with ternary_sw/tfloat48.py)
 
 
+def _bits48_to_float(bits: int) -> float:
+    """Decode a 48-bit TFloat48 [E:8][M:40] result word to float.
+
+    Self-contained, mirrors fpga_backend.FpgaBackend._bits_to_float and
+    xdma_driver._selftest: bits[39:0]=mantissa, bits[47:40]=exponent,
+    TFloat stores [E:8][M:40] -> swap to (m<<8)|e for TFloat.from_bits.
+    """
+    import os as _os
+    import sys as _sys
+    _tern = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                          "..", "ternary_sw")
+    if _tern not in _sys.path:
+        _sys.path.insert(0, _tern)
+    try:
+        from block.tfloat48 import TFloat
+    except ImportError:
+        raise AssertionError(
+            "cannot import TFloat48 decoder (ternary_sw/block/tfloat48.py)")
+    m = bits & ((1 << 40) - 1)
+    e = (bits >> 40) & 0xFF
+    return TFloat.from_bits((m << 8) | e).to_float()
+
+
 def _lcg(nbytes, seed=12345):
     out = bytearray()
     x = seed
@@ -389,6 +412,14 @@ def test_dot_smoke():
         result_bits = struct.unpack(
             "<Q", dev.read_dma(RESULT_OFF, 8))[0] & 0xFFFFFFFFFFFF
         assert result_bits is not None
+        # --- ARITHMETIC check: n pairs of 1.0*1.0 must reduce to n.0 ---
+        # RTL stores result as [E:8][M:40]; decode to float self-contained
+        # (same convention as fpga_backend._bits_to_float / _selftest).
+        got = _bits48_to_float(result_bits)
+        want = float(n)
+        assert abs(got - want) < 0.05, (
+            f"TDOT arithmetic FAIL: n={n} pairs of 1.0 -> {got!r}, "
+            f"expected {want!r} (result_bits=0x{result_bits:X})")
     finally:
         dev.close()
 

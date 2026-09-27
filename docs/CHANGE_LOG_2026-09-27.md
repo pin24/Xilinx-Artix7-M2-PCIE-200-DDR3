@@ -174,3 +174,15 @@ DFX/SPI/XADC ✅.
 - pnputil /add-driver build\sys\XDMA_DMA.inf /install -> Published oem10.inf (1.1.5.0), installed on 3x VEN_10EE&DEV_7024.
 
 Итог: в DriverStore остался ТОЛЬКО MMAИ-драйвер (DMA, 1.1.5.0). Устройство отображается как "XDMA DMA Subsystem (upstream stack, h2c/c2h channels)". PHANTOM — плата не в PCIe (JTAG); драйвер стартует при вставке в слот.
+
+---
+
+## 4f. ТЕСТ АРИФМЕТИКИ ЯДРА ДОБАВЛЕН (2026-09-27, python test_dma_win.py)
+
+Замечание пользователя: test_dma.exe / test_dma_win.py dot-режим проверял ТОЛЬКО транспорт (DMA+регистры+DONE), но НЕ арифметику — 'assert result_bits is not None' не доказывал, что ядро считает.
+
+Исправлено (pytorch_layer/test_dma_win.py):
+- Добавлен self-contained декодер _bits48_to_float (TFloat.from_bits, [E:8][M:40]->(m<<8)|e), sys.path к ternary_sw, как в fpga_backend.py.
+- test_dot_smoke теперь сверяет арифметику: n=8 пар 1.0 -> декодированный результат != n (rol 0.05) -> assert; иначе FAIL 'TDOT arithmetic FAIL'.
+
+Верификация: py_compile OK; decode(TF48_ONE)=1.0; эталон sum(8x1.0*1.0)=8.0. Полный путь арифметики уже был в xdma_driver.py --selftest (dot/sched -> _bits_to_float, expected=n).
