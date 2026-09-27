@@ -298,11 +298,9 @@ assign_bd_address -offset 0x40018000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs dfx_partition/axi_datamover_s2mm_c_0/s_axi/reg0] -force
 
-# HWICAP: 0x40001000
-delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_axi_hwicap_0_Reg}]
-assign_bd_address -offset 0x40001000 -range 0x1000 \
-    -target_address_space $as_lite \
-    [get_bd_addr_segs axi_hwicap_0/S_AXI_LITE/Reg] -force
+# (Двойной ICAP устранён: лицензионный axi_hwicap_0 удалён из BD —
+#  адрес 0x40001000 больше не назначается; единственный ICAP-контроллер —
+#  кастомный icap_ctrl @ 0x40004000 через S_AXI_ICAP_REGS.)
 
 validate_bd_design
 save_bd_design
@@ -436,27 +434,46 @@ if {[catch {open_run impl_1} gate_open_err]} {
     exit 1
 }
 
-# FATAL gate (BUG-047): проверяем только fabric-домен 125 МГц (наш RTL).
-# Пути XDMA IP на userclk1 (250 МГц) не блокируют экспорт — это известное
-# ограничение на Artix-7 (qwen-heretic, 2026-09-07). Если write_bitstream
-# прошёл, битстрим функционален.
-# Синтаксис 2025.2 (проверено): get_timing_paths -filter "START_CLK == X && END_CLK == X"
+# FATAL gate (BUG-038, BUG-047): глобальная проверка ВСЕХ пользовательских
+# доменов, а не только fabric-125. Раньше фильтр покрывал лишь
+# clk_out1_xdma_ddr3_dfx_clk125_core_wiz_0 (START_CLK=END_CLK), поэтому
+# зелёная сборка могла выйти с нерабочим PCIe (userclk1) или DDR3 (MIG
+# ui_clk/ui_addn_clk). Теперь берём ВСЕ пути проекта с slack<0, без фильтра
+# домена: 0 violations = MET, >0 = FAIL.
+# Синтаксис 2025.2: get_timing_paths -max_paths 0 возвращает все некорректные
+# пути. Для диагностики дополнительно собираем список затронутых доменов
+# (STARTPOINT/ENDPOINT clock pairs) отдельным лимитированным проходом.
 set gate_fail 0
-set fabric_clk [get_clocks -quiet clk_out1_xdma_ddr3_dfx_clk125_core_wiz_0]
-if {${fabric_clk} ne ""} {
-    set fab_clk_name [get_property NAME [lindex ${fabric_clk} 0]]
-    set fabric_paths [get_timing_paths -quiet -delay_type max -max_paths 1 -nworst 1 \
-        -slack_lesser_than 0 \
-        -filter "START_CLK == ${fab_clk_name} && END_CLK == ${fab_clk_name}"]
-    if {[llength ${fabric_paths}] > 0} {
-        set ws [get_property SLACK [lindex ${fabric_paths} 0]]
-        puts "=== FATAL: fabric-домен 125 МГц НЕ ЗАКРЫТ (WNS=${ws} ns) ==="
-        set gate_fail 1
-    } else {
-        puts "=== fabric-домен 125 МГц: TIMING MET (0 violations) ==="
+set all_viol [get_timing_paths -quiet -delay_type max -max_paths 0 -nworst 1 -slack_lesser_than 0]
+if {[llength ${all_viol}] > 0} {
+    set ws [get_property SLACK [lindex ${all_viol} 0]]
+    set n_viol [llength ${all_viol}]
+    puts "=== FATAL: ТАЙМИНГ НЕ ЗАКРЫТ по всему дизайну (WNS=${ws} ns, paths=${n_viol}) ==="
+    set gate_fail 1
+    # ---- список затронутых старт/энд доменов (диагностика) ----
+    set dom_pairs {}
+    set diag_paths [get_timing_paths -quiet -delay_type max -max_paths 400 -nworst 1 -slack_lesser_than 0]
+    foreach dp ${diag_paths} {
+        set dsc ""; set dec ""
+        catch {set dsc [get_property START_CLK ${dp}]}
+        catch {set dec [get_property END_CLK   ${dp}]}
+        if {${dsc} ne ""} { set dsc [get_property NAME ${dsc}] }
+        if {${dec} ne ""} { set dec [get_property NAME ${dec}] }
+        lappend dom_pairs "[format {START_CLK=%s END_CLK=%s} ${dsc} ${dec}]"
     }
+    # уникальные пары, сохраняя порядок первого вхождения
+    set seen {}
+    set dom_unique {}
+    foreach p ${dom_pairs} {
+        if {[lsearch -exact ${seen} ${p}] == -1} {
+            lappend seen       ${p}
+            lappend dom_unique ${p}
+        }
+    }
+    puts "=== Затронутые домены (START→END) ==="
+    foreach d ${dom_unique} { puts "    ${d}" }
 } else {
-    puts "=== WARNING: fabric clock not found (clk_out1_xdma_ddr3_dfx_clk125_core_wiz_0) ==="
+    puts "=== FATAL GATE: ТАЙМИНГ MET по ВСЕМ доменам (0 violations) ==="
 }
 
 set child_rpts [glob -nocomplain ${PROJ_DIR}.runs/child_impl*/*timing_summary_routed*.rpt]

@@ -11,8 +11,10 @@
 //   1. Хост пишет CTRL.GO=1 -> BUSY=1.
 //   2. Хост ждёт STATUS.READY=1 (READY=1 и до GO).
 //   3. Хост пишет слова битстрима по одному в DATA; после каждой записи
-//      контроллер делает ОДНО окно выборки (CSIB=0 ровно на 1 такт icap_clk),
-//      затем READY=1 снова. Каждое слово доставляется в ICAP ровно один раз.
+//      контроллер делает окно выборки по UG470: предустанавливает слово и
+//      RDWRB=0 за 1 такт до открытия CSIB, затем держит CSIB=0 ровно 2 такта
+//      (данные стабильны до /CS и внутри окна) и лишь после подъёма CSIB
+//      возвращает ack (READY=1). Каждое слово доставляется в ICAP 1 раз.
 //   4. Битстрим заканчивается словами DESYNC (уже в файле .bin).
 //   5. Хост пишет CTRL.STOP=1 -> BUSY=0, CSIB принудительно поднимается.
 //
@@ -232,6 +234,20 @@ module icap_ctrl #(
     logic icap_cs, icap_rw;
     logic [C_S_AXI_DATA_WIDTH-1:0] icap_data;
 
+    // ---- FSM окна выборки (BUG-fix: двухфазное окно CSIB) ----
+    // Раньше на req-edge одновременно выставлялись icap_data, CSIB=0, RDWRB=0
+    // и ack_toggle: CSIB жил ровно 1 такт, все сигналы менялись синхронно ->
+    // на ICAPE2 гонка (может защёлкнуться предыдущее слово), и ack уходил ДО
+    // подъёма CSIB. По канону UG470 слово должно быть стабильно до открытия
+    // CSIB, CSIB держится >= 2 тактов, ack инвертируется ПОСЛЕ подъёма CSIB.
+    // FSM: S_IDLE -> S_PRE (данные предустановлены, CSIB ещё 1) ->
+    //      S_OPEN1 -> S_OPEN2 (CSIB=0, окно 2 такта) -> S_PRE (подъём CSIB, ack).
+    localparam int S_IDLE   = 0;   // CSIB=1, ожидание req-edge
+    localparam int S_PRE    = 1;   // icap_data/rw предустановлены, CSIB=1 (предоткрытие)
+    localparam int S_OPEN1  = 2;   // CSIB=0, 1-й такт окна
+    localparam int S_OPEN2  = 3;   // CSIB=0, 2-й такт окна (удержание для надёжного сэмпла)
+    logic [1:0] cs_state;
+
     always_ff @(posedge icap_clk or negedge icap_rst_n) begin
         if (!icap_rst_n) begin
             req_sync_ff1 <= 0; req_sync_ff2 <= 0; req_prev <= 0;
@@ -240,30 +256,64 @@ module icap_ctrl #(
             busy_q <= 0;
             ack_toggle <= 0;
             icap_cs <= 1; icap_rw <= 1; icap_data <= 0;
+            cs_state <= S_IDLE;
         end else begin
             // 2FF синхронизаторы toggle-флагов (fast -> slow)
             req_sync_ff1  <= req_toggle;  req_sync_ff2  <= req_sync_ff1;
             go_sync_ff1   <= go_toggle;   go_sync_ff2   <= go_sync_ff1;
             stop_sync_ff1 <= stop_toggle; stop_sync_ff2 <= stop_sync_ff1;
 
-            // окно выборки: на req-edge открываем CSIB на РОВНО 1 такт
-            if (req_sync_ff2 != req_prev) begin
-                req_prev   <= req_sync_ff2;
-                icap_data  <= word_q;    // слово стабильно весь цикл (handshake)
-                icap_cs    <= 0;
-                icap_rw    <= 0;
-                ack_toggle <= ~ack_toggle;
-            end else begin
-                icap_cs <= 1;
-                icap_rw <= 1;
-            end
+            // --- FSM окна выборки (без STOP; STOP перекрывается ниже) ---
+            case (cs_state)
+                S_IDLE: begin
+                    icap_cs <= 1; icap_rw <= 1;
+                    // req-edge: предустанавливаем слово и RDWRB=0 за 1 такт ДО
+                    // открытия CSIB (UG470: данные стабильны до /CS). CSIB=1.
+                    if (req_sync_ff2 != req_prev) begin
+                        req_prev  <= req_sync_ff2;
+                        icap_data <= word_q;   // слово стабильно весь цикл (handshake)
+                        icap_rw   <= 0;
+                        cs_state  <= S_PRE;    // в следующем такте откроем CSIB
+                    end
+                end
+                S_PRE: begin
+                    // предоткрытие: данные готовы, открываем CSIB на 2 такта
+                    icap_cs   <= 0;
+                    icap_rw   <= 0;
+                    cs_state  <= S_OPEN1;
+                end
+                S_OPEN1: begin
+                    // 1-й такт окна CSIB=0
+                    icap_cs   <= 0;
+                    icap_rw   <= 0;
+                    cs_state  <= S_OPEN2;
+                end
+                S_OPEN2: begin
+                    // 2-й такт окна, затем подъём CSIB и возврат ack ПОСЛЕ окна.
+                    // ack инвертируем только здесь (после подъёма CSIB), чтобы
+                    // fast-домен не получил ack раньше гарантированного сэмпла.
+                    icap_cs   <= 1;
+                    icap_rw   <= 1;
+                    ack_toggle <= ~ack_toggle;
+                    cs_state  <= S_IDLE;
+                end
+                default: cs_state <= S_IDLE;
+            endcase
 
-            // STOP перекрывает окно: принудительно закрываем
+            // STOP перекрывает окно: принудительно закрываем и сбрасываем FSM.
+            // Приоритет над открытым окном — окно и ack обнуляются.
             if (stop_sync_ff2 != stop_prev) begin
                 stop_prev <= stop_sync_ff2;
                 busy_q    <= 0;
                 icap_cs   <= 1;
                 icap_rw   <= 1;
+                cs_state  <= S_IDLE;
+                // Аварийное закрытие незавершённой сессии передачи: если окно
+                // было открыто (S_PRE..S_OPEN2), возвращаем ack, чтобы mailbox
+                // не завис (backpressure) после остановки. Документированный
+                // протокол шлёт STOP только после READY, так что этот путь —
+                // защитный.
+                if (cs_state != S_IDLE) ack_toggle <= ~ack_toggle;
             end else if (go_sync_ff2 != go_prev) begin
                 go_prev <= go_sync_ff2;
                 busy_q  <= 1;            // сессия начата

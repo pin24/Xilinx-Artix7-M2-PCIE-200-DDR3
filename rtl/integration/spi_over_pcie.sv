@@ -80,6 +80,12 @@ module spi_over_pcie #(
     logic        status_busy_q, status_done_q, status_error_q;
     logic        status_wip_q;
 
+    // Effective SPI opcode actually sent on the wire at START:
+    // CTRL.WREN shortcuts to 0x06, CTRL.RDID shortcuts to 0x9F,
+    // otherwise the CMD register byte is used verbatim.
+    wire [7:0] eff_cmd = cmd_wren_q ? 8'h06 :
+                         cmd_rdid_q ? 8'h9F : cmd_byte_q;
+
     // ==================== AXI-Lite write channel ==========================
     logic awready, wready, bvalid;
     logic aw_latched, w_latched;
@@ -192,11 +198,12 @@ module spi_over_pcie #(
 
     // ==================== SPI FSM =========================================
     typedef enum logic [2:0] {
-        ST_IDLE, ST_CMD, ST_ADDR, ST_DATA, ST_DONE, ST_ERROR
+        ST_IDLE, ST_CMD, ST_ADDR, ST_DATA, ST_UNIQUE_STATUS, ST_DONE, ST_ERROR
     } state_t;
     state_t state, state_n;
 
     logic [2:0]  bit_cnt;
+    logic [1:0]  addr_bytes;   // number of address bytes already clocked out (0..2)
     logic [7:0]  shift_out, shift_in;
     logic [23:0] addr_shift;
     logic [31:0] len_cnt;
@@ -209,7 +216,6 @@ module spi_over_pcie #(
             status_busy_q  <= 1'b0;
             status_done_q  <= 1'b0;
             status_error_q <= 1'b0;
-            status_wip_q   <= 1'b0;
         end else begin
             if (state == ST_IDLE && ctrl_start_q) begin
                 status_busy_q <= 1'b1;
@@ -229,52 +235,113 @@ module spi_over_pcie #(
         end
     end
 
+    // SPI FSM.
+    // Phases:
+    //   ST_CMD            - clock out the 8-bit opcode, then classify the command
+    //                       (no-address one-shot, RDSR-style status, RDID, or a
+    //                       command that requires a 24-bit address phase).
+    //   ST_ADDR           - clock out the 24-bit address MSB-first onto MOSI.
+    //   ST_DATA           - clock out one data byte per SPI byte cell. Because
+    //                       there is only ONE tx byte slot (tx_byte_q), the host
+    //                       must send one byte per transfer (LEN=1). The byte is
+    //                       re-loaded into shift_out at the start of each cell.
+    //   ST_UNIQUE_STATUS  - RDSR (0x05) / RDSR2 (0x35): the flash returns the
+    //                       status byte immediately, no address, no data phase.
+    //   ST_DONE / ST_ERROR - the shared termination that raises CS_N.
+    // Note: there is NO RX FIFO. rx_byte_q holds only the LAST byte of a
+    // transfer, so the host reads SPI_RX once per accepted transaction.
     always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
         if (!S_AXI_ARESETN) begin
+            state_n     <= ST_IDLE;
             state       <= ST_IDLE;
             bit_cnt     <= 3'h7;
+            addr_bytes  <= 2'd0;
             shift_out   <= 8'h0;
             shift_in    <= 8'h0;
             addr_shift  <= 24'h0;
             len_cnt     <= 32'h0;
             cs_n_q      <= 1'b1;
-            mosi_q      <= 1'b0;
+            mosi_q      <= 1'b1;   // SPI idle: drive MOSI high
             rx_byte_q   <= 8'h0;
+            status_wip_q <= 1'b0;
         end else begin
             state <= state_n;
             state_n <= state;   // MDRV-1 fix: registered default next-state
             if (state == ST_IDLE && ctrl_start_q) state_n <= ST_CMD;
             if (state == ST_IDLE && ctrl_start_q) begin
+                // Latch the opcode and operands at the start of the transfer.
                 bit_cnt    <= 3'h7;
-                shift_out  <= cmd_wren_q ? 8'h06 :
-                              cmd_rdid_q ? 8'h9F : cmd_byte_q;
+                addr_bytes <= 2'd0;
+                shift_out  <= eff_cmd;
                 addr_shift <= addr_q;
                 len_cnt    <= len_q;
                 cs_n_q     <= 1'b0;
                 rx_byte_q  <= 8'h0;
             end
-            if ((state == ST_CMD || state == ST_ADDR || state == ST_DATA)) begin
+            if (state == ST_CMD || state == ST_ADDR ||
+                state == ST_DATA || state == ST_UNIQUE_STATUS) begin
                 if (spi_clk_fall) begin
-                    shift_out <= {shift_out[6:0], 1'b0};
-                    mosi_q    <= shift_out[7];
+                    // Drive MOSI on the falling edge (SPI mode 0).
+                    if (state == ST_ADDR) begin
+                        // Address phase: stream the 24-bit address MSB-first.
+                        mosi_q    <= addr_shift[23];
+                        addr_shift <= {addr_shift[22:0], 1'b0};
+                    end else begin
+                        // CMD / DATA / UNIQUE_STATUS: shift the tx register.
+                        mosi_q    <= shift_out[7];
+                        shift_out <= {shift_out[6:0], 1'b0};
+                    end
                 end
                 if (spi_clk_rise) begin
                     shift_in <= {shift_in[6:0], spi_miso};
                     if (bit_cnt == 3'h0) begin
+                        // A full byte has been clocked.
                         bit_cnt <= 3'h7;
-                        if (state == ST_CMD) begin
-                            state_n <= (cmd_byte_q == 8'h06 || cmd_byte_q == 8'h9F ||
-                                       cmd_byte_q == 8'hC7) ? ST_DONE : ST_ADDR;
-                            if (cmd_byte_q == 8'h9F) state_n <= ST_DATA;
-                            addr_shift <= addr_q;
-                        end else if (state == ST_ADDR) begin
-                            addr_shift <= {addr_shift[22:0], 1'b0};
-                            state_n <= ST_DATA;
-                        end else if (state == ST_DATA) begin
-                            rx_byte_q <= {shift_in[6:0], spi_miso};
-                            if (len_cnt == 32'h0) state_n <= ST_DONE;
-                            else len_cnt <= len_cnt - 1'b1;
-                        end
+                        case (state)
+                            ST_CMD: begin
+                                // Classify the opcode that was just sent.
+                                case (eff_cmd)
+                                    8'h06, 8'hC7: state_n <= ST_DONE;          // one-shot, no operands
+                                    8'h9F: begin                               // RDID: no address
+                                        shift_out <= tx_byte_q;
+                                        state_n   <= ST_DATA;
+                                    end
+                                    8'h05, 8'h35, 8'hA5: state_n <= ST_UNIQUE_STATUS; // RDSR-family
+                                    default: state_n   <= ST_ADDR;             // address-taking command
+                                endcase
+                            end
+                            ST_ADDR: begin
+                                if (addr_bytes == 2'd2) begin
+                                    // All 3 address bytes clocked out.
+                                    if (len_cnt == 32'h0) begin
+                                        // No data phase wanted (e.g. sector/block erase).
+                                        state_n <= ST_DONE;
+                                    end else begin
+                                        shift_out <= tx_byte_q;  // latch first data byte
+                                        state_n   <= ST_DATA;
+                                    end
+                                end else begin
+                                    addr_bytes <= addr_bytes + 1'b1;
+                                end
+                            end
+                            ST_DATA: begin
+                                // rx_byte_q stays the LAST byte of the transfer (no FIFO).
+                                rx_byte_q <= {shift_in[6:0], spi_miso};
+                                if (len_cnt == 32'h1) begin
+                                    state_n <= ST_DONE;
+                                end else begin
+                                    len_cnt   <= len_cnt - 1'b1;
+                                    shift_out <= tx_byte_q;   // latch next data byte
+                                end
+                            end
+                            ST_UNIQUE_STATUS: begin
+                                // Status byte captured; WIP is bit0 for 0x05.
+                                rx_byte_q   <= {shift_in[6:0], spi_miso};
+                                status_wip_q <= {shift_in[6:0], spi_miso}[0];
+                                state_n     <= ST_DONE;
+                            end
+                            default: state_n <= ST_DONE;
+                        endcase
                     end else begin
                         bit_cnt <= bit_cnt - 1'b1;
                     end
@@ -282,7 +349,7 @@ module spi_over_pcie #(
             end
             if (state == ST_DONE || state == ST_ERROR) begin
                 cs_n_q <= 1'b1;
-                mosi_q <= 1'b0;
+                mosi_q <= 1'b1;   // return MOSI to idle-high on deselect
                 state_n <= ST_IDLE;
             end
         end
@@ -319,11 +386,19 @@ module spi_over_pcie #(
     assign spi_cclk = spi_clk_q;
 
     // External QSPI pads (regular fabric IO). CCLK is inside STARTUPE2 above.
+    // Single-SPI only (no quad mode in this RTL).
+    //   qspi_d0 = MOSI: driven from mosi_q while CS is low (transfer active);
+    //             pulled HIGH (1) while CS is high so MOSI is idle-high, which
+    //             is the conventional SPI idle level.
+    //   qspi_d1 = MISO: tri-state input, read as spi_miso.
+    //   qspi_d2 = WP# / qspi_d3 = HOLD#: for W25Q in SPI mode these must be
+    //             held HIGH (de-asserted). Driving them to 1 is required;
+    //             they cannot be left floating ('bz).
     assign qspi_cs_n = cs_n_q;
-    assign qspi_d0    = mosi_q ? 1'bz : 1'b0;
-    assign qspi_d1    = 1'bz;
-    assign qspi_d2    = 1'bz;
-    assign qspi_d3    = 1'bz;
+    assign qspi_d0   = (mosi_q || cs_n_q) ? 1'b1 : 1'b0;
+    assign qspi_d1   = 1'bz;
+    assign qspi_d2   = 1'b1;
+    assign qspi_d3   = 1'b1;
 
     wire spi_miso;
     assign spi_miso = qspi_d1;

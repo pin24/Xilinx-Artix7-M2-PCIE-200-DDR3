@@ -65,8 +65,8 @@ if {[get_bd_ports -quiet axi_aresetn_out] eq ""} {
 if {[get_bd_ports -quiet axi_aclk_in] eq ""} {
     create_bd_port -dir I -type clk axi_aclk_in
 }
-# loopback от axi_aclk_out: при XDMA 64-бит это 250 МГц (BUG-034)
-set_property -dict [list CONFIG.FREQ_HZ 250000000] [get_bd_ports axi_aclk_in]
+# loopback от axi_aclk_out: BUG-051 — XDMA 128-бит @ 125 МГц → axi_aclk = 125
+set_property -dict [list CONFIG.FREQ_HZ 125000000] [get_bd_ports axi_aclk_in]
 
 proc _clk_connect {port_name pin_name} {
     set port [get_bd_ports -quiet $port_name]
@@ -110,7 +110,7 @@ _clk_connect core_resetn_out rst_core_125M/peripheral_aresetn
 # 5c. tdot_irq — IRQ планировщика TDOT -> xdma_0/usr_irq_req (MSI-X вектор 0)
 # ============================================================================
 # tdot_axi4 выставляет УРОВЕНЬ (sched_irq, держится до irq_ack хоста);
-# 2-FF синхронизация уже сделана в xdma_ddr3_core_top (домен axi_aclk 250).
+# 2-FF синхронизация уже сделана в xdma_ddr3_core_top (домен axi_aclk 125).
 # BUG-049: usr_irq_req в XDMA-конфиге MSI-X-only (pf0_interrupt_pin=NONE) —
 # пин шириной 1 бит. Подключаем tdot_irq НАПРЯМУЮ (1 бит → 1 бит),
 # без xlconcat/xlconstant (BD 41-2383 width mismatch 1 vs 16).
@@ -154,7 +154,7 @@ puts " xdma_axi_smc.S02 → M_AXI_TDOT @ DDR3 0x80000000"
 puts " xdma_axi_lite_smc.M03 → S_AXI_TDOT_REGS @ 0x40003000"
 puts " xdma_axi_lite_smc.M04 → S_AXI_ICAP_REGS @ 0x40004000"
 puts " xdma_axi_lite_smc.M05 → S_AXI_XADC_REGS @ 0x46000000"
-puts " clock: axi_aclk_out/aresetn_out (O, XDMA 250), axi_aclk_in (I)"
+puts " clock: axi_aclk_out/aresetn_out (O, XDMA 125), axi_aclk_in (I)"
 puts " clock: clk_core_out/core_resetn_out (O, fabric 125 МГц)"
 puts " irq:   tdot_irq -> usr_irq_req[0] (MSI-X vector 0, In1..15=0)"
 puts "============================================"

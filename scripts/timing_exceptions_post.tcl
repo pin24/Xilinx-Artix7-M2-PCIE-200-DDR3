@@ -15,6 +15,33 @@
 
 puts "=== timing_exceptions_post.tcl START ==="
 
+# ============================================================================
+# icap_clk = 62.5 МГц (кастомный icap_ctrl, rtl/integration/icap_ctrl.sv):
+# S_AXI_ACLK(125) /2 через register-toggle + BUFG u_icap_bufg. Derived clock
+# от register-toggle Vivado не определяет (no clock) и таймит эти пути как
+# несогласованные/ложные, поэтому декларируем явный generated clock:
+#   - source = вход BUFG u_icap/u_icap_bufg/I (мастер core_clk 125, period 8 нс)
+#   - деление -divide_by 2 → icap_clk 62.5 МГц (period 16 нс)
+# Ячейка существует только после синтеза → применяем здесь (PLACE_DESIGN.
+# TCL.PRE), а не в constraints/timing_exceptions.tcl.
+# Полное имя: top xdma_ddr3_core_top → u_icap → u_icap_bufg.
+# ============================================================================
+set icap_bufg_o [get_pins -quiet -hierarchical -filter {NAME =~ *u_icap_bufg/O}]
+if {${icap_bufg_o} ne ""} {
+    set icap_bufg_i [get_pins -quiet -hierarchical \
+        -filter {NAME =~ *u_icap_bufg/I}]
+    if {${icap_bufg_i} ne ""} {
+        catch {create_generated_clock -name icap_clk \
+            -source [lindex ${icap_bufg_i} 0] -divide_by 2 \
+            [lindex ${icap_bufg_o} 0]}
+    }
+}
+if {[get_clocks -quiet icap_clk] ne ""} {
+    puts "INFO: create_generated_clock icap_clk (62.5 МГц) создан на ${icap_bufg_o}"
+} else {
+    puts "WARNING: icap_clk BUFG (u_icap/u_icap_bufg) не найден — generated clock НЕ создан"
+}
+
 set groups {}
 set names {}
 
@@ -32,7 +59,8 @@ proc add_grp {clklist name} {
 set pcie_all [get_clocks -quiet -include_generated_clocks pcie_refclk]
 add_grp $pcie_all "pcie+generated"
 
-# 2. Сырой clk50 (HWICAP icap_clk)
+# 2. Сырой clk50 (физический вход clk200/clk125 wiz; кастомный icap_ctrl
+#    НЕ использует clk50 — он делит core_clk внутри, см. группу icap_clk)
 set clk50_g [get_clocks -quiet clk50]
 add_grp $clk50_g "clk50raw"
 
@@ -43,6 +71,13 @@ add_grp $fab_g "fabric125"
 # 4. MIG 200 → ui_clk/pll
 set mig_g [get_clocks -quiet clk_out1_xdma_ddr3_dfx_clk200_clk_wiz_0]
 add_grp $mig_g "mig200"
+
+# 5. icap_clk (62.5 МГц, кастомный icap_ctrl) — ОТДЕЛЬНАЯ асинхронная группа.
+# Хотя icap_clk физически производен от core_clk (fabric125), переход между
+# S_AXI_ACLK(125) и icap_clk(62.5) — асинхронный toggle-handshake через 2FF
+# (*ASYNC_REG*), поэтому ему запрещено быть синхронной парой с любым доменом.
+set icap_g [get_clocks -quiet icap_clk]
+add_grp $icap_g "icap_clk(62.5)"
 
 if {[llength $groups] >= 2} {
     set cmd "set_clock_groups -asynchronous -name async_root_domains"

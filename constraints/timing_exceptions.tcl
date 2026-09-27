@@ -11,15 +11,18 @@
 # Корневые домены (взаимно асинхронные, разные физические источники):
 #   grp_pcie : pcie_refclk (100 МГц MGTREFCLK) -> txoutclk -> userclk1 (250),
 #              userclk2 (125), clk_125mhz/clk_250mhz (pipe_clock XDMA)
-#   grp_clk50: сырой clk50 (20 ns, без порождённых — HWICAP icap_clk напрямую)
-#   grp_fab  : clk_out1_clk125_core_wiz (125 МГц) -> fabric/RP/TDOT/GPIO/HWICAP S_AXI
+#   grp_clk50: сырой clk50 (20 ns, без порождённых — физический вход clk_wiz;
+#              кастомный icap_ctrl делит core_clk внутри, его icap_clk — отдельная
+#              группа, см. timing_exceptions_post.tcl)
+#   grp_fab  : clk_out1_clk125_core_wiz (125 МГц) -> fabric/RP/TDOT/GPIO S_AXI
 #   grp_mig  : clk_out1_clk200_clk_wiz (200 МГц) -> sys_clk_i/clk_ref_i MIG
 #              -> ui_clk (100 МГц); (исторический корень mig_refclk, если есть)
 #
 # Пересечения групп легальны ТОЛЬКО через CDC-структуры:
 #   - 2FF синхронизаторы ASYNC_REG (tdot_irq_sync, icap_ctrl req/go/stop/ack/busy);
 #   - async FIFO внутри SmartConnect (xdma_axi_smc 250/100/125, xdma_axi_lite_smc 250/125);
-#   - IP-внутренние CDC (AXI HWICAP: icap_clk 50 vs s_axi 125; XDMA; MIG PHY).
+#   - IP-внутренние CDC (2FF/async FIFO SmartConnect; кастомный icap_ctrl:
+#     S_AXI_ACLK 125 vs icap_clk 62.5; XDMA; MIG PHY).
 # Поэтому ВСЕ межгрупповые пути исключаются из STA. ВНУТРИ групп тайминг
 # НЕ ослабляется — реальные нарушения (например, длинная комбинация в ядре)
 # останутся видимыми в отчётах и поймаются FATAL-гейтом сборки.
@@ -42,8 +45,8 @@ if {![catch {set tmg_pcie [get_clocks -quiet -include_generated_clocks pcie_refc
     }
 }
 
-# 2. Сырой clk50 (HWICAP icap_clk). БЕЗ -include_generated_clocks: порождённые
-#    клоки двух clk_wiz относятся к своим группам (fab/mig), а не к корню.
+# 2. Сырой clk50 (физический вход clk200/clk125 wiz). БЕЗ -include_generated_clocks:
+#    порождённые клоки двух clk_wiz относятся к своим группам (fab/mig), а не к корню.
 if {![catch {set tmg_clk50 [get_clocks -quiet clk50]}]} {
     if {[llength $tmg_clk50] > 0} {
         lappend tmg_groups $tmg_clk50

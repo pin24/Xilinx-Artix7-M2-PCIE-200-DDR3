@@ -225,9 +225,10 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
   logic        xadc_rvalid, xadc_rready;
   logic [1:0]  xadc_bresp, xadc_rresp;
 
-  // NOTE: XADC raw_temp/vccint/valid = 0 (без xadc_wiz, BUG-031).
-  // MIG 7-series IP в DFX-варианте: XADC_En=Off (см. xdma_ddr3_dfx_bd.tcl:199).
-  // monitor_temp.py читает 0°C/0V — данные XADC недоступны в этой сборке.
+  // BUG-031 RTL-fix: xadc_prim (ниже) подаёт реальные данные температуры/VCCINT.
+  // MIG 7-series IP в DFX-варианте: XADC_En=Off (см. xdma_ddr3_dfx_bd.tcl:199) —
+  // физический XADC свободен, примитив один (UTLZ-1 не возникает). monitor_temp.py
+  // читает реальные 0x46000000 TEMP/VCCINT/VALID.
 
   xadc_temp u_xadc (
       .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
@@ -240,10 +241,29 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .S_AXI_ARVALID(xadc_arvalid), .S_AXI_ARREADY(xadc_arready),
       .S_AXI_RDATA(xadc_rdata), .S_AXI_RRESP(xadc_rresp),
       .S_AXI_RVALID(xadc_rvalid), .S_AXI_RREADY(xadc_rready),
-      // BUG-031: XADC занят MIG IP — без xadc_wiz, raw_* = 0.
-      // u_xadc AXI-Lite slave отвечает (для register access tests),
-      // но TEMP/VCCINT = 0. monitor_temp.py должен использовать MIG status bus.
-      .raw_temp(16'h0), .raw_vccint(16'h0), .raw_valid(1'b0)
+      // BUG-031 RTL-fix: xadc_prim (примитив XADC через DRP) подаёт реальные
+      // raw_temp/raw_vccint/raw_valid. MIG сконфигурирован XADC_En=Off — физический
+      // XADC свободен, примитив один, UTLZ-1 не возникает.
+      .raw_temp(xadc_raw_temp), .raw_vccint(xadc_raw_vccint), .raw_valid(xadc_raw_valid)
+  );
+
+  // ---- XADC primitive: реальный мониторинг температуры/VCCINT (BUG-031 fix) ----
+  // xadc_prim = DRP-FSM вокруг примитива XADC (xadc_prim.sv): раз в секунду
+  // читает DADDR 0x00 (temp) и 0x06 (VCCINT), подаёт raw_temp/raw_vccint/raw_valid
+  // в xadc_temp. Тактирование — clk50 (50 МГц, в спецификации XADC DCLK 8..250 МГц;
+  // см. шапку xadc_prim.sv: DCLK=clk50), сброс — fabric-домен core_resetn (clk50 —
+  // источник core_clk, так что reset согласован с DCLK). AXI-Lite интерфейс u_xadc
+  // не тронут: host-тесты register access работают как раньше.
+  logic [15:0] xadc_raw_temp;
+  logic [15:0] xadc_raw_vccint;
+  logic        xadc_raw_valid;
+
+  xadc_prim u_xadc_prim (
+      .clk       (clk50[0]),
+      .rst_n     (core_resetn),
+      .raw_temp  (xadc_raw_temp),
+      .raw_vccint(xadc_raw_vccint),
+      .raw_valid (xadc_raw_valid)
   );
 
   // ======================== BD (DFX variant) ========================

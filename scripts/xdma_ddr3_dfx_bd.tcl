@@ -5,7 +5,8 @@
 # Creates xdma_ddr3_dfx.bd with:
 #   - XDMA (PCIe x4 Gen2)
 #   - MIG 7-series (DDR3 256 MB)
-#   - AXI HWICAP (partial reconfiguration via PCIe)
+#   - ICAP via external S_AXI_ICAP_REGS port @ 0x40004000 (custom icap_ctrl
+#     in RTL, partial reconfiguration via PCIe; AXI HWICAP REMOVED - single ICAP)
 #   - DFX Socket (shutdown/decouple for reconfigurable partition)
 #   - DFX Partition (block design container for RP)
 #   - Clocking Wizard (50 MHz в†’ 200 MHz for MIG)
@@ -92,7 +93,6 @@ set bCheckIPs 1
 if { $bCheckIPs == 1 } {
    set list_check_ips "\
 xilinx.com:ip:axi_gpio:2.0\
-xilinx.com:ip:axi_hwicap:3.0\
 xilinx.com:ip:mig_7series:4.2\
 xilinx.com:ip:proc_sys_reset:5.0\
 xilinx.com:ip:util_ds_buf:2.2\
@@ -604,13 +604,15 @@ proc create_root_design { parentCell } {
     CONFIG.C_IS_DUAL {1} \
   ] $axi_gpio_0
 
-  set axi_hwicap_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_hwicap:3.0 axi_hwicap_0 ]
-  set_property -dict [list \
-    CONFIG.C_INCLUDE_STARTUP {0} \
-    CONFIG.C_OPERATION {0} \
-    CONFIG.C_SHARED_STARTUP {0} \
-    CONFIG.C_WRITE_FIFO_DEPTH {1024} \
-  ] $axi_hwicap_0
+  # ============================================================================
+  # Single-ICAP (DIFF-ICAP: dual-controller removed).
+  # Only ONE controller drives the physical ICAPE2: the custom icap_ctrl
+  # (rtl/integration/icap_ctrl.sv), wired by top xdma_ddr3_core_top.sv to the
+  # BD external port S_AXI_ICAP_REGS @ 0x40004000 (xdma_axi_lite_smc/M04).
+  # The licensed AXI HWICAP (axi_hwicap_0) is REMOVED: two controllers on one
+  # ICAPE2 created a risk of mutually-exclusive/racing ICAP access.
+  # SmartConnect M02 becomes an unused dangling Master - valid, no seg left.
+  # ============================================================================
 
   set dfx_partition [ create_bd_cell -type container -reference dfx_partition dfx_partition ]
   set_property -dict [list \
@@ -752,7 +754,6 @@ set_property -dict [list \
   connect_bd_intf_net -intf_net xdma_0_pcie_mgt [get_bd_intf_ports pcie_7x_mgt_rtl_0] [get_bd_intf_pins xdma_0/pcie_mgt]
   connect_bd_intf_net -intf_net xdma_axi_lite_smc_M00_AXI [get_bd_intf_pins xdma_axi_lite_smc/M00_AXI] [get_bd_intf_pins axi_gpio_0/S_AXI]
   connect_bd_intf_net -intf_net xdma_axi_lite_smc_M01_AXI [get_bd_intf_pins xdma_axi_lite_smc/M01_AXI] [get_bd_intf_pins dfx_socket/S_AXI]
-  connect_bd_intf_net -intf_net xdma_axi_lite_smc_M02_AXI [get_bd_intf_pins axi_hwicap_0/S_AXI_LITE] [get_bd_intf_pins xdma_axi_lite_smc/M02_AXI]
   connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
 
   connect_bd_net -net clk200_clk_wiz_clk_out1 [get_bd_pins clk200_clk_wiz/clk_out1] \
@@ -760,19 +761,16 @@ set_property -dict [list \
   [get_bd_pins mig_7series_0/sys_clk_i]
 
   connect_bd_net -net clk50_buf_IBUF_OUT [get_bd_ports clk50] \
-  [get_bd_pins axi_hwicap_0/icap_clk] \
   [get_bd_pins clk200_clk_wiz/clk_in1] \
   [get_bd_pins clk125_core_wiz/clk_in1]
 
-  # Р”РѕРјРµРЅ fabric/СЏРґСЂР° 125 РњР“С† (BUG-034): dfx_socket, dfx_partition (RP),
-  # GPIO, HWICAP S_AXI, M-СЃС‚РѕСЂРѕРЅР° xdma_axi_lite_smc, S01/S02-СЃС‚РѕСЂРѕРЅР°
-  # xdma_axi_smc (S02 РґРѕР±Р°РІР»СЏРµС‚ post_bd_dfx). Р§Р°СЃС‚РѕС‚Р° РЎРўРђР РђРЇ (125) вЂ”
-  # С‚Р°Р№РјРёРЅРі СЏРґСЂР°/RP РЅРµ РјРµРЅСЏРµС‚СЃСЏ; РјРµРЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ РґРѕРјРµРЅ XDMA (250).
+  # fabric/core domain 125 MHz (BUG-034): dfx_socket, dfx_partition (RP),
+  # GPIO, M-side of xdma_axi_lite_smc, S01/S02 sides of
+  # xdma_axi_smc (S02 added by post_bd_dfx). Static rate 125 MHz.
   connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins clk125_core_wiz/clk_out1] \
   [get_bd_pins dfx_socket/clk] \
   [get_bd_pins dfx_partition/clk] \
   [get_bd_pins axi_gpio_0/s_axi_aclk] \
-  [get_bd_pins axi_hwicap_0/s_axi_aclk] \
   [get_bd_pins xdma_axi_lite_smc/aclk1] \
   [get_bd_pins xdma_axi_smc/aclk2] \
   [get_bd_pins rst_core_125M/slowest_sync_clk]
@@ -812,8 +810,7 @@ set_property -dict [list \
 
   connect_bd_net -net rst_core_125M_peripheral_aresetn [get_bd_pins rst_core_125M/peripheral_aresetn] \
   [get_bd_pins dfx_socket/resetn] \
-  [get_bd_pins axi_gpio_0/s_axi_aresetn] \
-  [get_bd_pins axi_hwicap_0/s_axi_aresetn]
+  [get_bd_pins axi_gpio_0/s_axi_aresetn]
 
   connect_bd_net -net util_ds_buf_IBUF_OUT [get_bd_pins util_ds_buf/IBUF_OUT] \
   [get_bd_pins xdma_0/sys_clk]
@@ -835,7 +832,6 @@ set_property -dict [list \
   assign_bd_address -offset 0x40018000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_partition/axi_datamover_s2mm_c_0/s_axi/reg0] -force
   assign_bd_address -offset 0x40000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40002000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
-  assign_bd_address -offset 0x40001000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_hwicap_0/S_AXI_LITE/Reg] -force
 
   current_bd_instance $oldCurInst
 

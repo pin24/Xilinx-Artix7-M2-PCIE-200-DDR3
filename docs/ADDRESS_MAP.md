@@ -76,6 +76,7 @@ DDR3 **не сконфигурирован**, поэтому:
 | **DFX Socket** | `0x40002000` | 4 KB | M01 | `dfx_socket/decouple_shutdown_ctrl`: shutdown/decouple RP — см. §4 |
 | **TDOT registers** | `0x40003000` | 4 KB | M03 | Регистры троичного ядра `tdot_axi4` — см. §3 |
 | **ICAP registers** | `0x40004000` | 4 KB | M04 | Кастомный `icap_ctrl` (ICAPE2 X32 @ 62.5 MHz) — см. §5 |
+| **SPI-over-PCIe** | `0x40005000` | 4 KB | M06 | `spi_over_pcie` (`u_spi`, CLK_DIV 16) — программирование флэш/без JTAG («hot-flash»), рабочий — см. §5.1 |
 | **DFX Partition MM2S** | `0x40010000` | 4 KB | — | DataMover MM2S control (внутри RP, через `dfx_socket`) |
 | **DFX Partition S2MM** | `0x40018000` | 4 KB | — | DataMover S2MM control (внутри RP, через `dfx_socket`) |
 | **XADC** | `0x46000000` | 4 KB | M05 | Температура/VCCINT (`xadc_temp.sv`, `u_xadc`) — см. §7 |
@@ -217,6 +218,28 @@ register-toggle + BUFG; BUFGCE_DIV на Artix-7 недоступен).
 
 ---
 
+### 5.1. SPI-over-PCIe (`spi_over_pcie.sv`, база `0x40005000`)
+
+Источник истины: `rtl/integration/spi_over_pcie.sv` (декод `[4:2]`, 32-байтное
+пространство). Рабочий — «hot-flash» без JTAG: запись нового битстрима в
+SPI-флэш (W25Q128JV) через STARTUPE2.
+
+| Offset | Имя | R/W | Битовое поле | Описание |
+|---|---|---|---|---|
+| `0x00` | `CTRL` | W | `[0]` START (self-clear), `[1]` ABORT, `[2]` WREN (шлёт 0x06), `[3]` RDID (шлёт 0x9F) | Старт/прерывание сессии |
+| `0x04` | `STATUS` | R | `[0]` BUSY, `[1]` DONE, `[2]` ERROR, `[3]` WIP_FLASH | Состояние SPI-сессии |
+| `0x08` | `CMD` | W | `[7:0]` | Команда SPI (0x03 read, 0x02 page-program, 0x20 sector-erase, 0x06 WREN, 0x05 RDSR, 0xC7 chip-erase) |
+| `0x0C` | `ADDR` | W | `[23:0]` | 24-битный адрес флэш |
+| `0x10` | `LEN` | W | `[31:0]` | Длина передачи в байтах |
+| `0x14` | `DATA` | W | `[7:0]` | TX FIFO, байт в `[7:0]` |
+| `0x18` | `RX` | R | `[7:0]` | Последний принятый байт |
+
+`spi_cclk = S_AXI_ACLK / (2*CLK_DIV)`, `CLK_DIV=16` при инстанцировании
+(`u_spi` в `xdma_ddr3_core_top.sv`). STARTUPE2 ведёт только CCLK (L12);
+`FCS_B/D00-D03` — обычные IO.
+
+---
+
 ## 6. DDR3 — адресация и формат данных
 
 - AXI-адрес MIG: `0x80000000`, размер **256 MB** (MT41J128M16XX-125, 16 бит,
@@ -346,6 +369,7 @@ res48 = core.read_result_reg()           # или чтение result из DDR3 
 | 2026-08-30 | FIX-5: XADC `0x46000000`, `u_xadc` инстанцирован в top |
 | 2026-09-01 | DFX-интеграция: HWICAP `0x40001000`, DFX Socket `0x40002000`, TDOT `0x40003000`, ICAP `0x40004000` (каноническая DFX-карта) |
 | 2026-09-05 | **Этот файл переписан под DFX-карту** (легаси-карта удалена). MM2S/S2MM-сегменты 32K→4K (build_dfx.tcl, xdma_ddr3_dfx_bd.tcl, default.tcl); `test.tcl` S2MM `0x40011000`→`0x40018000`; задокументировано отсутствие PCIe-мэппинга DDR3 (DMA-only); добавлены §4 (DFX Socket/горячая замена) и §9 (RP-варианты). Синхронизировано: README.md, xdma_driver.py, dfx_swap.py (новый), monitor_temp.py, build_dfx.tcl |
+| 2026-09-27 | **SPI-over-PCIe зафиксирован в карте**: §2 добавлен `S_AXI_SPI_REGS` @ `0x40005000` (4 KB, M06, `u_spi`), новый §5.1 с регистровой картой (hot-flash без JTAG, W25Q128JV через STARTUPE2). БАГ: `XdmaWinUpstream.write_dma/read_dma` больше не прибавляют `DDR3_BASE` к смещению (offset шёл как card-side адрес и уезжал на `0x80000000`); теперь передают `ddr_off` как есть — как XdmaLinux/XdmaWindows. Синхронизировано: xdma_driver.py, ADDRESS_MAP.md |
 
 ---
 
@@ -359,9 +383,9 @@ res48 = core.read_result_reg()           # или чтение result из DDR3 
 - [x] `dfx_block_designs/default.tcl`, `dfx_block_designs/test.tcl` — RP-локальная карта
 - [x] `rtl/integration/tdot_axi4.sv` — регистровая карта §3
 - [x] `rtl/integration/icap_ctrl.sv` — регистровая карта §5
-- [x] `rtl/integration/xdma_ddr3_core_top.sv` — инстанции u_tdot/u_icap/u_xadc
+- [x] `rtl/integration/xdma_ddr3_core_top.sv` — инстанции u_tdot/u_icap/u_xadc/u_spi
 - [x] `README.md` — раздел «Карта адресов»
-- [x] `pytorch_layer/xdma_driver.py` — REG_BASE `0x40003000`, ICAP_BASE `0x40004000`, DFX_SOCK_BASE `0x40002000`, HWICAP_BASE `0x40001000`
+- [x] `pytorch_layer/xdma_driver.py` — REG_BASE `0x40003000`, ICAP_BASE `0x40004000`, DFX_SOCK_BASE `0x40002000`, HWICAP_BASE `0x40001000`, SPI_BASE `0x40005000`; write_dma/read_dma передают смещение ddr_off без DDR3_BASE
 - [x] `pytorch_layer/icap_load.py` — ICAP_BASE `0x40004000`
 - [x] `pytorch_layer/dfx_swap.py` — DFX_SOCK_BASE `0x40002000` + биты §4
 - [x] `pytorch_layer/monitor_temp.py` — XADC_BASE `0x46000000`

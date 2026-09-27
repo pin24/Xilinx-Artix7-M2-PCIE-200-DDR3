@@ -23,6 +23,16 @@ Register map (spi_over_pcie @ 0x40005000):
   0x10 LEN    byte count
   0x14 DATA   TX byte
   0x18 RX     RX byte
+
+Protocol contract (RTL has a SINGLE tx byte slot and SINGLE RX byte, no FIFO):
+  - Every SPI transfer moves exactly ONE data byte. To write/read N bytes the
+    host issues N separate START transfers, polling STATUS.BUSY/DONE between.
+  - SPI_RX holds only the byte received at the END of each accepted transfer.
+  - For a no-address command (READ_ID etc.) a transfer of LEN=n returns the
+    n-th ID byte back (the flash drifts the ID while CS stays low), so the
+    whole ID = transfers with LEN=1,2,3.
+  - RDSR (0x05) goes through a single status phase: after START the flash
+    returns the status byte into SPI_RX (bit0 = WIP).
 """
 from __future__ import annotations
 import argparse
@@ -140,17 +150,17 @@ def _rdid(dev) -> tuple[int, int, int]:
 
 
 def read_id(dev) -> bytes:
-    """Read JEDEC ID: CMD=0x9F, no address, read 3 bytes."""
-    # Use CTRL.RDID shortcut if module supports it.
-    _reg_w(dev, SPI_CMD, CMD_RDID)
-    _reg_w(dev, SPI_LEN, 3)
-    _reg_w(dev, SPI_CTRL, CTRL_START)
-    if not _wait_done(dev, 1.0):
-        raise RuntimeError("read_id timeout")
+    """Read JEDEC ID (0x9F). No RX FIFO: SPI_RX holds only the LAST byte of a
+    transfer. With CS held low the flash drifts out all 3 ID bytes, so a
+    transfer of LEN=n returns ID[n-1]; run 3 transfers with LEN=1,2,3."""
     id_bytes = bytearray()
-    for _ in range(3):
-        b = _reg_r(dev, SPI_RX) & 0xFF
-        id_bytes.append(b)
+    for n in (1, 2, 3):
+        _reg_w(dev, SPI_CMD, CMD_RDID)
+        _reg_w(dev, SPI_LEN, n)
+        _reg_w(dev, SPI_CTRL, CTRL_START)
+        if not _wait_done(dev, 1.0):
+            raise RuntimeError(f"read_id LEN={n} timeout")
+        id_bytes.append(_reg_r(dev, SPI_RX) & 0xFF)
     return bytes(id_bytes)
 
 
@@ -162,6 +172,8 @@ def wren(dev) -> None:
 
 
 def rdsr1(dev) -> int:
+    """Read Status Register 1 (0x05). RTL runs a single RDSR status phase:
+    after START the flash returns the status byte into SPI_RX (bit0 = WIP)."""
     _reg_w(dev, SPI_CMD, CMD_RDSR1)
     _reg_w(dev, SPI_LEN, 1)
     _reg_w(dev, SPI_CTRL, CTRL_START)
@@ -192,33 +204,44 @@ def chip_erase(dev) -> None:
 
 
 def page_program(dev, addr: int, data: bytes) -> None:
+    """Program data into the flash.
+
+    RTL has ONE tx data slot and no FIFO, so the host programs byte-by-byte:
+    each byte is its own PAGE_PROG transfer (LEN=1) with a fresh WREN (WEL is
+    cleared after every programming operation) and a WIP poll. This is slow but
+    correct for a per-byte protocol; it is acceptable for R-14 flash updates.
+    """
     assert 0 < len(data) <= PAGE_SIZE
-    wren(dev)
-    _reg_w(dev, SPI_CMD, CMD_PAGE_PROG)
-    _reg_w(dev, SPI_ADDR, addr & 0xFFFFFF)
-    _reg_w(dev, SPI_LEN, len(data))
-    for b in data:
+    for i, b in enumerate(data):
+        a = (addr + i) & 0xFFFFFF
+        wren(dev)                                  # WEL required before each program
+        _reg_w(dev, SPI_CMD, CMD_PAGE_PROG)
+        _reg_w(dev, SPI_ADDR, a)
+        _reg_w(dev, SPI_LEN, 1)
         _reg_w(dev, SPI_DATA, b & 0xFF)
-    _reg_w(dev, SPI_CTRL, CTRL_START)
-    if not _wait_done(dev, 1.0):
-        raise RuntimeError(f"PAGE_PROG @ 0x{addr:X} timeout")
-    wait_wip(dev, 5.0)
+        _reg_w(dev, SPI_CTRL, CTRL_START)
+        if not _wait_done(dev, 1.0):
+            raise RuntimeError(f"PAGE_PROG byte {i} @ 0x{a:X} timeout")
+        wait_wip(dev, 5.0)
 
 
 def read_flash(dev, addr: int, length: int) -> bytes:
+    """Read bytes from the flash.
+
+    RTL has NO RX FIFO: SPI_RX holds only the byte received at the end of each
+    accepted transfer, so every address is read one byte per transfer (LEN=1)
+    and SPI_RX is consumed once per transfer.
+    """
     out = bytearray()
-    offset = 0
-    while offset < length:
-        chunk = min(0x1000, length - offset)
+    for i in range(length):
+        a = (addr + i) & 0xFFFFFF
         _reg_w(dev, SPI_CMD, CMD_READ)
-        _reg_w(dev, SPI_ADDR, (addr + offset) & 0xFFFFFF)
-        _reg_w(dev, SPI_LEN, chunk)
+        _reg_w(dev, SPI_ADDR, a)
+        _reg_w(dev, SPI_LEN, 1)
         _reg_w(dev, SPI_CTRL, CTRL_START)
         if not _wait_done(dev, 2.0):
-            raise RuntimeError(f"READ @ 0x{addr + offset:X} timeout")
-        for _ in range(chunk):
-            out.append(_reg_r(dev, SPI_RX) & 0xFF)
-        offset += chunk
+            raise RuntimeError(f"READ @ 0x{a:X} timeout")
+        out.append(_reg_r(dev, SPI_RX) & 0xFF)
     return bytes(out)
 
 

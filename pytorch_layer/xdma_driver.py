@@ -53,11 +53,13 @@ DDR3_BASE     = 0x8000_0000   # база DDR3 (от неё отсчитываю�
 #   M00 GPIO  0x4000_0000    M03 TDOT   0x4000_3000
 #   M01 DFX sock 0x4000_2000 M04 ICAP   0x4000_4000
 #   M02 HWICAP 0x4000_1000   M05 XADC   0x4600_0000
+#   M06 SPI   0x4000_5000
 REG_BASE  = 0x4000_3000      # tdot_axi4 регистры
 ICAP_BASE = 0x4000_4000      # ICAP-контроллер
 GPIO_BASE = 0x4000_0000      # axi_gpio (не используется)
 HWICAP_BASE = 0x4000_1000    # axi_hwicap (если потребуется прямой доступ)
 DFX_SOCK_BASE = 0x4000_2000  # dfx_socket/decouple_shutdown_ctrl (shutdown/decouple GPIO)
+SPI_BASE = 0x4000_5000       # SPI-over-PCIe (hot-flash без JTAG)
 # legacy alias (модульно совместим со старым именем)
 DDR_BASE = DDR3_BASE
 
@@ -392,8 +394,10 @@ class XdmaWindows(XdmaDevice):
 #   \\.\XDMA0\h2c_0   -> H2C DMA channel - host -> DDR3
 #   \\.\XDMA0\c2h_0   -> C2H DMA channel - DDR3 -> host
 #
-# Host-side address math: subtract AXI_LITE_BASE (0x40000000) for registers,
-# DDR3_BASE (0x80000000) for DMA. Matches ADDRESS_MAP.md.
+# Host-side address math: registers pass FULL AXI address minus AXI_LITE_BASE
+# (0x40000000) to the control node; DMA channels take CARD-side DDR3 address
+# as-is, and write_dma/read_dma pass СМЕЩЕНИЕ (ddr_off) WITHOUT adding
+# DDR3_BASE (0x80000000) — matches ADDRESS_MAP.md §1.2 and other backends.
 # Reference: file_io.c:ReadBarToRequest/WriteBarFromRequest.
 # ============================================================================
 class XdmaWinUpstream(XdmaDevice):
@@ -496,20 +500,18 @@ class XdmaWinUpstream(XdmaDevice):
         self._xfer(self._ctl, True, addr - self.AXI_LITE_BASE, data, len(data))
 
     def write_dma(self, ddr_off, data):
-        full = self.DDR3_BASE + ddr_off
         off = 0
         while off < len(data):
             chunk = data[off:off + self.DMA_CHUNK]
-            self._xfer(self._h2c, True, full + off, chunk, len(chunk))
+            self._xfer(self._h2c, True, ddr_off + off, chunk, len(chunk))
             off += len(chunk)
 
     def read_dma(self, ddr_off, length):
-        full = self.DDR3_BASE + ddr_off
         out = bytearray()
         off = 0
         while off < length:
             chunk = min(self.DMA_CHUNK, length - off)
-            out += self._xfer(self._c2h, False, full + off, b"", chunk)
+            out += self._xfer(self._c2h, False, ddr_off + off, b"", chunk)
             off += chunk
         return bytes(out)
 
