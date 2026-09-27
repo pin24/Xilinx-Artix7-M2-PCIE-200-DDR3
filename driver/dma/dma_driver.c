@@ -94,6 +94,16 @@ EvtDriverDeviceAdd(
 
     // ---- FileObject config: под-ноды (control/user/h2c_N/c2h_N/event_N) ----
     // upstream file_io.c предоставляет EvtDeviceFileCreate/EvtFileClose/EvtFileCleanup.
+    // ВАЖНО (BSOD 0x3B fix): нужно объявить КОНТЕКСТ файлового объекта (FILE_CONTEXT)
+    // через WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE, а не WDF_NO_OBJECT_ATTRIBUTES.
+    // upstream file_io.c вызывает GetFileContext(WdfFile) (file_io.c:98) и пишет
+    // devNode->devType в него (file_io.c:111/115, дизассемблер: mov [rdi],eax на
+    // EvtDeviceFileCreate+0xD6). Если контекст файла не зарегистрирован размером
+    // sizeof(FILE_CONTEXT), GetFileContext возвращает неинициализированный/
+    // некорректный указатель -> запись по неверному адресу -> access violation ->
+    // BugCheck 3B (SYSTEM_SERVICE_EXCEPTION, c0000005) при NtCreateFile.
+    WDF_OBJECT_ATTRIBUTES fileObjectAttributes;
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&fileObjectAttributes, FILE_CONTEXT);
     WDF_FILEOBJECT_CONFIG_INIT(
         &fileObjectConfig,
         EvtDeviceFileCreate,   // EVT_WDF_DEVICE_FILE_CREATE  (file_io.c)
@@ -102,7 +112,7 @@ EvtDriverDeviceAdd(
     WdfDeviceInitSetFileObjectConfig(
         DeviceInit,
         &fileObjectConfig,
-        WDF_NO_OBJECT_ATTRIBUTES);
+        &fileObjectAttributes);
 
     // Buffered/Direct I/O: BAR-read/write в file_io.c идут через
     // WdfRequestRetrieve*Memory (работает для обоих), а DMA-транзакции
@@ -240,6 +250,26 @@ EvtDevicePrepareHardware(
     status = EvtCreateEngineQueues(Device);
     if (!NT_SUCCESS(status)) {
         goto ErrClose;
+    }
+
+    // ---- ВКЛЮЧАЕМ POLL-режим завершения DMA (анти-тупик) ----
+    // Стенд: DFX-прошивка, BAR2 = MSI-X (64KB). Прерывания DMA (channel-IRQ)
+    // могут не доходить до драйвера в этой конфигурации -> engine->poll=FALSE
+    // default (device.c:99) делает transfer с EngineEnableInterrupt и ждёт DPC;
+    // если прерывание не приходит, WdfDmaTransaction никогда не завершится и
+    // host-чтение/запись висит (test_dma.exe: "overlapped write timed out").
+    // Решение: XDMA_EngineSetPollMode(engine, TRUE) — downstream dma_engine
+    // будет опрашивать статус передачи (EnginePollTransfer), без зависимости
+    // от MSI-X. Для MM-каналов H2C/C2H это штатно и надёжно. Прерывания для
+    // user-event остаются доступны (не нужны для каналов).
+    for (UINT dirIdx = H2C; dirIdx < XDMA_NUM_DIRECTIONS; dirIdx++) {
+        for (ULONG ch = 0; ch < XDMA_MAX_NUM_CHANNELS; ch++) {
+            XDMA_ENGINE *engine = &devCtx->xdma.engines[ch][dirIdx];
+            if (engine->enabled) {
+                XDMA_EngineSetPollMode(engine, TRUE);
+                DbgPrint("XDMA_DMA: engine[%u][%u] poll=TRUE\n", ch, dirIdx);
+            }
+        }
     }
 
     return STATUS_SUCCESS;

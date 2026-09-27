@@ -34,7 +34,7 @@ set VS_ROOT=C:\Program Files (x86)\Microsoft Visual Studio 14.0
 
 REM ������ ��������: ����� ��� ������ ������ (pnputil �� �������� �����,
 REM ���� ����� DriverVer �� ������ ����� �������������).
-set DRIVER_VERSION=1.1.5.0
+set DRIVER_VERSION=1.1.7.0
 
 REM FIX F2: ����� ����� �������������� (certutil -addstore, bcdedit).
 net session >nul 2>&1
@@ -85,7 +85,7 @@ echo === Compiling sources (WPP off, no /DBG) ===
 REM Include paths: this dir (dma_driver.h) + km/shared + wdf kmdf 1.15 + upstream inc/libxdma/sys.
 set INC=/I"%DMA_DIR%" /I"%KIT_ROOT%\Include\%WDK_VERSION%\km" /I"%KIT_ROOT%\Include\%WDK_VERSION%\shared" /I"%KIT_ROOT%\Include\wdf\kmdf\1.15" /I"%UPSTREAM%\inc" /I"%UPSTREAM%\libxdma" /I"%UPSTREAM%\sys"
 
-set CFLAGS=/nologo /c /O1 /GS- /kernel /Zp8 /Gy /GF /GR- /Gz /TC /D_WIN64 /D_AMD64_ /DAMD64 /DWINNT=1 /D_WIN32_WINNT=0x0A00 /DNTDDI_VERSION=0x0A000002 /D_UNICODE /DUNICODE
+set CFLAGS=/nologo /c /O1 /GS- /kernel /Zp8 /Gy /GF /GR- /Gz /TC /D_WIN64 /D_AMD64_ /DAMD64 /DWINNT=1 /D_WIN32_WINNT=0x0A00 /DNTDDI_VERSION=0x0A000002 /D_UNICODE /DUNICODE /Zi
 
 echo -- dma_driver.c -- 
 cl.exe %CFLAGS% %INC% /Fo"%TMP_DIR%\dma_driver.obj" "%DMA_DIR%\dma_driver.c" || exit /b 1
@@ -105,6 +105,7 @@ echo === Linking XDMA_DMA.sys ===
 REM FIX-8: ����� ����� � FxDriverEntry (���� wdfdriverentry.lib ��������������
 REM WdfFunctions/WdfDriverGlobals �� ������ DriverEntry). ��� ����� � NULL-jump.
 link.exe /nologo /entry:FxDriverEntry /subsystem:native /machine:x64 /driver /kernel /nodefaultlib ^
+    /MAP /MAPINFO:EXPORTS /DEBUG /DEBUG:FASTLINK /PDB:"%BUILD_DIR%\XDMA_DMA.pdb" ^
     "%TMP_DIR%\dma_driver.obj" "%TMP_DIR%\file_io.obj" "%TMP_DIR%\device.obj" ^
     "%TMP_DIR%\dma_engine.obj" "%TMP_DIR%\interrupt.obj" "%TMP_DIR%\security_cookie.obj" ^
     /out:"%BUILD_DIR%\XDMA_DMA.sys" ^

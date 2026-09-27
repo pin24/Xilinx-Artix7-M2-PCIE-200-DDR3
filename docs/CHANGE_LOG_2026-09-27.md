@@ -186,3 +186,43 @@ DFX/SPI/XADC ✅.
 - test_dot_smoke теперь сверяет арифметику: n=8 пар 1.0 -> декодированный результат != n (rol 0.05) -> assert; иначе FAIL 'TDOT arithmetic FAIL'.
 
 Верификация: py_compile OK; decode(TF48_ONE)=1.0; эталон sum(8x1.0*1.0)=8.0. Полный путь арифметики уже был в xdma_driver.py --selftest (dot/sched -> _bits_to_float, expected=n).
+
+---
+
+## 4g. BSOD 0x3B при открытии DMA-ноды — НАЙДЕН И ИСПРАВЛЕН (28.09 ночь)
+
+СИМПТОМ: при попытке открыть \\.\XDMA0dma\... система падала. Свежий минидамп 092826-40109-01.dmp:
+BugCheck 3B (SYSTEM_SERVICE_EXCEPTION), code c0000005 (ACCESS_VIOLATION),
+faulting frame XDMA_DMA.sys+0x1906, stack: NtCreateFile -> IofCallDriver ->
+Wdf01000 -> XDMA_DMA+0x1906. Модули: XDMA_DMA.sys, Wdf01000.sys, 360Hvm64.sys.
+
+ЛОКАЛИЗАЦИЯ (MAP-файл link /MAPINFO:EXPORTS): EvtDeviceFileCreate RVA=0x1830,
+сбойный offset 0x1906 = EvtDeviceFileCreate+0xD6. Дизассемблер obj: 0xD6
+mov dword ptr [rdi],eax (запись в devNode->devType).
+
+КОРНЕВАЯ ПРИЧИНА: в driver\dma\dma_driver.c EvtDriverDeviceAdd для
+WdfDeviceInitSetFileObjectConfig передавался WDF_NO_OBJECT_ATTRIBUTES, т.е. НЕ
+был зарегистрирован размер/тип контекста файлового объекта (FILE_CONTEXT).
+upstream file_io.c EvtDeviceFileCreate вызывает GetFileContext(WdfFile) и пишет
+devNode->devType (file_io.c:111,115) — без выделенного контекста GetFileContext
+возвращает неинициализированный/нулевой указатель -> запись по неверному
+адресу -> access violation -> BugCheck 3B.
+
+ФИКС (driver\dma\dma_driver.c): добавлен
+WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&foAttr, FILE_CONTEXT) и передан в
+WdfDeviceInitSetFileObjectConfig. ВОSЕ уже был контекст устройства
+(DEVICE_CONTEXT) и контекст очереди (QUEUE_CONTEXT).
+
+ДОПОЛНИТЕЛЬНО: DMA-передача H2C висела (overlapped write timed out), т.к.
+engine->poll=FALSE по умолчанию -> завершение через прерывания (MSI-X), а они
+в DFX-конфигурации могут не доходить. Добавлен poll-режим: после
+EvtCreateEngineQueues для всех enabled engines XDMA_EngineSetPollMode(engine,
+TRUE) (dma_engine.c:983 сам пишет XDMA_CTRL_POLL_MODE и отключает IE).
+
+ВЕРСИИ: 1.1.6.0 (fix FILE_CONTEXT), 1.1.7.0 (fix poll-mode). PDB+MAP теперь
+собираются (build.cmd: CFLAGS+=/Zi, link+=/DEBUG /DEBUG:FASTLINK /PDB).
+
+СТАТУС: драйвер 1.1.7.0 установлен (oem12.inf), устройство OK/CM_PROB_NONE.
+test_dma regs PASS. loopback: старый процесс зависшки на 1.1.6 -> введён
+poll -> требует перезагрузки, чтобы выгрузить застрявший драйвер/процесс.
+ОЗУ не очищена из-за зависшего в ядре test_dma(9100) — снимается reboot.
