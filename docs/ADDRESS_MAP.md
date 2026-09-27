@@ -72,7 +72,7 @@ DDR3 **не сконфигурирован**, поэтому:
 | Периферия | Базовый адрес | Размер | Мастер lite-SMC | Назначение |
 |---|---|---|---|---|
 | **AXI GPIO (LED/status)** | `0x40000000` | 4 KB | M00 | GPIO ch1: 3 светодиода (out); GPIO2 ch2: 2 бита MIG status (`mmcm_locked`, `init_calib_complete`) |
-| **AXI HWICAP** | `0x40001000` | 4 KB | M02 | Xilinx IP (PG135), ICAP-клок = clk50 (50 MHz) — стандартный путь загрузки битстримов |
+| ~~**AXI HWICAP**~~ | `0x40001000` | 4 KB | ~~M02~~ | ~~Xilinx IP (PG135)~~ — **УДАЛЁН из активной DFX-сборки**: лицензионный `axi_hwicap_0` больше не создаётся, адрес не назначается (dual-ICAP устранён — риск взаимоисключающего доступа к одному ICAPE2). Только legacy `block_design_top.tcl`. Единственный ICAP — кастомный `icap_ctrl` (§5). |
 | **DFX Socket** | `0x40002000` | 4 KB | M01 | `dfx_socket/decouple_shutdown_ctrl`: shutdown/decouple RP — см. §4 |
 | **TDOT registers** | `0x40003000` | 4 KB | M03 | Регистры троичного ядра `tdot_axi4` — см. §3 |
 | **ICAP registers** | `0x40004000` | 4 KB | M04 | Кастомный `icap_ctrl` (ICAPE2 X32 @ 62.5 MHz) — см. §5 |
@@ -178,8 +178,8 @@ hier `dfx_socket`.
 1. Записать `0b111` в `GPIO_DATA` (decouple + оба shutdown).
 2. Дождаться `GPIO2_DATA == 0b11010` (`in_shutdown` M+S + `decouple_status`).
 3. Загрузить **частичный** битстрим RP: через `icap_ctrl` (`0x40004000`,
-   протокол §5, скрипт `pytorch_layer/icap_load.py`) или через HWICAP
-   (`0x40001000`, PG135).
+   протокол §5, скрипт `pytorch_layer/icap_load.py`). (HWICAP `0x40001000`
+   удалён из активной сборки — §2.)
 4. Записать `0b000` в `GPIO_DATA` — `dfx_axi_shutdown_manager` возобновляет
    шины, `dfx_decoupler` снимает сброс RP. PCIe-линк и статика живы всё время.
 5. Проверить, что статус ушел в `0b00000`.
@@ -282,11 +282,19 @@ weights `0x1000`, result `0x2000` (смещения от `0x80000000`).
 Формулы: `temp_c = raw * 503.975 / 4096 − 273.15`;
 `vccint = raw * 3.0 / 4096`.
 
-⚠ **BUG-031**: Artix-7 имеет 1 XADC, и он занят MIG (`XADC_En=Off` в MIG,
-`xadc_wiz` не создаётся во избежание UTLZ-1). `u_xadc` отвечает на AXI, но
-`raw_* = 0` → `monitor_temp.py` читает 0°C/0V. Реальную температуру брать из
-MIG status через GPIO2 `axi_gpio_0` (`0x40000000`, GPIO2_DATA `0x08`,
-bit0=`mmcm_locked`, bit1=`init_calib_complete`) либо через MIG DRP (TODO).
+XADC физически доступен через примитив `xadc_prim u_xadc_prim` в
+`rtl/integration/xdma_ddr3_core_top.sv` (DCLK = clk50, 50 МГц, в пределах
+спецификации 8…250 МГц). Он опрашивает встроенный XADC-блок (temperature +
+VCCINT) и подаёт реальные `raw_temp` / `raw_vccint` / `raw_valid` в `u_xadc`
+(модуль `xadc_temp`, AXI-Lite @ `0x46000000`, M05). Хост-драйвер читает
+температуру/напряжение через `0x46000000` (`monitor_temp.py`, XADC_BASE).
+
+> **Разрешён прежний BUG-031**: раньше считалось, что единственный XADC
+> «занят MIG» и `raw_* = 0` (читаются 0°C/0V). Фактически доступ к XADC
+> обеспечивает примитив `xadc_prim` (избегает конфликта UTLZ-1 и обходит
+> сужение `XADC_En=Off` в MIG), поэтому мониторинг вернул реальные значения.
+> Резервный источник статуса платы — MIG status через GPIO2 `axi_gpio_0`
+> (`0x40000000`, GPIO2_DATA `0x08`, bit0=`mmcm_locked`, bit1=`init_calib_complete`).
 
 ---
 
@@ -370,6 +378,7 @@ res48 = core.read_result_reg()           # или чтение result из DDR3 
 | 2026-09-01 | DFX-интеграция: HWICAP `0x40001000`, DFX Socket `0x40002000`, TDOT `0x40003000`, ICAP `0x40004000` (каноническая DFX-карта) |
 | 2026-09-05 | **Этот файл переписан под DFX-карту** (легаси-карта удалена). MM2S/S2MM-сегменты 32K→4K (build_dfx.tcl, xdma_ddr3_dfx_bd.tcl, default.tcl); `test.tcl` S2MM `0x40011000`→`0x40018000`; задокументировано отсутствие PCIe-мэппинга DDR3 (DMA-only); добавлены §4 (DFX Socket/горячая замена) и §9 (RP-варианты). Синхронизировано: README.md, xdma_driver.py, dfx_swap.py (новый), monitor_temp.py, build_dfx.tcl |
 | 2026-09-27 | **SPI-over-PCIe зафиксирован в карте**: §2 добавлен `S_AXI_SPI_REGS` @ `0x40005000` (4 KB, M06, `u_spi`), новый §5.1 с регистровой картой (hot-flash без JTAG, W25Q128JV через STARTUPE2). БАГ: `XdmaWinUpstream.write_dma/read_dma` больше не прибавляют `DDR3_BASE` к смещению (offset шёл как card-side адрес и уезжал на `0x80000000`); теперь передают `ddr_off` как есть — как XdmaLinux/XdmaWindows. Синхронизировано: xdma_driver.py, ADDRESS_MAP.md |
+| 2026-09-27 | **Актуализация под код** (пересинхронизация с фактическим RTL/BD): §7 XADC — `xadc_prim u_xadc_prim` (DCLK clk50) подаёт реальные `raw_temp/raw_vccint/raw_valid`, убран блок «XADC занят MIG / читаются 0» (BUG-031 разрешён); §2 — HWICAP `0x40001000` помечен как **удалённый из активной DFX-сборки** (legacy только в `block_design_top.tcl`), единственный ICAP — `icap_ctrl` `0x40004000`; §4 — горячая замена RP идёт только через icap_ctrl. Отражено также в README.md (§2). |
 
 ---
 
@@ -385,7 +394,7 @@ res48 = core.read_result_reg()           # или чтение result из DDR3 
 - [x] `rtl/integration/icap_ctrl.sv` — регистровая карта §5
 - [x] `rtl/integration/xdma_ddr3_core_top.sv` — инстанции u_tdot/u_icap/u_xadc/u_spi
 - [x] `README.md` — раздел «Карта адресов»
-- [x] `pytorch_layer/xdma_driver.py` — REG_BASE `0x40003000`, ICAP_BASE `0x40004000`, DFX_SOCK_BASE `0x40002000`, HWICAP_BASE `0x40001000`, SPI_BASE `0x40005000`; write_dma/read_dma передают смещение ddr_off без DDR3_BASE
+- [x] `pytorch_layer/xdma_driver.py` — REG_BASE `0x40003000`, ICAP_BASE `0x40004000`, DFX_SOCK_BASE `0x40002000`, SPI_BASE `0x40005000`; write_dma/read_dma передают смещение ddr_off без DDR3_BASE. (`HWICAP_BASE 0x40001000` остаётся только как legacy-константа для совместимости с `block_design_top.tcl`; активной сборкой не используется — §2)
 - [x] `pytorch_layer/icap_load.py` — ICAP_BASE `0x40004000`
 - [x] `pytorch_layer/dfx_swap.py` — DFX_SOCK_BASE `0x40002000` + биты §4
 - [x] `pytorch_layer/monitor_temp.py` — XADC_BASE `0x46000000`

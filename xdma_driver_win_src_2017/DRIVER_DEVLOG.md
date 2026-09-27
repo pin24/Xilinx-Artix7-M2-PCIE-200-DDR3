@@ -32,10 +32,12 @@ xdma_driver_win_src_2017/
 |-----------|-------|--------|----------|
 | GPIO (LED) | 0x4000_0000 | 4K | 3 LED |
 | TDOT_REGS | 0x4000_3000 | 4K | Регистры троичного ядра (DFX-BD M03) |
-| ICAP | 0x4000_4000 | 4K | Перезагрузка FPGA (DFX-BD M04) |
-| HWICAP_BASE | 0x4000_1000 | 4K | AXI HWICAP (DFX-BD M02) |
+| ICAP | 0x4000_4000 | 4K | Перезагрузка FPGA, кастомный icap_ctrl (DFX-BD M04) |
+| SPI | 0x4000_5000 | 4K | SPI-over-PCIe, hot-flash без JTAG (DFX-BD M06) |
 | DFX_SOCK_BASE | 0x4000_2000 | 4K | DFX Socket shutdown/decouple (DFX-BD M01) |
-| XADC | 0x4600_0000 | 4K | Температура/напряжение (DFX-BD M05) |
+| XADC | 0x4600_0000 | 4K | Температура/напряжение, реальные raw через xadc_prim (DFX-BD M05) |
+
+> Примечание 2026-09-27: `HWICAP_BASE 0x4000_1000` (AXI HWICAP) **УДАЛЁН из активной DFX-сборки** (двойной ICAP устранён). Адрес не назначается; единственный ICAP — кастомный `icap_ctrl` @ `0x4000_4000`. См. commit e67a877.
 | DDR3 | 0x8000_0000 | 256MB | Данные для вычислений |
 
 ## Hardware Configuration
@@ -133,3 +135,47 @@ test_xdma.exe
 - [ ] Интеграционное тестирование с FPGA
 - [ ] Проверить загрузку битстрима через ICAP
 - [ ] Создать инсталлятор (.msi) для автоматической установки
+
+---
+
+# ⚠️ ВАЖНО: sys/driver.c в этом дереве — ПОДМЕНА (не официальный upstream)
+
+**Дата: 2026-09-27** · Категория: WARNING / НЕ собирать «официальный 2017» из этого дерева.
+
+## 1. Суть
+
+`sxdma_driver_win_src_2017\sys\driver.c` — это **НЕ** подлинный Xilinx-апстрим драйвера 2017, а **локальная копия кастомного** `driver\driver.c` (BASE-only, MMIO через BAR, без DMA). Сборка `build.cmd` / `XDMA.sln` из этого дерева даёт кастомный драйвер, а НЕ официальный `xilinx_dma_win`. НЕ используйте этот каталог как источник «эталонного upstream» и НЕ правьте его копию драйвера в расчёте на получение upstream-функционала.
+
+## 2. Точные отличия `sys\driver.c` (кастомная копия) от upstream
+
+- **Символическая ссылка:** создаёт ТОЛЬКО один `\\.\XDMA0` (`WdfDeviceCreateSymbolicLink` для `L"\\DosDevices\\XDMA0"`, sys\driver.c:131). Под-ноды отсутствуют.
+- **Нет под-нод:** нет `\control`, `\user`, `\bypass`, `\event_N`, `\h2c_0..3`, `\c2h_0..3`. Клиент upstream (`test_xdma` из Xilinx, `QDMA/XDMA` sample) не сможет открыть ни один канал.
+- **Нет DMA:** нет `WdfDmaTransaction`, SGDMA-дескрипторов, engine-очередей, прерываний. Вся работа — синхронные `ReadFile`/`WriteFile` по BAR (MMIO), с OVERLAPPED-смещением = адрес регистра.
+- **Нет FIX-11 (риск BSOD 0x124):** в DFX-конфигурации второй memory-BAR — это 64KB MSI-X table BAR (`pf0_msix_cap_table_bir = BAR_3:2`), а НЕ DDR3-мост. Кастомный `sys\driver.c` это игнорирует, безусловно маппит BAR2 как DDR3 (sys\driver.c:206-222) и даёт хосту писать в MSI-X-таблицу → fatal PCIe AER → **BSOD 0x124 WHEA_UNCORRECTABLE_ERROR** на старом железе. Актуальный `driver\driver.c` содержит барьер `DDR3_MIN_WINDOW_BYTES (16MB)` и при малом апертуре НЕ маппит BAR2 и возвращает `STATUS_DEVICE_NOT_CONNECTED`. В `sys\driver.c` этого нет.
+- **RtlCopyMemory вместо READ/WRITE_REGISTER:** `sys\driver.c` использует `RtlCopyMemory` в EvtIoRead/EvtIoWrite (sys\driver.c:325,339,395,409). Подлинный `file_io.c` использует `READ_REGISTER_BUFFER_*`/`WRITE_REGISTER_BUFFER_*`.
+- **Один IOCTL:** только `IOCTL_XDMA_GET_BAR_INFO` (0x800). Нет `IOCTL_XDMA_GET_VERSION`, `PERF_*`, `ADDRMODE_*` из `xdma_public.h`.
+
+## 3. Подлинные (upstream) файлы, которые НЕ участвуют в сборке
+
+- `sys\file_io.c` — ПОДЛИННЫЙ upstream: `FileNameLUT` (H2C_0..3, C2H_0..3, user, control, bypass, event_0..15), `EvtDeviceFileCreate`/`EvtFileClose`/`EvtFileCleanup`, полный DMA read/write (`EvtIoReadDma`, `EvtIoWriteDma`), IOCTL PERF/ADDRMODE.
+- `inc\xdma_public.h` — ПОДЛИННЫЙ upstream: `GUID_DEVINTERFACE_XDMA`, `XDMA_FILE_*`, `IOCTL_XDMA_*` (0x0..0x5).
+- `libxdma\dma_engine.c` — ПОДЛИННЫЙ upstream DMA-движок.
+
+Все три НЕ компилируются/не линкуются, потому что точкой входа драйвера служит кастомная замена `sys\driver.c` (свой `DriverEntry`/`EvtDriverDeviceAdd`/`EvtIo*`), а не upstream-связка `driver.c(upstream) + file_io.c + dma_engine.c`.
+
+## 4. Актуальный драйвер для Windows
+
+Рабочий кастомный драйвер — в `driver\`:
+- `driver\driver.c` — актуальная версия **с FIX-11** (барьер 16MB для BAR2, защита от BSOD 0x124), барьеры BAR0/Bar2, bounds-check по `>= Length` (не `>`), `IOCTL_XDMA_GET_BAR_INFO`.
+- Готовый бинарник: `driver\build\XDMA.sys` версии **1.1.4.0**.
+
+Используйте ЭТОТ файл/выход при работе с данным железом (DFX build, MSI-X на BAR2, DDR3 только через каналы DMA).
+
+## 5. Как получить НАСТОЯЩИЙ upstream-функционал (под-ноды + DMA)
+
+Два пути, **открытая задача**:
+
+- [ ] **Вариант A (рекомендуется):** заменить `xdma_driver_win_src_2017\sys\driver.c` на настоящий `xilinx_dma_win` драйвер Xilinx (driver.c + file_io.c + dma_engine.c + file_io.h + driver.h + trace). В этом репозитории подлинного головного `driver.c` НЕТ — брать из официального `xdma_driver_win_src_2017` с сайта Xilinx/GitHub.
+- [ ] **Вариант B:** доработать кастомный `driver\driver.c` — добавить под-ноды `\control`/`\user`/`\h2c_0`/`\c2h_0` (через `EvtDeviceFileCreate` + FileNameLUT) и IOCTL H2C/C2H DMA, сохранив FIX-11.
+
+Пока ни один вариант не выполнен, `sys\driver.c` в этом дереве остаётся подменой и поставлять его наружу как «официальный 2017» нельзя.

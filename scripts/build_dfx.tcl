@@ -279,6 +279,12 @@ assign_bd_address -offset 0x40004000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs S_AXI_ICAP_REGS/Reg] -force
 
+# SPI-over-PCIe: 0x40005000 (M06)
+delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_SPI_REGS_Reg}]
+assign_bd_address -offset 0x40005000 -range 0x1000 \
+    -target_address_space $as_lite \
+    [get_bd_addr_segs S_AXI_SPI_REGS/Reg] -force
+
 # XADC: 0x46000000 (via post_bd_dfx)
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_XADC_REGS_Reg}]
 assign_bd_address -offset 0x46000000 -range 0x1000 \
@@ -317,6 +323,7 @@ add_files -norecurse \
     ${ROOT}/rtl/integration/tdot_axi4.sv \
     ${ROOT}/rtl/integration/icap_ctrl.sv \
     ${ROOT}/rtl/integration/xadc_temp.sv \
+    ${ROOT}/rtl/integration/xadc_prim.sv \
     ${ROOT}/rtl/integration/spi_over_pcie.sv \
     ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
