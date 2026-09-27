@@ -64,3 +64,68 @@ With those a demo of the following is possible:
 This accomplishes a simple loopback test. This is done in `app/scripts/dma/test-datamover.sh`.
 
 Loads of hardware accelerated activities can be performed just by swapping out the FIFO.
+
+---
+
+# xdma_ddr3_dfx (русская версия)
+
+Ниже — русский перевод описания проекта.
+
+## Верхнеуровневый Block Design
+
+На верхнем уровне дизайн инстанцирует:
+- **IP-ядро XDMA** — обеспечивает доступ ко всему дизайну через PCIe;
+- **IP-ядро MIG 7-series** — доступ к DDR3 через PCIe и Reconfigurable Partition;
+- **IP-ядро AXI HWICAP** — частичная реконфигурация битстрима через PCIe (драйвер в `app/hwicap_write_bitstream`);
+- **DFX Socket (иерархический блок)** — группа IP, обеспечивающая безопасную перепрошивку RP;
+- **DFX Partition (block design container)** — сюда и помещается вся прикладная логика.
+
+Вспомогательные IP:
+- **SmartConnects** — маршрутизация интерфейсов M_AXI_LITE, M_AXI, S_AXI;
+- **Clocking Wizard** — 200 МГц для MIG7;
+- **AXI GPIO** — запись в LED и чтение статуса MIG7.
+
+## dfx_socket (иерархический блок)
+
+Решает 3 задачи:
+- выключение master AXI-шины RP;
+- выключение slave AXI-шины RP;
+- развязка линии resetn RP.
+
+Вспомогательное, но важное:
+- **AXI Register Slices** — "фиксируют" интерфейсы, удерживая их согласованными;
+- **AXI GPIO** — индивидуальное управление линиями shutdown/decouple и чтение статуса IP.
+
+Порядок перепрошивки RP:
+- вывести RP из работы (выключить AXI-шины + развязать reset);
+- записать частичный битстрим в HWICAP;
+- вернуть RP в работу (снять shutdown/decouple).
+
+## dfx_partition (Block Design Container)
+
+По сути "песочница" — можно делать что угодно, не меняя интерфейсы на входе/выходе этого BDC.
+
+Важно:
+- **Диапазон адресов**: SmartConnect в static-регионе должен знать диапазон, нужный RP.
+  - не адресовать AXI-IP хаотично;
+  - адреса RP должны попадать в апертуру, настроенную в Static Region;
+  - в default-сборке выделен диапазон 0x4001_0000 - 0x4001_FFFF (64 КБ).
+- **AXI Register Slices**: назначение то же, что в `dfx_socket`, настройки **всегда** должны совпадать;
+  не удалять и не менять их настройки.
+
+### Текущее состояние
+
+Включает:
+- MM2S DataMover с модулем управления;
+- S2MM DataMover с модулем управления;
+- AXI Stream FIFO.
+
+Возможна демонстрация:
+- запись буфера в DDR3 через PCIe;
+- MM2S DataMover читает буфер из DDR3;
+- AXI Stream FIFO пересылает данные;
+- S2MM DataMover пишет в буфер DDR3;
+- чтение буфера из DDR3 через PCIe.
+
+Это простой loopback-тест (`app/scripts/dma/test-datamover.sh`).
+Множество аппаратно-ускоренных задач можно реализовать, просто заменив FIFO.

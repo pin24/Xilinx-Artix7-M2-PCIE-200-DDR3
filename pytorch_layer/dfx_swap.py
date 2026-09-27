@@ -215,11 +215,21 @@ def main():
                         help="только показать статус DFX Socket и выйти")
     args = parser.parse_args()
 
-    # Импорт устройства с fallback Linux -> Windows (как в icap_load.py)
+    # Импорт устройства с fallback Linux -> WinDriver -> xdma_rw.exe
+    # (XdmaWinDriver использует ctypes/\\.\XDMA0 напрямую, не требует xdma_rw.exe)
+    dev = None
     try:
         from xdma_driver import XdmaLinux
         dev = XdmaLinux(f"/dev/{args.device}")
     except (XdmaError, ImportError, OSError):
+        pass
+    if dev is None:
+        try:
+            from xdma_driver import XdmaWinDriver
+            dev = XdmaWinDriver()
+        except (XdmaError, ImportError, OSError):
+            pass
+    if dev is None:
         from xdma_driver import XdmaWindows
         dev = XdmaWindows()
 

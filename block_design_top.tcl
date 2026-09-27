@@ -687,7 +687,7 @@ proc create_root_design { parentCell } {
   # Create instance: axi_hwicap_0, and set properties
   set axi_hwicap_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_hwicap:3.0 axi_hwicap_0 ]
   set_property -dict [list \
-    CONFIG.C_INCLUDE_STARTUP {1} \
+    CONFIG.C_INCLUDE_STARTUP {0} \
     CONFIG.C_OPERATION {0} \
     CONFIG.C_SHARED_STARTUP {0} \
     CONFIG.C_WRITE_FIFO_DEPTH {1024} \

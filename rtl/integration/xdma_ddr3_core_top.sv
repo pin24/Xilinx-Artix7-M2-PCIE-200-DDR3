@@ -22,7 +22,12 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
      pcie_7x_mgt_rtl_0_rxp,
      pcie_7x_mgt_rtl_0_txn,
      pcie_7x_mgt_rtl_0_txp,
-     reset_rtl_0);
+   reset_rtl_0,
+   qspi_cs_n,
+   qspi_d0,
+   qspi_d1,
+   qspi_d2,
+   qspi_d3);
   output [13:0]DDR3_0_addr;
   output [2:0]DDR3_0_ba;
   output DDR3_0_cas_n;
@@ -47,6 +52,11 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
   output [3:0]pcie_7x_mgt_rtl_0_txn;
   output [3:0]pcie_7x_mgt_rtl_0_txp;
   input reset_rtl_0;
+  output qspi_cs_n;
+  inout  qspi_d0;
+  inout  qspi_d1;
+  inout  qspi_d2;
+  inout  qspi_d3;
 
   // ---- Такт/сброс fabric-домена 125 МГц (BUG-034, BUG-036) ----
   // XDMA в 64-битном варианте (Gen2 x4) тактирует axi_aclk частотой 250 МГц.
@@ -153,6 +163,19 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
   logic [1:0]  icap_bresp;
   logic [1:0]  icap_rresp;
 
+  // ---- SPI-over-PCIe (R-14): AXI-Lite @ 0x40005000 ----
+  logic [7:0]  spi_awaddr, spi_araddr;
+  logic        spi_awvalid, spi_awready;
+  logic [31:0] spi_wdata;
+  logic [3:0]  spi_wstrb;
+  logic        spi_wvalid, spi_wready;
+  logic        spi_bvalid, spi_bready;
+  logic        spi_arvalid, spi_arready;
+  logic [31:0] spi_rdata;
+  logic        spi_rvalid, spi_rready;
+  logic [1:0]  spi_bresp;
+  logic [1:0]  spi_rresp;
+
   icap_ctrl u_icap (
       .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
       .S_AXI_AWADDR(icap_awaddr), .S_AXI_AWPROT(1'b0),
@@ -164,6 +187,20 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .S_AXI_ARVALID(icap_arvalid), .S_AXI_ARREADY(icap_arready),
       .S_AXI_RDATA(icap_rdata), .S_AXI_RRESP(),
       .S_AXI_RVALID(icap_rvalid), .S_AXI_RREADY(icap_rready)
+  );
+
+  // ======================== SPI-over-PCIe (R-14, hot-flash without JTAG) ====================
+  spi_over_pcie #(.CLK_DIV(16)) u_spi (
+      .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
+      .S_AXI_AWADDR(spi_awaddr), .S_AXI_AWVALID(spi_awvalid), .S_AXI_AWREADY(spi_awready),
+      .S_AXI_WDATA(spi_wdata), .S_AXI_WSTRB(spi_wstrb),
+      .S_AXI_WVALID(spi_wvalid), .S_AXI_WREADY(spi_wready),
+      .S_AXI_BRESP(spi_bresp), .S_AXI_BVALID(spi_bvalid), .S_AXI_BREADY(spi_bready),
+      .S_AXI_ARADDR(spi_araddr), .S_AXI_ARVALID(spi_arvalid), .S_AXI_ARREADY(spi_arready),
+      .S_AXI_RDATA(spi_rdata), .S_AXI_RRESP(spi_rresp),
+      .S_AXI_RVALID(spi_rvalid), .S_AXI_RREADY(spi_rready),
+      .spi_cclk(), .qspi_cs_n(qspi_cs_n),
+      .qspi_d0(qspi_d0), .qspi_d1(qspi_d1), .qspi_d2(qspi_d2), .qspi_d3(qspi_d3)
   );
 
   // ======================== XADC (температура/напряжение, база 0x46000000) ========================
@@ -288,6 +325,17 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .S_AXI_XADC_REGS_arvalid(xadc_arvalid), .S_AXI_XADC_REGS_arready(xadc_arready),
       .S_AXI_XADC_REGS_rdata(xadc_rdata), .S_AXI_XADC_REGS_rresp(xadc_rresp),
       .S_AXI_XADC_REGS_rvalid(xadc_rvalid), .S_AXI_XADC_REGS_rready(xadc_rready),
+      // ---- SPI-over-PCIe regs (R-14, M06 @ 0x40005000) ----
+      .S_AXI_SPI_REGS_awaddr(spi_awaddr), .S_AXI_SPI_REGS_awprot(1'b0),
+      .S_AXI_SPI_REGS_awvalid(spi_awvalid), .S_AXI_SPI_REGS_awready(spi_awready),
+      .S_AXI_SPI_REGS_wdata(spi_wdata), .S_AXI_SPI_REGS_wstrb(spi_wstrb),
+      .S_AXI_SPI_REGS_wvalid(spi_wvalid), .S_AXI_SPI_REGS_wready(spi_wready),
+      .S_AXI_SPI_REGS_bresp(spi_bresp), .S_AXI_SPI_REGS_bvalid(spi_bvalid),
+      .S_AXI_SPI_REGS_bready(spi_bready),
+      .S_AXI_SPI_REGS_araddr(spi_araddr), .S_AXI_SPI_REGS_arprot(1'b0),
+      .S_AXI_SPI_REGS_arvalid(spi_arvalid), .S_AXI_SPI_REGS_arready(spi_arready),
+      .S_AXI_SPI_REGS_rdata(spi_rdata), .S_AXI_SPI_REGS_rresp(spi_rresp),
+      .S_AXI_SPI_REGS_rvalid(spi_rvalid), .S_AXI_SPI_REGS_rready(spi_rready),
       // legacy-порт M_AXI_ICAP очищается в scripts/post_bd_dfx.tcl step 6.
       // Если warning в impl остаётся — запустить make_wrapper -force.
       .pcie_7x_mgt_rtl_0_rxn(pcie_7x_mgt_rtl_0_rxn),

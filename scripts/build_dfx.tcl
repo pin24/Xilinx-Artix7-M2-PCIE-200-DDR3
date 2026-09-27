@@ -319,6 +319,7 @@ add_files -norecurse \
     ${ROOT}/rtl/integration/tdot_axi4.sv \
     ${ROOT}/rtl/integration/icap_ctrl.sv \
     ${ROOT}/rtl/integration/xadc_temp.sv \
+    ${ROOT}/rtl/integration/spi_over_pcie.sv \
     ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
 set_property generic ADDERS=${ADDERS} [current_fileset]
@@ -405,7 +406,7 @@ current_run [get_runs impl_1]
 # битстримы понадобятся для горячей замены через ICAP — pytorch_layer/icap_load.py)
 catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}
 # Разрешить LUT over-utilization (145689 vs 134600, ~8%) — placer часто справляется
-set_param drc.disableLUTOverUtilError 1
+# [REMOVED 2026-09-13] # [REMOVED 2026-09-13] set_param drc.disableLUTOverUtilError 1
 launch_runs impl_1 -to_step write_bitstream -jobs ${JOBS}
 wait_on_run impl_1
 set st2 [get_property STATUS [get_runs impl_1]]

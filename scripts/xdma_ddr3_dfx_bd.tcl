@@ -1,5 +1,5 @@
 ################################################################
-# xdma_ddr3_dfx_bd.tcl — DFX Block Design for XDMA + DDR3
+# xdma_ddr3_dfx_bd.tcl вЂ” DFX Block Design for XDMA + DDR3
 # Vivado 2025.2 compatible version of block_design_top.tcl
 #
 # Creates xdma_ddr3_dfx.bd with:
@@ -8,7 +8,7 @@
 #   - AXI HWICAP (partial reconfiguration via PCIe)
 #   - DFX Socket (shutdown/decouple for reconfigurable partition)
 #   - DFX Partition (block design container for RP)
-#   - Clocking Wizard (50 MHz → 200 MHz for MIG)
+#   - Clocking Wizard (50 MHz в†’ 200 MHz for MIG)
 #   - AXI GPIO (LEDs + MIG status)
 #
 # Requires dfx_partition.bd (from dfx_block_designs/default.tcl)
@@ -34,7 +34,7 @@ set current_vivado_version [version -short]
 if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
    puts ""
    puts "WARNING: This script was generated using Vivado <$scripts_vivado_version> but is being run in <$current_vivado_version>."
-   puts "Proceeding anyway — if IP upgrade is needed, run \"Tools => Report => Report IP Status...\" after sourcing."
+   puts "Proceeding anyway вЂ” if IP upgrade is needed, run \"Tools => Report => Report IP Status...\" after sourcing."
 }
 
 ################################################################
@@ -168,12 +168,12 @@ if { $bCheckIPsPassed != 1 } {
   foreach ip_vlnv $list_check_ips {
     set ip_obj [get_ipdefs -all $ip_vlnv]
     if { $ip_obj eq "" } {
-      common::send_gid_msg -ssname BD::TCL -id 2023 -severity "WARNING" "IP $ip_vlnv still not found after refresh — layout may fail at generate_target."
+      common::send_gid_msg -ssname BD::TCL -id 2023 -severity "WARNING" "IP $ip_vlnv still not found after refresh вЂ” layout may fail at generate_target."
       lappend list_ips_missing $ip_vlnv
     }
   }
   if { [llength $list_ips_missing] > 0 } {
-    common::send_gid_msg -ssname BD::TCL -id 2023 -severity "WARNING" "Continuing anyway — missing IPs: $list_ips_missing"
+    common::send_gid_msg -ssname BD::TCL -id 2023 -severity "WARNING" "Continuing anyway вЂ” missing IPs: $list_ips_missing"
   }
 }
 
@@ -606,7 +606,7 @@ proc create_root_design { parentCell } {
 
   set axi_hwicap_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_hwicap:3.0 axi_hwicap_0 ]
   set_property -dict [list \
-    CONFIG.C_INCLUDE_STARTUP {1} \
+    CONFIG.C_INCLUDE_STARTUP {0} \
     CONFIG.C_OPERATION {0} \
     CONFIG.C_SHARED_STARTUP {0} \
     CONFIG.C_WRITE_FIFO_DEPTH {1024} \
@@ -642,29 +642,29 @@ proc create_root_design { parentCell } {
     CONFIG.XML_INPUT_FILE {mig_a.prj} \
   ] $mig_7series_0
 
-  # BUG-052: device_temp_i (12 бит) — MIG XADC_En=Off, пин не подключён.
-  # Константу создаём ЗДЕСЬ (до validate в этом скрипте), иначе BD 41-759.
+  # BUG-052: device_temp_i (12 Р±РёС‚) вЂ” MIG XADC_En=Off, РїРёРЅ РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.
+  # РљРѕРЅСЃС‚Р°РЅС‚Сѓ СЃРѕР·РґР°С‘Рј Р—Р”Р•РЎР¬ (РґРѕ validate РІ СЌС‚РѕРј СЃРєСЂРёРїС‚Рµ), РёРЅР°С‡Рµ BD 41-759.
   set const_device_temp [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 const_device_temp]
   set_property -dict [list CONFIG.CONST_WIDTH {12} CONFIG.CONST_VAL {0}] $const_device_temp
   connect_bd_net [get_bd_pins $const_device_temp/dout] [get_bd_pins mig_7series_0/device_temp_i]
 
   set rst_mig_7series_0_100M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_mig_7series_0_100M ]
 
-  # BUG-034: сброс fabric-домена 125 МГц (ядро/RP/периферия).
-  # ext_reset = платный reset_rtl_0 (активный низкий, полярность по умолчанию
-  # ACTIVE_LOW соответствует), locked = клок-wizard 125 МГц.
+  # BUG-034: СЃР±СЂРѕСЃ fabric-РґРѕРјРµРЅР° 125 РњР“С† (СЏРґСЂРѕ/RP/РїРµСЂРёС„РµСЂРёСЏ).
+  # ext_reset = РїР»Р°С‚РЅС‹Р№ reset_rtl_0 (Р°РєС‚РёРІРЅС‹Р№ РЅРёР·РєРёР№, РїРѕР»СЏСЂРЅРѕСЃС‚СЊ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
+  # ACTIVE_LOW СЃРѕРѕС‚РІРµС‚СЃС‚РІСѓРµС‚), locked = РєР»РѕРє-wizard 125 РњР“С†.
   set rst_core_125M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_core_125M ]
 
   set util_ds_buf [ create_bd_cell -type ip -vlnv xilinx.com:ip:util_ds_buf:2.2 util_ds_buf ]
   set_property CONFIG.C_BUF_TYPE {IBUFDSGTE} $util_ds_buf
 
   set xdma_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xdma:4.2 xdma_0 ]
-  # BUG-051: XDMA 64-бит @ 250 МГц НЕ закрывает тайминг на Artix-7
-  # (внутренний userclk1 dsc_eng/dma_pcie_rc: WNS=-2.2ns, 13375 endpoints).
+  # BUG-051: XDMA 64-Р±РёС‚ @ 250 РњР“С† РќР• Р·Р°РєСЂС‹РІР°РµС‚ С‚Р°Р№РјРёРЅРі РЅР° Artix-7
+  # (РІРЅСѓС‚СЂРµРЅРЅРёР№ userclk1 dsc_eng/dma_pcie_rc: WNS=-2.2ns, 13375 endpoints).
   # AMD community: "design simply cannot run at 250 MHz in Artix-7".
-  # Решение: 128-бит @ 125 МГц — та же полоса 16B×125М = 2.0 ГБ/с,
-  # userclk1 = 125 МГц — тайминг закрывается штатно.
-  # Каналы DMA 2+2 СОХРАНЕНЫ. Периферия/ядро/RP — домен 125 МГц.
+  # Р РµС€РµРЅРёРµ: 128-Р±РёС‚ @ 125 РњР“С† вЂ” С‚Р° Р¶Рµ РїРѕР»РѕСЃР° 16BГ—125Рњ = 2.0 Р“Р‘/СЃ,
+  # userclk1 = 125 РњР“С† вЂ” С‚Р°Р№РјРёРЅРі Р·Р°РєСЂС‹РІР°РµС‚СЃСЏ С€С‚Р°С‚РЅРѕ.
+  # РљР°РЅР°Р»С‹ DMA 2+2 РЎРћРҐР РђРќР•РќР«. РџРµСЂРёС„РµСЂРёСЏ/СЏРґСЂРѕ/RP вЂ” РґРѕРјРµРЅ 125 РњР“С†.
   set_property -dict [list \
     CONFIG.PF0_DEVICE_ID_mqdma {9024} \
     CONFIG.PF0_SRIOV_VF_DEVICE_ID {A034} \
@@ -708,10 +708,10 @@ set_property -dict [list \
     CONFIG.RESET_TYPE {ACTIVE_LOW} \
   ] $clk200_clk_wiz
 
-  # BUG-034: отдельный домен 125 МГц для fabric/ядра/RP.
-  # При XDMA 64-бит axi_aclk = 250 МГц; тернарное ядро и RP DataMover 128-бит
-  # закрывают тайминг только при 125 МГц (WNS 0.370 нс @ 125 МГц).
-  # 50 МГц × 20 = VCO 1000 МГц, /8 = 125 МГц (IP сам считает делители).
+  # BUG-034: РѕС‚РґРµР»СЊРЅС‹Р№ РґРѕРјРµРЅ 125 РњР“С† РґР»СЏ fabric/СЏРґСЂР°/RP.
+  # РџСЂРё XDMA 64-Р±РёС‚ axi_aclk = 250 РњР“С†; С‚РµСЂРЅР°СЂРЅРѕРµ СЏРґСЂРѕ Рё RP DataMover 128-Р±РёС‚
+  # Р·Р°РєСЂС‹РІР°СЋС‚ С‚Р°Р№РјРёРЅРі С‚РѕР»СЊРєРѕ РїСЂРё 125 РњР“С† (WNS 0.370 РЅСЃ @ 125 РњР“С†).
+  # 50 РњР“С† Г— 20 = VCO 1000 РњР“С†, /8 = 125 РњР“С† (IP СЃР°Рј СЃС‡РёС‚Р°РµС‚ РґРµР»РёС‚РµР»Рё).
   set clk125_core_wiz [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk125_core_wiz ]
 set_property -dict [list \
     CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {125.000} \
@@ -722,9 +722,9 @@ set_property -dict [list \
   ] $clk125_core_wiz
 
   set xdma_axi_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_smc ]
-  # 3 домена, 3 SI, 1 MI — СРАЗУ финальные значения (S02 будет подключён в post_bd_dfx).
-  # BUG-035: НЕ ставим ASSOCIATED_BUSIF/FREQ_HZ на clock-пинах — read-only (BD 41-737)
-  # и ломают авто-вывод доменов. Vivado сам выводит домены из FREQ_HZ портов/IP.
+  # 3 РґРѕРјРµРЅР°, 3 SI, 1 MI вЂ” РЎР РђР—РЈ С„РёРЅР°Р»СЊРЅС‹Рµ Р·РЅР°С‡РµРЅРёСЏ (S02 Р±СѓРґРµС‚ РїРѕРґРєР»СЋС‡С‘РЅ РІ post_bd_dfx).
+  # BUG-035: РќР• СЃС‚Р°РІРёРј ASSOCIATED_BUSIF/FREQ_HZ РЅР° clock-РїРёРЅР°С… вЂ” read-only (BD 41-737)
+  # Рё Р»РѕРјР°СЋС‚ Р°РІС‚Рѕ-РІС‹РІРѕРґ РґРѕРјРµРЅРѕРІ. Vivado СЃР°Рј РІС‹РІРѕРґРёС‚ РґРѕРјРµРЅС‹ РёР· FREQ_HZ РїРѕСЂС‚РѕРІ/IP.
   set_property -dict [list \
     CONFIG.NUM_CLKS {3} \
     CONFIG.NUM_SI {3} \
@@ -732,9 +732,9 @@ set_property -dict [list \
   ] $xdma_axi_smc
 
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
-  # 2 домена, 6 MI СРАЗУ (M03-M05 будут подключены в post_bd_dfx).
+  # 2 РґРѕРјРµРЅР°, 6 MI РЎР РђР—РЈ (M03-M05 Р±СѓРґСѓС‚ РїРѕРґРєР»СЋС‡РµРЅС‹ РІ post_bd_dfx).
   set_property -dict [list \
-    CONFIG.NUM_MI {6} \
+    CONFIG.NUM_MI {7} \
     CONFIG.NUM_SI {1} \
     CONFIG.NUM_CLKS {2} \
   ] $xdma_axi_lite_smc
@@ -764,10 +764,10 @@ set_property -dict [list \
   [get_bd_pins clk200_clk_wiz/clk_in1] \
   [get_bd_pins clk125_core_wiz/clk_in1]
 
-  # Домен fabric/ядра 125 МГц (BUG-034): dfx_socket, dfx_partition (RP),
-  # GPIO, HWICAP S_AXI, M-сторона xdma_axi_lite_smc, S01/S02-сторона
-  # xdma_axi_smc (S02 добавляет post_bd_dfx). Частота СТАРАЯ (125) —
-  # тайминг ядра/RP не меняется; меняется только домен XDMA (250).
+  # Р”РѕРјРµРЅ fabric/СЏРґСЂР° 125 РњР“С† (BUG-034): dfx_socket, dfx_partition (RP),
+  # GPIO, HWICAP S_AXI, M-СЃС‚РѕСЂРѕРЅР° xdma_axi_lite_smc, S01/S02-СЃС‚РѕСЂРѕРЅР°
+  # xdma_axi_smc (S02 РґРѕР±Р°РІР»СЏРµС‚ post_bd_dfx). Р§Р°СЃС‚РѕС‚Р° РЎРўРђР РђРЇ (125) вЂ”
+  # С‚Р°Р№РјРёРЅРі СЏРґСЂР°/RP РЅРµ РјРµРЅСЏРµС‚СЃСЏ; РјРµРЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ РґРѕРјРµРЅ XDMA (250).
   connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins clk125_core_wiz/clk_out1] \
   [get_bd_pins dfx_socket/clk] \
   [get_bd_pins dfx_partition/clk] \
@@ -818,8 +818,8 @@ set_property -dict [list \
   connect_bd_net -net util_ds_buf_IBUF_OUT [get_bd_pins util_ds_buf/IBUF_OUT] \
   [get_bd_pins xdma_0/sys_clk]
 
-  # PCIe-домен XDMA (250 МГц при 64-бит, BUG-034): только XDMA и
-  # S-стороны SmartConnect. Периферия/ядро/RP — в домене clk125_core_wiz.
+  # PCIe-РґРѕРјРµРЅ XDMA (250 РњР“С† РїСЂРё 64-Р±РёС‚, BUG-034): С‚РѕР»СЊРєРѕ XDMA Рё
+  # S-СЃС‚РѕСЂРѕРЅС‹ SmartConnect. РџРµСЂРёС„РµСЂРёСЏ/СЏРґСЂРѕ/RP вЂ” РІ РґРѕРјРµРЅРµ clk125_core_wiz.
   connect_bd_net -net xdma_0_axi_aclk [get_bd_pins xdma_0/axi_aclk] \
   [get_bd_pins xdma_axi_lite_smc/aclk] \
   [get_bd_pins xdma_axi_smc/aclk]
@@ -840,12 +840,12 @@ set_property -dict [list \
   current_bd_instance $oldCurInst
 
   # ============================================================================
-  # Создание внешних портов (бывший post_bd_dfx шаги 1-4)
-  # Делаем ЗДЕСЬ до validate_bd_design, чтобы Vivado видел FREQ_HZ=125 на портах
-  # и авто-вывел домен fabric (125 МГц) для S02/M03-M05 (BUG-035).
+  # РЎРѕР·РґР°РЅРёРµ РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ (Р±С‹РІС€РёР№ post_bd_dfx С€Р°РіРё 1-4)
+  # Р”РµР»Р°РµРј Р—Р”Р•РЎР¬ РґРѕ validate_bd_design, С‡С‚РѕР±С‹ Vivado РІРёРґРµР» FREQ_HZ=125 РЅР° РїРѕСЂС‚Р°С…
+  # Рё Р°РІС‚Рѕ-РІС‹РІРµР» РґРѕРјРµРЅ fabric (125 РњР“С†) РґР»СЏ S02/M03-M05 (BUG-035).
   # ============================================================================
 
-  # M_AXI_TDOT — AXI4 master от tdot_axi4 к DDR3
+  # M_AXI_TDOT вЂ” AXI4 master РѕС‚ tdot_axi4 Рє DDR3
   set tdot_m_port [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_TDOT]
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4 CONFIG.DATA_WIDTH 64 CONFIG.ADDR_WIDTH 32 \
@@ -879,23 +879,31 @@ set_property -dict [list \
   assign_bd_address -offset 0x46000000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $xadc_port/Reg] -force
 
-  # ---- BUG-035: привязка внешних портов к fabric-домену 125 МГц ----
-  # Vivado не авто-выводит домен для внешних AXI-портов — они садятся на
-  # aclk=250 → BD 41-237 (FREQ_HZ mismatch 250 vs 125). Решение (probe3 V5):
-  # ассоциировать имена внешних портов с экспортированным клок-портом
-  # clk_core_out (125 МГц, питает тот же домен, что aclk2/aclk1).
+  # S_AXI_SPI_REGS (SPI-over-PCIe, R-14)
+  set spi_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_SPI_REGS]
+  set_property -dict [list \
+    CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $spi_port
+  connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M06_AXI] $spi_port
+  assign_bd_address -offset 0x40005000 -range 0x1000 \
+    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $spi_port/Reg] -force
+
+  # ---- BUG-035: РїСЂРёРІСЏР·РєР° РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ Рє fabric-РґРѕРјРµРЅСѓ 125 РњР“С† ----
+  # Vivado РЅРµ Р°РІС‚Рѕ-РІС‹РІРѕРґРёС‚ РґРѕРјРµРЅ РґР»СЏ РІРЅРµС€РЅРёС… AXI-РїРѕСЂС‚РѕРІ вЂ” РѕРЅРё СЃР°РґСЏС‚СЃСЏ РЅР°
+  # aclk=250 в†’ BD 41-237 (FREQ_HZ mismatch 250 vs 125). Р РµС€РµРЅРёРµ (probe3 V5):
+  # Р°СЃСЃРѕС†РёРёСЂРѕРІР°С‚СЊ РёРјРµРЅР° РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ СЃ СЌРєСЃРїРѕСЂС‚РёСЂРѕРІР°РЅРЅС‹Рј РєР»РѕРє-РїРѕСЂС‚РѕРј
+  # clk_core_out (125 РњР“С†, РїРёС‚Р°РµС‚ С‚РѕС‚ Р¶Рµ РґРѕРјРµРЅ, С‡С‚Рѕ aclk2/aclk1).
   if {[get_bd_ports -quiet clk_core_out] eq ""} {
       create_bd_port -dir O -type clk -freq_hz 125000000 clk_core_out
   }
-  # BUG-035: привязка внешних портов к fabric-домену 125 МГц.
-  # ВАЖНО: разделитель в ASSOCIATED_BUSIF — ДВОЕТОЧИЕ (как в default.tcl
-  # {rp_M_AXI:rp_S_AXI}), НЕ пробел! С пробелами Vivado ищет интерфейс
-  # с одним именем "<a> <b>" → BD 41-1287 "not found".
-  # Имена — внешних BD-портов (M_AXI_TDOT...), они проверены в diag8: VALIDATE OK.
+  # BUG-035: РїСЂРёРІСЏР·РєР° РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ Рє fabric-РґРѕРјРµРЅСѓ 125 РњР“С†.
+  # Р’РђР–РќРћ: СЂР°Р·РґРµР»РёС‚РµР»СЊ РІ ASSOCIATED_BUSIF вЂ” Р”Р’РћР•РўРћР§РР• (РєР°Рє РІ default.tcl
+  # {rp_M_AXI:rp_S_AXI}), РќР• РїСЂРѕР±РµР»! РЎ РїСЂРѕР±РµР»Р°РјРё Vivado РёС‰РµС‚ РёРЅС‚РµСЂС„РµР№СЃ
+  # СЃ РѕРґРЅРёРј РёРјРµРЅРµРј "<a> <b>" в†’ BD 41-1287 "not found".
+  # РРјРµРЅР° вЂ” РІРЅРµС€РЅРёС… BD-РїРѕСЂС‚РѕРІ (M_AXI_TDOT...), РѕРЅРё РїСЂРѕРІРµСЂРµРЅС‹ РІ diag8: VALIDATE OK.
   if {[get_bd_ports -quiet clk_core_out] eq ""} {
       create_bd_port -dir O -type clk -freq_hz 125000000 clk_core_out
   }
-  # Идемпотентно: подключаем clk_core_out только если он ещё не на сети
+  # РРґРµРјРїРѕС‚РµРЅС‚РЅРѕ: РїРѕРґРєР»СЋС‡Р°РµРј clk_core_out С‚РѕР»СЊРєРѕ РµСЃР»Рё РѕРЅ РµС‰С‘ РЅРµ РЅР° СЃРµС‚Рё
   if {[llength [get_bd_nets -quiet -of_objects [get_bd_ports clk_core_out]]] == 0} {
       set _cpin [get_bd_pins clk125_core_wiz/clk_out1]
       set _cnet [get_bd_nets -quiet -of_objects $_cpin]
@@ -905,7 +913,7 @@ set_property -dict [list \
           connect_bd_net -net $_cnet [get_bd_ports clk_core_out]
       }
   }
-  set_property CONFIG.ASSOCIATED_BUSIF {M_AXI_TDOT:S_AXI_TDOT_REGS:S_AXI_ICAP_REGS:S_AXI_XADC_REGS} [get_bd_ports clk_core_out]
+  set_property CONFIG.ASSOCIATED_BUSIF {M_AXI_TDOT:S_AXI_TDOT_REGS:S_AXI_ICAP_REGS:S_AXI_XADC_REGS:S_AXI_SPI_REGS} [get_bd_ports clk_core_out]
 
   validate_bd_design
   save_bd_design
