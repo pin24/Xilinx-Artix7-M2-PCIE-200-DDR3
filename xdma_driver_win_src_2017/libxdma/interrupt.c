@@ -413,8 +413,14 @@ VOID EvtInterruptDpc(IN WDFINTERRUPT interrupt, IN WDFOBJECT device)
     // This depends on user logic and how the interrupt has been triggered!
     // This reference driver puts the responsibility on the user-space application to remove the 
     // user event interrupt source condition.
-	PUCHAR writeAddr = (PUCHAR)irq->xdma->bar[irq->xdma->userBarIdx];
-	WRITE_REGISTER_BUFFER_ULONG((volatile ULONG*)writeAddr, (PULONG)&irq->userIrqPending, 1);
+    // FIX (BSOD D1 28.09.2026): our DMA gateway sets userBarIdx = bypassBarIdx = -1
+    // (MSI-X not exposed). bar[-1] is an out-of-bounds array access -> BugCheck D1
+    // (DRIVER_IRQL_NOT_LESS_OR_EQUAL) in EvtInterruptDpc during DMA loopback. Only
+    // touch the user BAR if it actually exists; otherwise skip (user events unused).
+    if (irq->xdma->userBarIdx >= 0) {
+        PUCHAR writeAddr = (PUCHAR)irq->xdma->bar[irq->xdma->userBarIdx];
+        WRITE_REGISTER_BUFFER_ULONG((volatile ULONG*)writeAddr, (PULONG)&irq->userIrqPending, 1);
+    }
 
     irq->regs->userIntEnableW1S = irq->userIrqPending;
     irq->userIrqPending = 0x0;
@@ -525,9 +531,12 @@ VOID EvtUserInterruptDpc(IN WDFINTERRUPT interrupt, IN WDFOBJECT device)
 
 
     WdfInterruptAcquireLock(interrupt);
-	PUCHAR writeAddr = (PUCHAR)irq->xdma->bar[irq->xdma->userBarIdx];
-	volatile ULONG irq_req = BIT_N(irq->eventId);
-	WRITE_REGISTER_BUFFER_ULONG((volatile ULONG*)writeAddr, (PULONG)&irq_req, 1);
+    // FIX (BSOD D1 28.09.2026): guard OOB bar[userBarIdx=-1] in EvtUserInterruptDpc.
+    if (irq->xdma->userBarIdx >= 0) {
+        PUCHAR writeAddr = (PUCHAR)irq->xdma->bar[irq->xdma->userBarIdx];
+        volatile ULONG irq_req = BIT_N(irq->eventId);
+        WRITE_REGISTER_BUFFER_ULONG((volatile ULONG*)writeAddr, (PULONG)&irq_req, 1);
+    }
     irq->regs->userIntEnableW1S = BIT_N(irq->eventId);
     WdfInterruptReleaseLock(interrupt);
 }
