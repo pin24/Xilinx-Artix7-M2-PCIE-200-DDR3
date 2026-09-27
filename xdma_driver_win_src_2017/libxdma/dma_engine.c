@@ -450,6 +450,13 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     // offset into the transaction (if it is split)
     deviceOffset += WdfDmaTransactionGetBytesTransferred(Transaction);
 
+    // Central AXI-base translation for the HOST (clean "raw offset from
+    // 0x80000000" contract). This Windows-upstream driver has NO pci->axi map
+    // (unlike Linux), so the host passes a plain DDR3 offset; we add the AXI
+    // base here for BOTH H2C (dstAddr) and C2H (srcAddr) since both use
+    // deviceOffset below. Matches ADDRESS_MAP §6 (DDR3 @ 0x80000000).
+    deviceOffset += XDMA_DDR3_AXI_BASE;
+
     TraceVerbose(DBG_DMA, "device addr=%lld, num descriptors=%d",
                  deviceOffset, SgList->NumberOfElements);
 

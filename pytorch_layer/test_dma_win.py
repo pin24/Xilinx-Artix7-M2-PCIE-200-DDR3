@@ -182,22 +182,20 @@ class XdmaWinDma(XdmaDevice):
     def write_dma(self, ddr_off, data):
         """Write data into DDR3 at raw offset ddr_off via h2c_0.
 
-        Windows-upstream driver puts DeviceOffset into the DMA descriptor as
-        the card AXI address (no pci->axi add like Linux), DDR3 is at
-        0x80000000 -> host must pass FULL address 0x80000000+ddr_off.
+        HOST contract: clean DDR3 offset (from 0x80000000), matching
+        XdmaLinux.write_dma. The DRIVER adds the AXI base centrally
+        (dma_engine.c EngineProgramDma, XDMA_DDR3_AXI_BASE).
         """
-        base = 0x80000000 + ddr_off
         for off in range(0, len(data), self.DMA_CHUNK):
             chunk = data[off:off + self.DMA_CHUNK]
-            self._xfer(self._h2c, True, base + off, chunk, len(chunk))
+            self._xfer(self._h2c, True, ddr_off + off, chunk, len(chunk))
 
     def read_dma(self, ddr_off, length):
-        base = 0x80000000 + ddr_off
         out = bytearray()
         off = 0
         while off < length:
             chunk = min(self.DMA_CHUNK, length - off)
-            out += self._xfer(self._c2h, False, base + off, b"", chunk)
+            out += self._xfer(self._c2h, False, ddr_off + off, b"", chunk)
             off += chunk
         return bytes(out)
 

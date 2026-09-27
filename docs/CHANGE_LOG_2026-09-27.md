@@ -255,3 +255,29 @@ poll -> требует перезагрузки, чтобы выгрузить �
 ВЕРСИИ: 1.1.8.0 (interrupt + правильный offset). Открыт PDB/MAP.
 СТАТУС: пакет установлен (oem13.inf), активный драйвер 1.1.8.0 после reboot.
 Зависший тест-процесс в kernel-path требует reboot для выгрузки.
+
+---
+
+## 4i. ДРАЙВЕР САМ ДЕЛАЕТ СМЕЩЕНИЕ — централизовано (28.09, v1.1.9.0)
+
+Замечание пользователя (верное): логика AXI-смещения не должна жить в host-тестах.
+Решение по архитектуре (выбор: «в движке удобно»):
+
+- libxdma/reg.h: добавлен XDMA_DDR3_AXI_BASE (0x80000000) + FDMA_BAR_IDX.
+- libxdma/dma_engine.c::EngineProgramDma: после сложения с bytesTransferred
+  добавлено deviceOffset += XDMA_DDR3_AXI_BASE. Это ЕДИНАЯ точка для H2C (dstAddr)
+  и C2H (srcAddr). Реплицирует поведение Linux-драйвера (xdma pci->axi map).
+- Host-файлы возвращены на ЧИСТЫЙ offset (без +0x80000000), как XdmaLinux /
+  ADDRESS_MAP «смещения от 0x80000000»:
+  * driver/test_dma.c: DmaWrite/DmaRead -> ddr_off+done (без базы); DDR3_BASE
+    оставлен ссылочно.
+  * pytorch_layer/xdma_driver.py: XdmaWinUpstream.write_dma/read_dma -> ddr_off.
+  * pytorch_layer/test_dma_win.py: XdmaWinDma.write_dma/read_dma -> ddr_off.
+  * xdma_rw (XdmaWindows) и XdmaLinux уже передавали чистый offset — теперь
+    согласованы.
+
+Контракт теперь ЕДИНЫЙ: host передаёт raw DDR3 offset; драйвер сам добавляет
+базу в дескриптор. Версия 1.1.9.0 (PDB/MAP), установлен oem14.inf.
+
+СТАТУС: пакет установлен; активный .sys в памяти старый (в kernel-path ещё висит
+test_dma PID 4992) -> требует reboot для загрузки 1.1.9 и освобождения ОЗУ.

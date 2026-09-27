@@ -46,6 +46,18 @@
 #define SGDMA_COMMON_BLOCK_OFFSET (6 * BLOCK_OFFSET)
 #define ENGINE_OFFSET       (0x100UL)
 
+// fdma generic bar index
+#define FDMA_BAR_IDX        0
+
+// AXI base of DDR3 as seen by the XDMA M_AXI master. The upstream Windows
+// driver (this tree) places the host DeviceOffset into the DMA descriptor
+// card address AS-IS (EngineProgramDma), i.e. it does NOT add the AXI base
+// the way the Linux driver does (xdma pci->axi map). DDR3 is mapped at
+// 0x80000000 in the XDMA M_AXI space (see docs/ADDRESS_MAP.md §6). To keep
+// the HOST contract clean ("raw offset from 0x80000000", as in ADDRESS_MAP
+// and XdmaLinux), the DRIVER adds this base once here, centrally.
+#define XDMA_DDR3_AXI_BASE  (0x80000000ULL)
+
 //bits of the SGDMA engine control register
 #define XDMA_CTRL_RUN_BIT                   (BIT_N(0))
 #define XDMA_CTRL_IE_DESC_STOPPED           (BIT_N(1))
