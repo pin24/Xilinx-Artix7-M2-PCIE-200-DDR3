@@ -159,3 +159,18 @@ DFX/SPI/XADC ✅.
 Состояние устройства: PCI\VEN_10EE&DEV_7024 перечислен, но Status=Unknown / CM_PROB_PHANTOM — т.е. физически плата сейчас НЕ в PCIe-слоте (на JTAG). Драйвер подвяжется автоматически при вставке платы в слот. Сервис XDMA_DMA не стартует до появления устройства.
 
 Предупреждение: oem10.inf (MMIO) и oem11.inf (DMA) делят один HWID VEN_10EE&DEV_7024 — Windows назначит устройству один из них (по рангингу/версии). Полнофункциональный — DMA (oem11), он и должен выиграть.
+
+---
+
+## 4e. ДРАЙВЕР: DMA обновлён до 1.1.5.0, старый MMIO удалён (2026-09-27)
+
+Проблема: oem10.inf (xdma.inf MMIO 1.1.4.0) и oem11.inf (xdma_dma.inf DMA 1.0.0.0) делили один HWID PCI\VEN_10EE&DEV_7024; у DMA была МЛАДШАЯ версия -> Windows мог выбрать старый MMIO (без DMA).
+
+Действия:
+- driver\dma\build.cmd: set DRIVER_VERSION=1.0.0.0 -> 1.1.5.0; XDMA_DMA.inx DriverVer -> 1.1.5.0.
+- Пересборка build.cmd: BUILD FULL SUCCESS, DriverVer=09/26/2026,1.1.5.0, подписан.
+- pnputil /delete-driver oem10.inf (старый MMIO) — удалён.
+- pnputil /delete-driver oem11.inf (старый DMA 1.0.0.0) — удалён.
+- pnputil /add-driver build\sys\XDMA_DMA.inf /install -> Published oem10.inf (1.1.5.0), installed on 3x VEN_10EE&DEV_7024.
+
+Итог: в DriverStore остался ТОЛЬКО MMAИ-драйвер (DMA, 1.1.5.0). Устройство отображается как "XDMA DMA Subsystem (upstream stack, h2c/c2h channels)". PHANTOM — плата не в PCIe (JTAG); драйвер стартует при вставке в слот.

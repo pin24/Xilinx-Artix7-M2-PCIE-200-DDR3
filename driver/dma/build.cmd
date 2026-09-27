@@ -2,21 +2,21 @@
 setlocal enabledelayedexpansion
 
 REM ============================================================================
-REM build.cmd — автономная сборка DMA-драйвера XDMA (driver\dma).
+REM build.cmd пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ DMA-пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ XDMA (driver\dma).
 REM
-REM Собирает: dma_driver.c (гейтвей) + ПОДЛИННЫй upstream-стек
+REM пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: dma_driver.c (пїЅпїЅпїЅпїЅпїЅпїЅпїЅ) + пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ upstream-пїЅпїЅпїЅпїЅ
 REM   xdma_driver_win_src_2017\{libxdma\device.c, libxdma\dma_engine.c,
 REM   libxdma\interrupt.c, sys\file_io.c} + security_cookie.c
-REM в driver\dma\build\sys\XDMA_DMA.sys + .inf + .cat + .cer.
+REM пїЅ driver\dma\build\sys\XDMA_DMA.sys + .inf + .cat + .cer.
 REM
-REM Проверенная схема сборки скопирована с рабочего driver\build.cmd
+REM пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ driver\build.cmd
 REM (FIX-8 /entry:FxDriverEntry, stampinf->inf2cat, WDKTestCert, signtool).
 REM
-REM ВАЖНО:
-REM   * WPP-трассировка НЕ включается (без /DDBG — trace.h саб-инлайнит макросы,
-REM     .tmh-файлы не требуются).
-REM   * Подменённый (кастомный MMIO) xdma_driver_win_src_2017\sys\driver.c НЕ
-REM     компилируется — он переименован в driver.c.substituted (анти-риск).
+REM пїЅпїЅпїЅпїЅпїЅ:
+REM   * WPP-пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅ /DDBG пїЅ trace.h пїЅпїЅпїЅ-пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ,
+REM     .tmh-пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ).
+REM   * пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ MMIO) xdma_driver_win_src_2017\sys\driver.c пїЅпїЅ
+REM     пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ driver.c.substituted (пїЅпїЅпїЅпїЅ-пїЅпїЅпїЅпїЅ).
 REM ============================================================================
 
 set DMA_DIR=%~dp0
@@ -32,11 +32,11 @@ set KIT_ROOT=C:\Program Files (x86)\Windows Kits\10
 set WDK_VERSION=10.0.14393.0
 set VS_ROOT=C:\Program Files (x86)\Microsoft Visual Studio 14.0
 
-REM Версия драйвера: меняй при каждом релизе (pnputil не заменяет пакет,
-REM если новая DriverVer не строго новее установленной).
-set DRIVER_VERSION=1.0.0.0
+REM пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ: пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ (pnputil пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ,
+REM пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ DriverVer пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ).
+set DRIVER_VERSION=1.1.5.0
 
-REM FIX F2: нужны права администратора (certutil -addstore, bcdedit).
+REM FIX F2: пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ (certutil -addstore, bcdedit).
 net session >nul 2>&1
 if errorlevel 1 (
     echo ERROR: This script must be run as Administrator.
@@ -72,7 +72,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Анти-риск: если upstream sys\driver.c (подмена!) НЕ переименован — отказ.
+REM пїЅпїЅпїЅпїЅ-пїЅпїЅпїЅпїЅ: пїЅпїЅпїЅпїЅ upstream sys\driver.c (пїЅпїЅпїЅпїЅпїЅпїЅпїЅ!) пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ.
 if exist "%UPSTREAM%\sys\driver.c" (
     echo ERROR: xdma_driver_win_src_2017\sys\driver.c still exists.
     echo        It is a SUBSTITUTED MMIO copy and must be renamed to driver.c.substituted
@@ -102,8 +102,8 @@ cl.exe %CFLAGS% %INC% /Fo"%TMP_DIR%\security_cookie.obj" "%DMA_DIR%\security_coo
 
 REM ============================================================================
 echo === Linking XDMA_DMA.sys ===
-REM FIX-8: точка входа — FxDriverEntry (стаб wdfdriverentry.lib инициализирует
-REM WdfFunctions/WdfDriverGlobals ДО нашего DriverEntry). Без этого — NULL-jump.
+REM FIX-8: пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅ FxDriverEntry (пїЅпїЅпїЅпїЅ wdfdriverentry.lib пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ
+REM WdfFunctions/WdfDriverGlobals пїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ DriverEntry). пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅ NULL-jump.
 link.exe /nologo /entry:FxDriverEntry /subsystem:native /machine:x64 /driver /kernel /nodefaultlib ^
     "%TMP_DIR%\dma_driver.obj" "%TMP_DIR%\file_io.obj" "%TMP_DIR%\device.obj" ^
     "%TMP_DIR%\dma_engine.obj" "%TMP_DIR%\interrupt.obj" "%TMP_DIR%\security_cookie.obj" ^
@@ -118,10 +118,10 @@ if %ERRORLEVEL% neq 0 (
 
 REM ============================================================================
 echo === Creating INF from INX (version %DRIVER_VERSION%) ===
-REM stampinf в WDK 14393 НЕ имеет опции -o (правит -f in-place): копируем
-REM шаблон в .inf, затем штампуем копию.
+REM stampinf пїЅ WDK 14393 пїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ -o (пїЅпїЅпїЅпїЅпїЅпїЅ -f in-place): пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ
+REM пїЅпїЅпїЅпїЅпїЅпїЅ пїЅ .inf, пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ.
 copy /Y "%DMA_DIR%\XDMA_DMA.inx" "%TMP_DIR%\XDMA_DMA.inf" >nul || exit /b 1
-REM inf2cat отбрасывает DriverVer в будущем (сравнивает с UTC). Штампуем вчера.
+REM inf2cat пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ DriverVer пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ (пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ UTC). пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ.
 powershell -NoProfile -Command "(Get-Date).ToUniversalTime().AddDays(-1).ToString('MM\/dd\/yyyy',[Globalization.CultureInfo]::InvariantCulture)" > "%TMP_DIR%\infdate.txt"
 set /p INF_DATE=<"%TMP_DIR%\infdate.txt"
 del "%TMP_DIR%\infdate.txt" >nul 2>&1
