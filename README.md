@@ -175,7 +175,7 @@ C:\Python39\python.exe driver\edge_cases.py
 make build NUM_MAC=32 JOBS=8
 ```
 
-Прошивка SPI-флеша (W25Q128JV, часть Vivado `w25q128jv-spi-x1_x2_x4`):
+Прошивка SPI-флеша (W25Q128JV, часть Vivado `w25q128jvq-spi-x1_x2_x4`):
 
 ```cmd
 "C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat" -mode batch ^
