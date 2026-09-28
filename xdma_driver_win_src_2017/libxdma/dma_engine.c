@@ -121,6 +121,21 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
         return;
     }
 
+    // spurious-irq guard (mirrors official Xilinx driver): if no request is
+    // marked pending, the interrupt arrived without an active DMA -> do NOT
+    // touch the engine / dmaTransaction (a NULL-dmaTransaction deref here
+    // would trip Driver Verifier 0xE6/0x26). Just drop it.
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        BOOLEAN pending = engine->isReqPending;
+        WdfSpinLockRelease(engine->engineLock);
+        if (!pending) {
+            TraceError(DBG_DMA, "%s_%u spurious interrupt, no request pending",
+                       DirectionToString(engine->dir), engine->channel);
+            return;
+        }
+    }
+
     TraceInfo(DBG_DMA, "%s_%u processing transfer completion",
               DirectionToString(engine->dir), engine->channel);
 
@@ -172,6 +187,13 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
             TraceError(DBG_DMA, "WdfDmaTransactionRelease failed: %!STATUS!", status);
         }
         WdfRequestComplete(request, STATUS_INTERNAL_ERROR);
+    }
+
+    // request handled -> clear pending flag (spurious-irq guard)
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        engine->isReqPending = FALSE;
+        WdfSpinLockRelease(engine->engineLock);
     }
 
     // clear descriptor buffer
@@ -368,6 +390,14 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
 
     engine->enabled = TRUE;
 
+    // spurious-irq protection (mirrors official Xilinx driver)
+    engine->isReqPending = FALSE;
+    status = WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &engine->engineLock);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_INIT, "EngineCreate: WdfSpinLockCreate failed: %!STATUS!", status);
+        return status;
+    }
+
     return status;
 }
 
@@ -462,6 +492,17 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     // deviceOffset below. Matches ADDRESS_MAP §6 (DDR3 @ 0x80000000).
     deviceOffset += XDMA_DDR3_AXI_BASE;
 
+    // DBG-SRCADDR 2026-09-28: always visible in DebugView (plain DbgPrint,
+    // independent of WPP). Reports the exact card-side address and SG count
+    // programmed for each H2C/C2H descriptor so the C2H-reads-wrong-region
+    // mismatch (write=0xD2 read=0xD9@idx434) can be pinned to src/dst.
+    DbgPrint("XDMA_DMA [%s] ch%u dir=%u progDma: cardAddr=0x%08x%08x descCount=%u\n",
+             engine ? DirectionToString(engine->dir) : "?",
+             engine ? engine->channel : 0xFFFFFFFF,
+             (UINT)Direction,
+             (UINT)(deviceOffset >> 32), (UINT)deviceOffset,
+             SgList ? SgList->NumberOfElements : 0);
+
     TraceVerbose(DBG_DMA, "device addr=%lld, num descriptors=%d",
                  deviceOffset, SgList->NumberOfElements);
 
@@ -521,6 +562,13 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     }
 
     MemoryBarrier();
+
+    // mark a request pending (spurious-irq guard, mirrors official driver)
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        engine->isReqPending = TRUE;
+        WdfSpinLockRelease(engine->engineLock);
+    }
 
     // start the engine
     EngineStart(engine);

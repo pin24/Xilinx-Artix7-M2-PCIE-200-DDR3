@@ -109,6 +109,11 @@ typedef struct XDMA_ENGINE_T {
     ULONG poll;
     WDFCOMMONBUFFER pollWbBuffer; // buffer for holding poll mode descriptor writeback data
     ULONG numDescriptors; // keep count of descriptors in transfer for poll mode
+
+    // spurious-interrupt protection (mirrors official Xilinx driver)
+    WDFSPINLOCK engineLock;
+    BOOLEAN isReqPending;
+
 } XDMA_ENGINE;
 
 #pragma pack(1)
@@ -179,6 +184,12 @@ NTSTATUS EnginePollTransfer(IN XDMA_ENGINE* engine);
 /// EngineProcessTransfer. Fallback for when the channel interrupt does not reach
 /// the host (BSOD case / MSI-X not delivered). Safe to call from EvtIoWriteDma.
 NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG timeoutUs);
+
+/// Explicitly bring the engine back to a known idle state. The C2H engine in
+/// this DFX build can get stuck with BUSY set after a transfer; without picing
+/// statusRC and clearing RUN/reset it never completes the next read. Call right
+/// before starting a C2H transfer. Safe for a stopped/idle engine too.
+VOID XDMA_EngineResetIdle(IN XDMA_ENGINE* engine);
 
 /// Poll the write-back buffer for DMA transfer completion
 NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine);
