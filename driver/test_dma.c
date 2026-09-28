@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <stdint.h>
 #include <string.h>
 #include <windows.h>
@@ -262,14 +263,18 @@ static int ModeLoopback(HANDLE h2c, HANDLE c2h, size_t bytes)
         bytes = padded;
     }
 
-    w = (BYTE*)malloc(bytes ? bytes : 1);
-    r = (BYTE*)malloc(bytes ? bytes : 1);
-    if (!w || !r) { printf("  ERROR: malloc\n"); goto out; }
+    w = (BYTE*)_aligned_malloc(bytes ? bytes : 256, 256);
+    r = (BYTE*)_aligned_malloc(bytes ? bytes : 256, 256);
+    if (!w || !r) { printf("  ERROR: malloc (aligned)\n"); goto out; }
 
     FillLcg(w, bytes, (unsigned)bytes);
     printf("--- loopback %zu bytes: h2c write @0x%08X, c2h read, compare ---\n",
            bytes, LOOPBACK_OFF);
     if (!DmaWrite(h2c, LOOPBACK_OFF, w, bytes)) goto out;
+    // FIX-MBAR 2026-09-28: give the H2C data time to be visible to the pull
+    // C2H read (engine-side ordering on this build is not guaranteed by
+    // WaitCompletion alone). Short barrier before starting the read.
+    Sleep(5);
     if (!DmaRead(c2h, LOOPBACK_OFF, r, bytes)) goto out;
 
     for (i = 0; i < bytes; i++) {
@@ -282,8 +287,8 @@ static int ModeLoopback(HANDLE h2c, HANDLE c2h, size_t bytes)
     printf("  loopback %zu bytes: PASS (%zu byte(s) identical)\n", bytes, bytes);
     rc = 0;
 out:
-    if (w) free(w);
-    if (r) free(r);
+if (w) _aligned_free(w);
+if (r) _aligned_free(r);
     return rc;
 }
 

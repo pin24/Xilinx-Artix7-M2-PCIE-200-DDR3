@@ -275,8 +275,12 @@ NTSTATUS XDMA_DeviceOpen(WDFDEVICE wdfDevice,
         return status;
     }
 
-    // WDF DMA Enabler - at least 8 bytes alignment
-    WdfDeviceSetAlignmentRequirement(xdma->wdfDevice, 8 - 1); // TODO - choose correct value
+// WDF DMA Enabler - demand 256-byte host-buffer alignment to match
+// FIX-ROF engine alignAddr/alignLength (dma_engine.c EngineGetAlignments).
+// Keeping this at 8 while the engine demands 256 makes WDF build SG lists on
+// a not-256-aligned MDL -> Driver Verifier DMA violation 0xE6/0x26 and C2H
+// misreads. 255 == 256-byte alignment requirement (mask form).
+WdfDeviceSetAlignmentRequirement(xdma->wdfDevice, 256 - 1);
     WDF_DMA_ENABLER_CONFIG dmaConfig;
     WDF_DMA_ENABLER_CONFIG_INIT(&dmaConfig, WdfDmaProfileScatterGather64Duplex, XDMA_MAX_TRANSFER_SIZE);
     status = WdfDmaEnablerCreate(xdma->wdfDevice, &dmaConfig, WDF_NO_OBJECT_ATTRIBUTES, &xdma->dmaEnabler);
