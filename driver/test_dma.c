@@ -251,6 +251,17 @@ static int ModeLoopback(HANDLE h2c, HANDLE c2h, size_t bytes)
         return 1;
     }
 
+    // FIX-ROF 2026-09-28: round the transfer size up to a multiple of the PCIe
+    // MaxPayloadSize (256 B). Sub-MPS / misaligned DMA lengths trigger a PCIe
+    // Receiver Overflow (BugCheck 0x124, AER ROF) on this board's XDMA build.
+    const size_t MPS = 256;
+    if ((bytes % MPS) != 0) {
+        size_t padded = ((bytes + MPS - 1) / MPS) * MPS;
+        printf("  NOTE: loopback size %zu not MPS-aligned; padded to %zu bytes\n",
+               bytes, padded);
+        bytes = padded;
+    }
+
     w = (BYTE*)malloc(bytes ? bytes : 1);
     r = (BYTE*)malloc(bytes ? bytes : 1);
     if (!w || !r) { printf("  ERROR: malloc\n"); goto out; }

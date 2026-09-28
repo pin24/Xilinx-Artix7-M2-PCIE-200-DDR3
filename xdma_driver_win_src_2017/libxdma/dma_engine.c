@@ -31,6 +31,7 @@
 // ========================= constants ============================================================
 
 #define XDMA_ENG_IRQ_NUM        (1)
+#define XDMA_MPS_BYTES          (256)   // Gen2 x4 default MaxPayloadSize
 #define XDMA_DESC_MAGIC         (0xAD4B0000)
 #define XDMA_WB_COUNT_MASK      (0x00ffffffUL)
 #define XDMA_WB_ERR_MASK        (BIT_N(31))
@@ -388,9 +389,13 @@ static void EngineGetAlignments(IN OUT XDMA_ENGINE *engine) {
         engine->alignAddr = align_bytes;
         engine->alignLength = granularity_bytes;
         engine->alignAddrBits = address_bits;
-    } else { // Some default values if alignments are unspecified
-        engine->alignAddr = 1;
-        engine->alignLength = 1;
+    } else {
+        // FIX-ROF 2026-09-28: weak defaults (1/1) let sub-MPS, misaligned SG
+        // elements reach the engine -> PCIe Receiver Overflow (BugCheck 0x124,
+        // AER ROF) seen during loopback. Default to XDMA_MPS_BYTES (256B)
+        // alignment so descriptors are always multiples of the PCIe payload.
+        engine->alignAddr = XDMA_MPS_BYTES;       // 256
+        engine->alignLength = XDMA_MPS_BYTES;     // 256
         engine->alignAddrBits = 64;
     }
 
@@ -564,6 +569,24 @@ void EngineStop(IN XDMA_ENGINE *engine) {
     engine->regs->controlW1C = XDMA_CTRL_RUN_BIT;
     TraceInfo(DBG_DMA, "%s_%u engine stopped (control=0x%08x)",
               DirectionToString(engine->dir), engine->channel, engine->regs->control);
+}
+
+void XDMA_EngineResetIdle(IN XDMA_ENGINE *engine) {
+    // Explicit reset back to a known idle state. C2H engine in this DFX build can
+    // stay BUSY after a completed/aborted transfer; BUSY is cleared by reading
+    // statusRC (read-and-clear) and by clearing RUN. Do a full controlled stop:
+    //   1. clear RUN (halt)
+    //   2. read-and-clear statusRC (consume and clear BUSY / error / event bits)
+    //   3. optionally pulse reset (RST) — but a plain RUN-clear + statusRC-read
+    //      is the documented "return to idle" and is safer on live DMA state.
+    if (engine == NULL) return;
+    engine->regs->controlW1C = XDMA_CTRL_RUN_BIT;   // stop
+    (void)engine->regs->statusRC;                    // read-clear BUSY/errors
+    (void)engine->regs->completedDescCount;          // observe (read-only)
+    MemoryBarrier();
+    TraceInfo(DBG_DMA, "%s_%u reset to idle (control=0x%08x, status=0x%08x)",
+              DirectionToString(engine->dir), engine->channel,
+              engine->regs->control, engine->regs->status);
 }
 
 void EngineEnableInterrupt(IN XDMA_ENGINE* engine) {

@@ -28,8 +28,8 @@ echo.
 echo ============================================================
 echo  [2/4] loopback 4 / 1024 / 1048576 bytes
 echo ============================================================
-"%EXE%" loopback 4
-if errorlevel 1 ( echo ### loopback 4 FAILED && goto :fail ) else ( echo --- loopback 4 OK )
+"%EXE%" loopback 4096
+if errorlevel 1 ( echo ### loopback 4096 FAILED && goto :fail ) else ( echo --- loopback 4096 OK )
 
 "%EXE%" loopback 1024
 if errorlevel 1 ( echo ### loopback 1024 FAILED && goto :fail ) else ( echo --- loopback 1024 OK )
