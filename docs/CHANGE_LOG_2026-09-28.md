@@ -105,3 +105,28 @@ FreeRAM ~23.5 ГБ.
 2. python-loopback test_dma_win.py --smoke (доказанный рабочий путь).
 3. C test_dma.exe loopback (для сравнения).
 4. Зафиксировать результат.
+
+---
+
+## ПОСЛЕ REBOOT (2026-09-28 ~15:50) — первый прогон PASS, повторные timeout
+
+Чистый reboot. Состояние: FreeRAM ~23.5ГБ, драйвер 1.1.13.0 (oem164.inf) OK, служба Running.
+
+Тесты:
+- python test_dma_win.py smoke #1: loopback 4B PASS, SMOKE OK.
+- python test_dma_win.py smoke #2/#3: ТАЙМАУТ на read_dma 'timeout at 0x100000' (c2h read).
+- C test_dma.exe loopback 4: mismatch byte0 (write=0x3C read=0x00).
+- C test_dma.exe loopback 1M: 'overlapped write timed out'.
+
+КЛЮЧЕВОЙ ПАТТЕРН: первый DMA-прогон после загрузки проходит, повторные — ЗАСТРЕВАЮТ на c2h
+READ (не h2c write). Гипотеза: не очищается состояние движка C2H после первой транзакции
+(sgdma.status/completed не сбрасывается между вызовами) ИЛИ bounded-poll читает не тот
+регистр для c2h/c2h engine/ring, и вторая передача ждёт вечно.
+
+ВЫВОД: нестабильность НЕ детерминирована по размеру (свежий python 4B прошёл), а по
+«первый vs повторный вызов». Это указывает на неочищенное состояние движка, а не на
+IRQ-проблему как таковую.
+
+Действие: НЕ дёргаю железо дальше (риск зависания). Оставил диагностику в
+driver/oct_diag.py + v1.1.13.0. Требуется: разобрать состояние C2H-движка после первой
+транзакции (сброс sgdma/status перед следующим start).
