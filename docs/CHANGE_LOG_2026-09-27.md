@@ -1,4 +1,4 @@
-# Change Log — 2026-09-27 (сессия фиксации + аудита)
+﻿# Change Log — 2026-09-27 (сессия фиксации + аудита)
 
 Журнал истории решений, исправленных ошибок и статуса готовности за
 2026-09-27. Факты перепроверены чтением RTL (`rtl/integration/xdma_ddr3_core_top.sv`,
@@ -387,4 +387,27 @@ if (!NT_SUCCESS(status)) {
 3. Если BUSY всегда виснет - править прошивку/движок (чинить interrupt/status в FPGA), либо перейти на поллинг дескриптор-бита с дескрипторным read-back.
 НЕ выполнимо сейчас: плата PHANTOM (не в PCIe), DMA недоступен.
 
-ОЗУ: анкер, работаю точечно, фоновые агенты не поднимаю. 
+ОЗУ: анкер, работаю точечно, фоновые агенты не поднимаю.
+
+
+---
+
+## 5e. BUGCHECK 0x124 PCIe pri loop - dumps razor (2026-09-28 19:38)
+
+SIMPTOM: pri loop-teste DMA PK zavis i perezagruzilsya. Novij minddamp C:\Windows\Minidump\092826-38484-01.dmp.
+
+RAZBOR (cdb !analyze -v + !errrec):
+- BugCheck 0x124 (WHEA_UNCORRECTABLE_ERROR), Arg1=4 PCI Express Error.
+- Severity Fatal; Section 0 = PCI Express; Device Bus 0x80 / Dev 0x1C (slot platy VEN_10EE&DEV_7024).
+- Uncorrectable Error Status = 0x00040000 -> bit18 = ROF (Receiver Overflow): perepolnenie RX-priemnika PCIe platy pri DMA.
+- Dev Status: ur FE nf ce (FE=Found Error). Severity bits: MTLP/ROF/FCP/DLP.
+
+VYVOD: loop-testa zapuskaet APPARATNUYU PCIe-oshibku (ROF) na etom bitstreame -> 0x124. Eto NE hang yadra i NE size-flag drivera - perepolnenie RX na plate pri DMA.
+
+GIPOTEZY (proverit na stende):
+1. Nevyrovnenij/zaplit-razmer DMA (napr 4B pri MPS/MRRS platy) -> ROF.
+2. Malen'kij MRRS/MPS v proshivke XDMA (Gen2 x4) - ne sootvetstvie razmeru paketa -> overflow pri burst.
+3. Zapis za predely vydelennogo descriptora/bufera.
+4. Mnozhestvennye peredachi / IRQ races.
+
+DEJSTVIE: nastroit MPS/MRRS ili umen'shit/vyrovnyat' razmer chunka v test_dma; proverit' na stende. Libo proshivka: korrektnye MaxPayload/MaxReadRequest v XDMA.
