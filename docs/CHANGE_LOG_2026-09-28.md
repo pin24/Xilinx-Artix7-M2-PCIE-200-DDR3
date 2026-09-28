@@ -72,3 +72,36 @@ OVERLAPPED не сигналится -> C-тест ждёт до timeout; python
 НЕ ЗАВЕРШЕНО окончательно: требуется чистая перезагрузка и проверка (1) python
 loopback через XdmaWinDma.write_dma/read_dma (не только regs), (2) C loopback.
 Не трогаю дальше чтобы не зависнуть; логирую.
+
+---
+
+## Текущее состояние (снимок 2026-09-28 15:48, подготовка к перезагрузке)
+
+git: main...origin/main синхронизирован (нет ункоммиченных отслеживаемых файлов).
+
+Драйвер: XDMA_DMA v1.1.13.0 (oem164.inf), устройство VEN_10EE&DEV_7024 OK/CM_PROB_NONE.
+FreeRAM ~23.5 ГБ.
+
+История коммитов сессии (9 новых):
+- 48440a8 chore(driver): record driver version 1.1.13.0
+- fa2ddf7 diag(flash): bounded-poll statusRC double-read documented; oct_diag python shows transport OK
+- 9ef0527 fix(driver): bounded completion poll - H2C DMA no longer hangs; 1MB loopback PASS
+- 8eb4707 fix(driver): guard OOB bar[userBarIdx=-1] in interrupt DPC (BSOD D1)
+- a078919 docs: diagnose DMA hang - channel interrupt not delivered on DFX
+- 708b47a refactor(driver): centralize DDR3 AXI base in dma_engine
+- 0488e6b fix(dma): add DDR3_BASE to host offset
+- 659f2ca fix(driver): BSOD 0x3B - register FILE_CONTEXT
+- a2b86c9 test(dma): dot_smoke verifies TDOT arithmetic
+
+Статус фичей:
+- BSOD D1 (bar[-1]) — защищён guard'ом (interrupt.c:416/528).
+- BSOD 0x3B (FILE_CONTEXT) — исправлен (WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE).
+- H2C DMA зависание — bounded-poll XDMA_EngineWaitCompletion (вместо IRQ).
+- Edge-кейс 4/64/1024 байт (byte-mismatch) — документирован, не закрыт (statusRC двойное чтение).
+- OCT-диагностика oct_diag.py — подтвердила: движок жив, write 4Б завершается, BUSY снимается.
+
+План ПОСЛЕ reboot:
+1. Проверить драйвер загружен 1.1.13 + устройство OK.
+2. python-loopback test_dma_win.py --smoke (доказанный рабочий путь).
+3. C test_dma.exe loopback (для сравнения).
+4. Зафиксировать результат.
