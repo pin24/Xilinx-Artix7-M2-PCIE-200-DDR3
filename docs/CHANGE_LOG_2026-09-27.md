@@ -311,3 +311,41 @@ test_dma PID 4992) -> требует reboot для загрузки 1.1.9 и о�
      writeback-буфера и без прерываний. Это об снедний BF-вариант.
   3. Использовать xdma_rw/другой стек, где поллинг реализован железно.
 СТАТУС: ждёт решения по прерываниям или реализации поллинг-завершения.
+
+---
+
+## 5. IRQ — отладка channel-interrupt (начата 2026-09-27/28)
+
+Симптом: зависание (БЕЗ бугчека) при loop-тесте канала — в минидамп не попало. Чиним IRQ (корень), не bounded-poll.
+
+Текущий аудит libxdma/interrupt.c (SetupMsixInterrupts):
+- user IRQ = ресурсы [0..15], channel IRQ = [16..23] (xdma_public).
+- userVector[0..3] = BuildVectorReg(0..3 / 4..7 / 8..11 / 12..15); channelVector[0..1] = BuildVectorReg(16,17,18,19 / 20,21,22,23).
+- WdfInterruptCreate создаётся для каждого ресурса-Interrupt из ResourcesTranslated (SetupUserInterrupt/SetupChannelInterrupt).
+- Вопрос: СОВПАДАЕТ ли порядок ресурсов Windows (i=0..numResources) с msgid в FPGA (первый = 16?). Установить, какого msgid ждёт FPGA для канала 0 и какой ресурс Windows даёт первому channel IRQ.
+- Дальше: проверить EvtChannelInterruptIsr/EvtChannelInterruptEnable (маскировка msgid) и EvtChannelInterruptDpc -> EngineProcessTransfer (движок возвращает статус/завершение).
+
+Шаг записан, продолжаю чтение interrupt.c.
+
+## IRQ-аудит — продолжение (2026-09-28)
+
+Прочитано interrupt.c + dma_engine.c (channel-путь MM):
+- SetupMsixInterrupts: user IRQ=рес[0..15], channel IRQ=рес[16..23]; channelVector BuildVectorReg(16..19 / 20..23).
+- SetupChannelInterrupt: WdfInterruptCreate + irqContext->regs/xdma (engine НЕ здесь, в EngineConfigureInterrupt dma_engine.c:95-98).
+- EngineConfigureInterrupt (dma_engine.c:88): XDMA_ENG_IRQ_NUM=1, irqBitMask=1<<(index), привязка channelInterrupts[index]->engine.
+- EngineCreate зовёт EngineConfigureInterrupt(engine, engineIndex) — engineIndex и interrupt index (interruptCount-16) должны совпадать.
+- EvtChannelInterruptIsr: EngineDisableInterrupt + QueueDpc; DPC: engine->work(evw) + re-enable.
+- EngineProcessTransfer (dma_engine.c:126): 
+    request=WdfDmaTransactionGetRequest(engine->dmaTransaction);
+    if(!request){ "Interrupt but no request pending?"; return; }
+  -> Если прерывание пришло ДО привязки dmaTransaction к request (или после завершения), DPC выходит, ничего не завершив, а прерывание уже снято в ISR -> движение зависает БЕЗ бугчека. ПОДОЗРЕВАЕМЫЙ КОРЕНЬ зависания loop-теста.
+
+НЕ домолвлен: как file_io.c/EvtIoWriteDma/ReadDma привязывает engine->dmaTransaction и когда включается прерывание ИРЛ. Дальше: прочитать EvtIoWriteDma/EvtIoReadDma (file_io.c 540-640) - порядок WdfDmaTransactionInitialize*UsingRequest vs EngineEnableInterrupt (оно в EvtChannelInterruptEnable вызывается WDF при заводе). Выяснить гонку ISR-vs-init.
+
+## IRQ-аудит: НАЙДЕН КОРЕНЬ зависания loop-теста (2026-09-28)
+
+Текущий код (v1.1.5.0) НЕ зависит от IRQ как основного механизма завершения: file_io.c EvtIoWriteDma/EvtIoReadDma вызывают XDMA_EngineWaitCompletion (bounded-poll) ПОСЛЕ WdfDmaTransactionExecute. Т.е. наша текущая проблема - НЕ MSI-X.
+
+Зависание loop: XDMA_EngineWaitCompletion (dma_engine.c:955) ждёт "hwDone && completedDescCount>=numDescriptors". Если условие не выполняется за maxIterations -> возвращает STATUS_TIMEOUT, НО EvtIoWriteDma/ReadDma в этой ветке (file_io.c:580-583 / 638-641) только TraceError и return - REQUEST НЕ ЗАВЕРШАЕТСЯ И НЕ ОТМЕНЯЕТСЯ -> хост ждёт IRP вечно -> зависание (без бугчека, в дамп не попало).
+
+Проверить: откуда numDescriptors и почему actual<expected. Вероятно: numDescriptors из ProgramDma не совпадает, либо C2H не доходит BUSY-CLEAR, либо читается не тот регистр. 

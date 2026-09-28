@@ -580,6 +580,14 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
     status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed: %!STATUS!", status);
+        // FIX-HANG 2026-09-28: a timed-out transfer MUST still complete the
+        // request, else the host IRP waits forever and the loop test hangs
+        // (no bugcheck -> never reaches the dump). Release the recycleDEF
+        // transaction and fail the request explicitly.
+        WdfRequestUnmarkCancelable(Request);
+        WdfDmaTransactionRelease(queue->engine->dmaTransaction);
+        WdfRequestComplete(Request, status);
+        return;
     }
 
     return; // success
@@ -618,6 +626,12 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
     }
 
     // supply the Queue as context for EvtProgramDma
+    // C2H reset to known idle before starting: the C2H engine can stay BUSY
+    // after a prior transfer (see XDMA_EngineResetIdle) — reset so the read
+    // does not start already-BUSY and hang.
+    if (queue->engine->dir == C2H) {
+        XDMA_EngineResetIdle(queue->engine);
+    }
     status = WdfDmaTransactionExecute(queue->engine->dmaTransaction, queue->engine);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_IO, "WdfDmaTransactionExecute failed: %!STATUS!", status);
@@ -632,6 +646,18 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
     status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed: %!STATUS!", status);
+        // FIX-HANG 2026-09-28: see EvtIoWriteDma — always complete the
+        // request on timeout to avoid an endless host IRP wait (hang, no dump).
+        WdfRequestUnmarkCancelable(Request);
+        WdfDmaTransactionRelease(queue->engine->dmaTransaction);
+        WdfRequestComplete(Request, status);
+        return;
+    }
+
+    // After completion, reset C2H again so the next read starts from idle
+    // (not from a stale BUSY that would otherwise hang the following transfer).
+    if (queue->engine->dir == C2H) {
+        XDMA_EngineResetIdle(queue->engine);
     }
 
     return; // success
