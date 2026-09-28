@@ -348,4 +348,23 @@ test_dma PID 4992) -> требует reboot для загрузки 1.1.9 и о�
 
 Зависание loop: XDMA_EngineWaitCompletion (dma_engine.c:955) ждёт "hwDone && completedDescCount>=numDescriptors". Если условие не выполняется за maxIterations -> возвращает STATUS_TIMEOUT, НО EvtIoWriteDma/ReadDma в этой ветке (file_io.c:580-583 / 638-641) только TraceError и return - REQUEST НЕ ЗАВЕРШАЕТСЯ И НЕ ОТМЕНЯЕТСЯ -> хост ждёт IRP вечно -> зависание (без бугчека, в дамп не попало).
 
-Проверить: откуда numDescriptors и почему actual<expected. Вероятно: numDescriptors из ProgramDma не совпадает, либо C2H не доходит BUSY-CLEAR, либо читается не тот регистр. 
+Проверить: откуда numDescriptors и почему actual<expected. Вероятно: numDescriptors из ProgramDma не совпадает, либо C2H не доходит BUSY-CLEAR, либо читается не тот регистр.
+
+---
+
+## 5c. FIX-HANG реализован, пересобран 1.1.15, установлен (2026-09-28)
+
+ФИКС (file_io.c, EvtIoWriteDma + EvtIoReadDma): при STATUS_TIMEOUT от XDMA_EngineWaitCompletion теперь:
+```
+if (!NT_SUCCESS(status)) {
+    WdfRequestUnmarkCancelable(Request);
+    WdfDmaTransactionRelease(engine->dmaTransaction);
+    WdfRequestComplete(Request, status);
+    return;
+}
+```
+Чтобы host НЕ ждал IRP вечно (раньше — только TraceError и return -> зависание без бугчека).
+
+Пересборка: driver\dma\build.cmd -> BUILD FULL SUCCESS, XDMA_DMA.sys = 35712 байт (28.09 17:14), DriverVer 1.1.15.0. Установлено: oem166.inf (1.1.15), активен на VEN_10EE&DEV_7024 (3 инстанса). Удалены 10 старых xdma_dma-пакетов (но частично остались в DriverStore как PHANTOM — неиспользуемый мусор, force-удаление небезопасно).
+
+Осталось НЕ решено: numDescriptors (только poll) / C2H BUSY-clear — см. раздел 5. Из-за этого на железе передача может вернуть STATUS_TIMEOUT (теперь корректно), но не зависнуть. 
