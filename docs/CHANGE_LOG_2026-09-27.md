@@ -367,4 +367,24 @@ if (!NT_SUCCESS(status)) {
 
 Пересборка: driver\dma\build.cmd -> BUILD FULL SUCCESS, XDMA_DMA.sys = 35712 байт (28.09 17:14), DriverVer 1.1.15.0. Установлено: oem166.inf (1.1.15), активен на VEN_10EE&DEV_7024 (3 инстанса). Удалены 10 старых xdma_dma-пакетов (но частично остались в DriverStore как PHANTOM — неиспользуемый мусор, force-удаление небезопасно).
 
-Осталось НЕ решено: numDescriptors (только poll) / C2H BUSY-clear — см. раздел 5. Из-за этого на железе передача может вернуть STATUS_TIMEOUT (теперь корректно), но не зависнуть. 
+Осталось НЕ решено: numDescriptors (только poll) / C2H BUSY-clear — см. раздел 5. Из-за этого на железе передача может вернуть STATUS_TIMEOUT (теперь корректно), но не зависнуть.
+
+---
+
+## 5d. Диагноз C2H-BUSY завершён статически (2026-09-28)
+
+Прочитано dma_engine.c + reg.h (движок MM):
+- Снимает BUSY: чтение `statusRC` (read-and-clear). Читается в EngineStatus(engine,TRUE)/XDMA_EngineWaitCompletion.
+- XDMA_EngineWaitCompletion (dma_engine.c:955): ждёт `(statusRC&BUSY)==0 && completedDescCount>=numDescriptors` (+ KeStall 50us). numDescriptors НЕ ставится вне poll (dma_engine.c:514-516) -> на interrupt-режим expected=0 -> реально валиден только hwDone=(BUSY не висит).
+- EngineProgramDma (dma_engine.c:463-501): строит дескрипторы; last=CONTROL_STOP|CONTROL_COMPLETED; addressMode contiguous -> deviceOffset+=len на каждый SG-элемент; для H2C dst=card, для C2H src=card; deviceOffset += XDMA_DDR3_AXI_BASE (центр.). DescriptorIsAligned предупреждает, но не валит.
+- EngineStart (L557): controlW1S=RUN; EngineStop (L563): controlW1C=RUN. XDMA_EngineResetIdle (L569): RUN-clear + read statusRC + read completedDescCount.
+
+ВЫВОД (статика): таймаут loopback возможен ровно в одном месте — двигатель FPGA не доводит `statusRC` до BUSY=0 после передачи (C2H[0] остаётся BUSY навсегда; известно с 28.09). После FIX-HANG это возвращается хосту как STATUS_TIMEOUT, не зависание.
+
+ЧТО НУЖНО ДЛЯ ДАЛЬНЕЙШЕГО (аппаратно, физический PCIe-стенд):
+1. Прогнать test_dma loopback на свежем 1.1.15 (oem166) - увидеть STATUS_TIMEOUT вместо ханга.
+2. Через DebugView/чтение engine->regs (statusRC, completedDescCount) после передачи понять, что именно виснет: C2H BUSY или completed<expected.
+3. Если BUSY всегда виснет - править прошивку/движок (чинить interrupt/status в FPGA), либо перейти на поллинг дескриптор-бита с дескрипторным read-back.
+НЕ выполнимо сейчас: плата PHANTOM (не в PCIe), DMA недоступен.
+
+ОЗУ: анкер, работаю точечно, фоновые агенты не поднимаю. 
