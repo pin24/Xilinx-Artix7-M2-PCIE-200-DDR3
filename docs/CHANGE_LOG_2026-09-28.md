@@ -150,3 +150,27 @@ dma_engine.c ОТКАЧЕН к HEAD (1.1.13 поведение). build.cmd/inx �
 определяет завершение c2h (ждёт completed в engine-reсg, а c2h пишет куда-то
 ещё). Это БЛОКЕР требует углублённого разбора c2h-трактовки в dma_engine.c
 (EngineReadDma path / ring vs MM).
+
+---
+
+## OCT: C2H движок ЗАВИС В BUSY навсегда (ключевой диагноз, 16:08)
+
+Расширил oct_diag.py чтением C2H[0] (база 0x1000, status=0x1040, completed=0x1048).
+
+Результат на baseline 1.1.13:
+- STEP5b baseline: C2H0 status=0x00000001 (BUSY set!) completed=0 — C2H уже в BUSY на старте.
+- H2C write: writeResult=4, completed=1, BUSY снят (ЭТОТ работает).
+- FINAL: C2H status по-прежнему 0x1 (BUSY), completed=0 — C2H так и остался BUSY.
+
+ВЫВОД (сильный): C2H-движок залипает в BUSY после первой же передачи и НЕ
+сбрасывается -> любой повторный c2h read стартует в уже-BUSY состоянии и никогда
+не завершится. Это объясняет 'первый прогон PASS / повторные timeout' и то, что
+python smoke после первого раза ловил timeout исключительно на read_dma (c2h).
+
+Корень: c2h-завершение не возвращает движок к idle (не вызывается/не выполняется
+EngineProcessTransfer для c2h как для h2c, или c2h BUSY требует явного сброса
+status через statusRC / channel pending clear). Сброс в ProgramDma (1.1.14) видимо
+читал h2c statusRC, а не c2h / не помогал т.к. запуск выполнялся до сброса c2h.
+
+ДЕЙСТВИЕ: не трогаю дальше (зависший c2h требует верного сброса на движке).
+diagnostic подтверждён регистрами. oct_diag.py расширен (C2H regs). Baseline 1.1.13.

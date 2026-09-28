@@ -55,6 +55,12 @@ IRQ_CH_EN = 0x2010
 IRQ_CH_REQ = 0x2044
 IRQ_CH_PEND = 0x204C
 
+# C2H[0] engine base = (dir=1)*0x1000 + ch*0x100 = 0x1000
+C2H_STATUS = 0x1040
+C2H_STATUSRC = 0x1044
+C2H_COMPLETED = 0x1048
+C2H_CONTROL = 0x1018
+
 XDMA_ID_MASK = 0xFFF00000
 XDMA_ID = 0x1FC00000
 XDMA_CTRL_RUN = 0x00000001
@@ -155,6 +161,13 @@ def main():
     log("STEP5 baseline: irq chEn=0x%08X chReq=0x%08X chPend=0x%08X"
         % (ch_en, ch_req, ch_pend))
 
+    # ---- C2H[0] engine regs (to diagnose c2h read hangs) ----
+    c2h_st  = read_reg(h_ctl, C2H_STATUS)
+    c2h_ctl = read_reg(h_ctl, C2H_CONTROL)
+    c2h_comp = read_reg(h_ctl, C2H_COMPLETED)
+    log("STEP5b baseline: C2H0 status=0x%08X control=0x%08X completed=%u"
+        % (c2h_st, c2h_ctl, c2h_comp))
+
     # ---- async H2C write 4 bytes ================
     ev = k32.CreateEventW(None, True, False, None)
     ov = OV()
@@ -186,6 +199,8 @@ def main():
             ctl = read_reg(h_ctl, ENG_CONTROL)
             ch_req = read_reg(h_ctl, IRQ_CH_REQ)
             ch_pend = read_reg(h_ctl, IRQ_CH_PEND)
+            c2h_st = read_reg(h_ctl, C2H_STATUS)
+            c2h_comp = read_reg(h_ctl, C2H_COMPLETED)
         except OSError as e:
             log("READ-ERR during poll: %s" % e)
             break
@@ -198,9 +213,10 @@ def main():
             ovr_done = dn.value
         if st != last_status or wr == 0 or (comp != completed_before):
             log("POLL t=%4.2fs: status=0x%08X completed=%u (prev=%u) control=0x%08X "
-                "irqReq=0x%08X irqPend=0x%08X writeResult=%s"
+                "irqReq=0x%08X irqPend=0x%08X writeResult=%s C2Hst=0x%08X C2Hcmp=%u"
                 % (time.monotonic() - t0, st, comp, completed_before, ctl,
-                   ch_req, ch_pend, ovr_done if ovr_done >= 0 else "pending"))
+                   ch_req, ch_pend, ovr_done if ovr_done >= 0 else "pending",
+                   c2h_st, c2h_comp))
             last_status = st
         if ovr_done >= 0 and comp > 0:
             log("RESULT: h2c write completed (%s), engine status=0x%08X completed=%u"
@@ -217,9 +233,12 @@ def main():
     busy = bool(st & XDMA_STAT_BUSY)
     irq_pend_now = read_reg(h_ctl, IRQ_CH_PEND)
     irq_req_now = read_reg(h_ctl, IRQ_CH_REQ)
+    c2h_st_f = read_reg(h_ctl, C2H_STATUS)
+    c2h_comp_f = read_reg(h_ctl, C2H_COMPLETED)
 
-    log("FINAL: completed=%u status=0x%08X (busy=%s) irqPend=0x%08X irqReq=0x%08X"
-        % (comp, st, busy, irq_pend_now, irq_req_now))
+    log("FINAL: completed=%u status=0x%08X (busy=%s) irqPend=0x%08X irqReq=0x%08X "
+        "C2Hstatus=0x%08X C2Hcomp=%u"
+        % (comp, st, busy, irq_pend_now, irq_req_now, c2h_st_f, c2h_comp_f))
 
     if comp > completed_before and not busy:
         if irq_pend_now == 0 and irq_req_now == 0:
