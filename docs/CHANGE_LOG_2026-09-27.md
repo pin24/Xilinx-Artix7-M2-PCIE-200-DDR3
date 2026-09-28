@@ -411,3 +411,25 @@ GIPOTEZY (proverit na stende):
 4. Mnozhestvennye peredachi / IRQ races.
 
 DEJSTVIE: nastroit MPS/MRRS ili umen'shit/vyrovnyat' razmer chunka v test_dma; proverit' na stende. Libo proshivka: korrektnye MaxPayload/MaxReadRequest v XDMA.
+
+
+---
+
+## 5f. Analiz ROF: MPS/MRRS + alignment (2026-09-28)
+
+Provereno v proshivke (scripts/xdma_ddr3_dfx_bd.tcl):
+- XDMA IP 4.2, Gen2 x4 (5.0GT/s), AXI 128-bit; pl_link_cap_max_link_speed=5.0_GT/s (L691).
+- YAР’РќР«РҐ CONFIG MPS/MRRS v BD NET (auto/deflР°С‚СЊ). Xilinx XDMA default: MPS=256B, MRRS=512B (Gen2).
+- assign_bd_address: DDR3 0x00000000-range 0x10000000 (MIG 256MB); RP DataMover MM2S/S2MM @0x4001_0000/0x4001_8000.
+
+Driver (dma_engine.c):
+- DescriptorIsAligned (L759) - predoprezhdaet no NE valit pri nichtpoverovannom elemente.
+- EngineGetAlignments: РµСЃР»Рё СЂРµРіРёСЃС‚СЂ alignments==0 -> alignAddr=alignLength=1 (СЃР»Р°Р±С‹Рµ РґРµС„РѕР»С‚С‹) -> РќРРљРђРљРћР“Рћ РІС‹СЂР°РІРЅРёРІР°РЅРёСЏ РЅРµ РїСЂРёРјРµРЅСЏРµС‚СЃСЏ.
+- XDMA_EngineProgramDma СЃС‚СЂРѕРёС‚ SG-РґРµСЃРєСЂРёРїС‚РѕСЂ РїРѕ WdfDmaTransaction; РєР°Р¶РґС‹Р№ СЌР»РµРјРµРЅС‚ <= MPS.
+
+VYVOD po ROF (0x124, Receiver Overflow): РЅР° СЌС‚РѕРј Р±РёС‚СЃС‚СЂРёРјРµ РїСЂРёРЅРёРјР°СЋС‰Р°СЏ/РІС‹РґР°СЋС‰Р°СЏ СЃС‚РѕСЂРѕРЅР° РїРѕР»СѓС‡Р°РµС‚ РјРЅРѕРіРѕ РІС…РѕРґСЏС‰РёС… TLP/Multiple Transactions РїСЂРё DMA SG - РїРµСЂРµРїРѕР»РЅРµРЅРёРµ RX РїСЂРёРµРјРЅРёРєР°. Р”СЂР°Р№РІРµСЂ РЅРµ РїСЂРёРјРµРЅСЏРµС‚ РєРѕСЂСЂРµРєС‚РЅРѕРµ РІС‹СЂР°РІРЅРёРІР°РЅРёРµ (alignLength=1 РґРµС„РѕР»С‚), host-С‡Р°РЅРєРё 1MiB/РјР°Р»С‹Рµ 4B РЅРµ РєСЂР°С‚РЅС‹ MPS/MRRS РїСЂРѕС€РёРІРєРё.
+
+DEJSTVIE:
+1. РџСЂРѕС€РёРІРєР°: Р·Р°РґР°С‚СЊ СЏРІРЅРѕ MPS/MRRS СЃРѕРіР»Р°СЃРѕРІР°РЅРЅС‹Рµ (РЅР°РїСЂРёРјРµСЂ MaxPayload 256/128, MaxReadRequest 512) РІ xdma_0 BD РїР°СЂР°РјРµС‚СЂС‹ (if IP РёС… РїРѕРґРґРµСЂР¶РёРІР°РµС‚) РёР»Рё РІ СЃРѕР±СЃС‚РІРµРЅРЅРѕРј constraint.
+2. Driver: РїРѕРґРЅСЏС‚СЊ alignAddr/alignLength Рє 64 РёР»Рё 256 (РїСЂРѕРІРµСЂСЏС‚СЊ СЂРµР°Р»СЊРЅС‹Р№ СЂРµРіРёСЃС‚СЂ alignments), Рё/РёР»Рё РІ test_dma РґР°РІР°С‚СЊ СЂР°Р·РјРµСЂС‹ РєСЂР°С‚РЅС‹Рµ 1KiB (РёР·Р±РµРіР°С‚СЊ <MPS Рё РЅРµРІС‹СЂРѕРІРЅРµРЅРЅС‹С…).
+3. РџСЂРѕРІРµСЂРёС‚СЊ РЅР° СЃС‚РµРЅРґРµ: loopback 4096 (РІС‹СЂРѕРІРЅРµРЅРЅС‹Р№) РїРµСЂРІСѓСЋ - РµСЃР»Рё PASS, РїРѕРґС‚РІРµСЂРґРёС‚СЃСЏ MPS-РіРёРїРѕС‚РµР·Р°; РµСЃР»Рё ROF РЅР° 4096 - РїСЂРѕР±Р»РµРјС‹ РІ РґСЂСѓРіРѕРј (РїСЂРѕС€РёРІРєР°/Р»РёРЅРє).
