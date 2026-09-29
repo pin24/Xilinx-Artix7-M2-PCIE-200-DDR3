@@ -39,6 +39,7 @@
 //   [0x54/0x58] COMP_BASE_LO/HI  база области завершений
 //   [0x5C] SCHED_STATUS RO: бит0 sched_busy, бит1 irq_pending
 //   [0x60] DONE_CNT     RO счётчик завершённых задач (16 бит, free-running)
+//   [0x64] CORE_PARAMS  RO: [7:0]=NUM_MAC, [15:8]=ADDERS (параметры компиляции)
 // Кольцо: 256 дескрипторов (таблица 8 КБ) / 256 завершений (4 КБ), указатели
 // 8-бит с естественным переполнением (mod 256).
 //
@@ -337,6 +338,9 @@ module tdot_axi4 #(
             6'd22: rdata = comp_base_q[63:32];
             6'd23: rdata = {30'b0, irq_pending_q, sched_busy_q};
             6'd24: rdata = {16'h0, done_cnt_q};
+            // 6'd25 [0x64] CORE_PARAMS RO: [7:0]=NUM_MAC, [15:8]=ADDERS -
+            // фиксирует параметры компиляции ядра для автоопределения драйвером.
+            6'd25: rdata = {16'h0, ADDERS[7:0], NUM_MAC[7:0]};
             default: rdata = 32'h0;
         endcase
     end
