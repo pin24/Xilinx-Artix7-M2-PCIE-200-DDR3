@@ -697,6 +697,8 @@ proc create_root_design { parentCell } {
     CONFIG.xdma_pcie_64bit_en {true} \
     CONFIG.xdma_rnum_chnl {2} \
     CONFIG.xdma_wnum_chnl {2} \
+    CONFIG.pf0_bar0_scale {Megabytes} \
+    CONFIG.pf0_bar0_size {128} \
   ] $xdma_0
 
   set clk200_clk_wiz [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk200_clk_wiz ]
