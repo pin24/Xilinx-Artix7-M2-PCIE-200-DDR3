@@ -561,6 +561,15 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
         engine->numDescriptors = SgList->NumberOfElements;
     }
 
+    // FIX-AUDIT-C2H 2026-09-30 (rev2): re-arm firstDesc unconditionally before
+    // start. XDMA_EngineResetIdle also re-arms it, but doing it here guarantees
+    // correctness regardless of call order / whether reset ran.
+    {
+        PHYSICAL_ADDRESS db = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
+        engine->sgdma->firstDescLo = db.LowPart;
+        engine->sgdma->firstDescHi = db.HighPart;
+    }
+
     MemoryBarrier();
 
     // mark a request pending (spurious-irq guard, mirrors official driver)
@@ -622,30 +631,24 @@ void EngineStop(IN XDMA_ENGINE *engine) {
 void XDMA_EngineResetIdle(IN XDMA_ENGINE *engine) {
     // Explicit reset back to a known idle state. C2H engine in this DFX build can
     // stay BUSY after a completed/aborted transfer; BUSY is cleared by reading
-    // statusRC (read-and-clear) and by clearing RUN. Do a FULL controlled reset:
-    //   1. clear RUN (halt)
-    //   2. read-and-clear statusRC / completedDescCount / all status-regs
-    //   3. clear ANY channel-pending descriptor pointer, then re-run+halt once
-    //      to force the FETCH state machine out of a stuck pending-transaction.
-    //      (FIX-AUDIT-C2H 2026-09-30): a C2H engine that sits in BUSY with
-    //      pending-after-erase is NOT returned to idle by a single read-clear;
-    //      cycling RUN+clearing firstDesc forces a clean idle that is safe for
-    //      the next transfer to re-arm firstDesc.)
+    // statusRC (read-and-clear) and by clearing RUN.
+    // FIX-AUDIT-C2H 2026-09-30 (rev2): do NOT zero firstDescLo/Hi - they are
+    // rearmed ONCE at EngineCreateDescriptorBuffer and NOT rewritten per-transfer
+    // by XDMA_EngineProgramDma (that only writes firstDescAdj). Zeroing them would
+    // make every subsequent C2H fetch sample address 0 -> descriptor error/hang.
+    // Instead: halt RUN, read-clear busy/status, and RE-ARM firstDesc to the
+    // descriptor buffer base so the next transfer starts from the real buffer.
     if (engine == NULL) return;
     engine->regs->controlW1C = XDMA_CTRL_RUN_BIT;   // stop
     (void)engine->regs->statusRC;                    // read-clear BUSY/errors
     (void)engine->regs->completedDescCount;          // observe (read-only)
-    // force the descriptor fetch to idle: clear the armed pointer and drop credits
-    engine->sgdma->firstDescLo = 0;
-    engine->sgdma->firstDescHi = 0;
+    // re-arm the descriptor pointer to the persistent buffer (never leave 0)
+    PHYSICAL_ADDRESS db = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
+    engine->sgdma->firstDescLo = db.LowPart;
+    engine->sgdma->firstDescHi = db.HighPart;
     engine->sgdma->firstDescAdj = 0;
-    // pulse RUN to make the engine process the clear -> returns to IDLE
-    engine->regs->controlW1S = XDMA_CTRL_RUN_BIT;
     MemoryBarrier();
-    engine->regs->controlW1C = XDMA_CTRL_RUN_BIT;   // stop again
-    (void)engine->regs->statusRC;
-    MemoryBarrier();
-    TraceInfo(DBG_DMA, "%s_%u reset to idle (control=0x%08x, status=0x%08x)",
+    TraceInfo(DBG_DMA, "%s_%u reset idle (firstDesc rearmed, control=0x%08x, status=0x%08x)",
               DirectionToString(engine->dir), engine->channel,
               engine->regs->control, engine->regs->status);
 }
