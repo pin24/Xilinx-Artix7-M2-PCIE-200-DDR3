@@ -622,15 +622,28 @@ void EngineStop(IN XDMA_ENGINE *engine) {
 void XDMA_EngineResetIdle(IN XDMA_ENGINE *engine) {
     // Explicit reset back to a known idle state. C2H engine in this DFX build can
     // stay BUSY after a completed/aborted transfer; BUSY is cleared by reading
-    // statusRC (read-and-clear) and by clearing RUN. Do a full controlled stop:
+    // statusRC (read-and-clear) and by clearing RUN. Do a FULL controlled reset:
     //   1. clear RUN (halt)
-    //   2. read-and-clear statusRC (consume and clear BUSY / error / event bits)
-    //   3. optionally pulse reset (RST) — but a plain RUN-clear + statusRC-read
-    //      is the documented "return to idle" and is safer on live DMA state.
+    //   2. read-and-clear statusRC / completedDescCount / all status-regs
+    //   3. clear ANY channel-pending descriptor pointer, then re-run+halt once
+    //      to force the FETCH state machine out of a stuck pending-transaction.
+    //      (FIX-AUDIT-C2H 2026-09-30): a C2H engine that sits in BUSY with
+    //      pending-after-erase is NOT returned to idle by a single read-clear;
+    //      cycling RUN+clearing firstDesc forces a clean idle that is safe for
+    //      the next transfer to re-arm firstDesc.)
     if (engine == NULL) return;
     engine->regs->controlW1C = XDMA_CTRL_RUN_BIT;   // stop
     (void)engine->regs->statusRC;                    // read-clear BUSY/errors
     (void)engine->regs->completedDescCount;          // observe (read-only)
+    // force the descriptor fetch to idle: clear the armed pointer and drop credits
+    engine->sgdma->firstDescLo = 0;
+    engine->sgdma->firstDescHi = 0;
+    engine->sgdma->firstDescAdj = 0;
+    // pulse RUN to make the engine process the clear -> returns to IDLE
+    engine->regs->controlW1S = XDMA_CTRL_RUN_BIT;
+    MemoryBarrier();
+    engine->regs->controlW1C = XDMA_CTRL_RUN_BIT;   // stop again
+    (void)engine->regs->statusRC;
     MemoryBarrier();
     TraceInfo(DBG_DMA, "%s_%u reset to idle (control=0x%08x, status=0x%08x)",
               DirectionToString(engine->dir), engine->channel,
@@ -1047,10 +1060,17 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG maxIteration
         KeStallExecutionProcessor(50); // 50us
     }
 
+    // FIX-AUDIT-C2H 2026-09-30: on timeout, also clear the spurious-irq guard
+    // so a late interrupt cannot touch a released transaction.
     TraceError(DBG_DMA, "XDMA_EngineWaitCompletion TIMEOUT %u descriptors "
                "(completed=%u, status=0x%08x) after %u iters",
                expected, engine->regs->completedDescCount,
                engine->regs->status, iter);
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        engine->isReqPending = FALSE;
+        WdfSpinLockRelease(engine->engineLock);
+    }
     return STATUS_TIMEOUT;
 }
 

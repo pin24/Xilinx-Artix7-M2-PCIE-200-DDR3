@@ -559,6 +559,11 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
         TraceError(DBG_IO, "WdfDmaTransactionInitializeUsingRequest failed: %!STATUS!", status);
         goto ErrExit;
     }
+    // FIX-AUDIT-ROF 2026-09-30: cap each SGDMA descriptor to 512B so the XDMA
+    // receiver is never flooded with one huge transaction (RATIO 6X option 2).
+    // WDF then splits the transfer into many small descriptors instead of a
+    // single large one -> engine never overruns its RX FIFO (no ROF/0x124).
+    WdfDmaTransactionSetMaximumLength(queue->engine->dmaTransaction, 512);
     status = WdfRequestMarkCancelableEx(Request, EvtCancelDma);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_IO, "WdfRequestMarkCancelableEx failed: %!STATUS!", status);
@@ -619,6 +624,8 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
                    status);
         goto ErrExit;
     }
+    // FIX-AUDIT-ROF 2026-09-30: cap each SGDMA descriptor to 512B (see write path).
+    WdfDmaTransactionSetMaximumLength(queue->engine->dmaTransaction, 512);
     status = WdfRequestMarkCancelableEx(Request, EvtCancelDma);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_IO, "WdfRequestMarkCancelableEx failed: %!STATUS!", status);
