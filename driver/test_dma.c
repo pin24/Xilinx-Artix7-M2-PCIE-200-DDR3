@@ -237,6 +237,39 @@ static int ModeRegs(HANDLE ctl)
 }
 
 /* ========================================================================== */
+/*  Mode: firmware — read CORE_PARAMS + MAGIC id registers (self-detect)       */
+/* ========================================================================== */
+static int ModeFirmware(HANDLE ctl)
+{
+    ULONG v;
+    /* MAGIC offsets: TDOT[0x68]='TDOT', ICAP[0x0C]='ICAP', XADC[0x0C]='XADC' */
+    const ULONG TDOT_MAGIC = TDOT_BASE + 0x68;
+    const ULONG ICAP_MAGIC = ICAP_BASE + 0x0C;
+    const ULONG XADC_MAGIC = XADC_BASE + 0x0C;
+    const ULONG CORE_PARAMS = TDOT_BASE + 0x64; /* [7:0]NUM_MAC,[15:8]ADDERS */
+
+    printf("--- firmware self-detect (CORE_PARAMS/MAGIC) ---\n");
+    if (CtlRead32(ctl, TDOT_MAGIC, &v)) {
+        printf("  TDOT[0x68] MAGIC  = 0x%08lX (%s)\n",
+               v, v == 0x54444F54UL ? "TDOT OK" : "MISMATCH");
+    }
+    if (CtlRead32(ctl, ICAP_MAGIC, &v)) {
+        printf("  ICAP[0x0C] MAGIC  = 0x%08lX (%s)\n",
+               v, v == 0x49434150UL ? "ICAP OK" : "MISMATCH");
+    }
+    if (CtlRead32(ctl, XADC_MAGIC, &v)) {
+        printf("  XADC[0x0C] MAGIC  = 0x%08lX (%s)\n",
+               v, v == 0x58414443UL ? "XADC OK" : "MISMATCH");
+    }
+    if (CtlRead32(ctl, CORE_PARAMS, &v)) {
+        printf("  TDOT[0x64] CORE_PARAMS = 0x%08lX -> NUM_MAC=%lu ADDERS=%lu\n",
+               v, v & 0xFF, (v >> 8) & 0xFF);
+    }
+    printf("  firmware: %s\n", (v == 0x00000220UL) ? "32/2 MATCH" : "check");
+    return 0;
+}
+
+/* ========================================================================== */
 /*  Mode: loopback <bytes> — LCG write via h2c, read via c2h, byte compare     */
 /* ========================================================================== */
 static int ModeLoopback(HANDLE h2c, HANDLE c2h, size_t bytes)
@@ -460,6 +493,7 @@ static void PrintUsage(void)
 {
     printf("Usage: test_dma.exe <mode> [args]\n");
     printf("  regs                 readback TDOT_STATUS / GPIO over \\control\n");
+    printf("  firmware             read CORE_PARAMS + MAGIC id regs (self-detect)\n");
     printf("  loopback <bytes>     LCG write h2c + read c2h + byte compare\n");
     printf("                       (suggest: 4 1024 1048576 8388608; one per run)\n");
     printf("  ioctl                PERF_START/GET/STOP + ADDRMODE on c2h_0\n");
@@ -520,6 +554,8 @@ int main(int argc, char** argv)
 
     if (_stricmp(mode, "regs") == 0) {
         rc = ModeRegs(ctl);
+    } else if (_stricmp(mode, "firmware") == 0) {
+        rc = ModeFirmware(ctl);
     } else if (_stricmp(mode, "loopback") == 0) {
         sbytes = (argc >= 3) ? argv[2] : "1024";
         rc = ModeLoopback(h2c, c2h, (size_t)strtoull(sbytes, NULL, 0));

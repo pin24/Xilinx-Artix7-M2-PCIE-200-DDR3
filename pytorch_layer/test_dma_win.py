@@ -178,6 +178,42 @@ class XdmaWinDma(XdmaDevice):
     def write32(self, addr, val):
         self.write(addr, struct.pack("<I", val & 0xFFFFFFFF))
 
+    # ---------------- firmware self-detect (MAGIC / CORE_PARAMS) -----------
+    BLOCK_MAGICS = {
+        "TDOT": 0x54444F54,
+        "ICAP": 0x49434150,
+        "XADC": 0x58414443,
+    }
+    # base AXI addresses; MAGIC at per-block offset, CORE_PARAMS at TDOT+0x64
+    A = {"TDOT": 0x40003000, "ICAP": 0x40004000, "XADC": 0x46000000}
+
+    def read_magic(self, block):
+        """Read the magic id register of a block (raises if misaligned)."""
+        base = self.A[block]
+        # TDOT has MAGIC at 0x68; ICAP/XADC at 0x0C
+        moff = 0x68 if block == "TDOT" else 0x0C
+        v = self.read32(base + moff)
+        return v
+
+    def probe_firmware(self):
+        """Return dict of present blocks by MAGIC match + decode CORE_PARAMS."""
+        result = {}
+        for name, magic in self.BLOCK_MAGICS.items():
+            try:
+                m = self.read_magic(name)
+                result[name] = (m == magic)
+            except Exception:
+                result[name] = None
+        # CORE_PARAMS: TDOT[0x64] = [7:0]NUM_MAC, [15:8]ADDERS
+        try:
+            cp = self.read32(0x40003000 + 0x64)
+            result["NUM_MAC"] = cp & 0xFF
+            result["ADDERS"] = (cp >> 8) & 0xFF
+            result["CORE_PARAMS"] = cp
+        except Exception:
+            result["CORE_PARAMS"] = None
+        return result
+
     # ---------------- DMA (h2c/c2h) ----------------------------------------
     def write_dma(self, ddr_off, data):
         """Write data into DDR3 at raw offset ddr_off via h2c_0.
@@ -437,15 +473,25 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="Windows DMA driver tests")
     ap.add_argument("mode", nargs="?", default="--smoke",
-                    choices=["--smoke", "--full", "smoke", "full"])
+                    choices=["--smoke", "--full", "--firmware",
+                             "smoke", "full", "firmware"])
     args = ap.parse_args(argv)
-    mode = ("--" + args.mode) if args.mode not in ("--smoke", "--full") else args.mode
+    mode = ("--" + args.mode) if args.mode not in (
+        "--smoke", "--full", "--firmware") else args.mode
 
     print(f"XdmaWinDma device base: \\\\.\\XDMA0dma")
     if mode in ("--smoke",):
         _smoke()
     elif mode in ("--full",):
         _full()
+    elif mode in ("--firmware",):
+        dev = XdmaWinDma()
+        try:
+            info = dev.probe_firmware()
+            for k, v in info.items():
+                print(f"  {k}: {v}")
+        finally:
+            dev.close()
     return 0
 
 
