@@ -242,13 +242,16 @@ static int ModeRegs(HANDLE ctl)
 static int ModeFirmware(HANDLE ctl)
 {
     ULONG v;
-    /* MAGIC offsets: TDOT[0x68]='TDOT', ICAP[0x0C]='ICAP', XADC[0x0C]='XADC' */
+    /* MAGIC offsets: TDOT[0x68]='TDOT', ICAP[0x0C]='ICAP'.
+     * XADC[0x0C] is NOT read here: its BAR-offset (~0x06000000) is beyond the
+     * actually-mapped BAR0 on the current bitstream -> reading it BSODs 0x50.
+     * FIX-AUDIT 13d (2026-09-30): skip XADC until the real BAR0 size is
+     * confirmed; TDOT/ICAP sit at low offsets and are safe.                */
     const ULONG TDOT_MAGIC = TDOT_BASE + 0x68;
     const ULONG ICAP_MAGIC = ICAP_BASE + 0x0C;
-    const ULONG XADC_MAGIC = XADC_BASE + 0x0C;
     const ULONG CORE_PARAMS = TDOT_BASE + 0x64; /* [7:0]NUM_MAC,[15:8]ADDERS */
 
-    printf("--- firmware self-detect (CORE_PARAMS/MAGIC) ---\n");
+    printf("--- firmware self-detect (CORE_PARAMS/MAGIC, XADC skipped) ---\n");
     if (CtlRead32(ctl, TDOT_MAGIC, &v)) {
         printf("  TDOT[0x68] MAGIC  = 0x%08lX (%s)\n",
                v, v == 0x54444F54UL ? "TDOT OK" : "MISMATCH");
@@ -257,15 +260,11 @@ static int ModeFirmware(HANDLE ctl)
         printf("  ICAP[0x0C] MAGIC  = 0x%08lX (%s)\n",
                v, v == 0x49434150UL ? "ICAP OK" : "MISMATCH");
     }
-    if (CtlRead32(ctl, XADC_MAGIC, &v)) {
-        printf("  XADC[0x0C] MAGIC  = 0x%08lX (%s)\n",
-               v, v == 0x58414443UL ? "XADC OK" : "MISMATCH");
-    }
     if (CtlRead32(ctl, CORE_PARAMS, &v)) {
         printf("  TDOT[0x64] CORE_PARAMS = 0x%08lX -> NUM_MAC=%lu ADDERS=%lu\n",
                v, v & 0xFF, (v >> 8) & 0xFF);
     }
-    printf("  firmware: %s\n", (v == 0x00000220UL) ? "32/2 MATCH" : "check");
+    printf("  firmware check done (XADC not probed; BAR0 size unknown)\n");
     return 0;
 }
 
