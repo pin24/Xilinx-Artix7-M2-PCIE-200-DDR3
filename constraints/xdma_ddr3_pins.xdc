@@ -93,13 +93,4 @@ set_property PACKAGE_PIN D9 [get_ports {pcie_7x_mgt_rtl_0_rxp[3]}]
 set_property PACKAGE_PIN D7 [get_ports {pcie_7x_mgt_rtl_0_txp[3]}]
 set_property PACKAGE_PIN C7 [get_ports {pcie_7x_mgt_rtl_0_txn[3]}]
 
-# ============================================================================
-# R-14 SPI-over-PCIe: QSPI flash pins (W25Q128JV), regular fabric IO.
-# CCLK (L12) is NOT here: driven internally via STARTUPE2.USRCCLKO.
-# Pin map from spi_over_pcie.sv header: FCS_B=T19, D00=P22, D01=R22, D02=P21, D03=R21.
-# ============================================================================
-set_property -dict {PACKAGE_PIN T19 IOSTANDARD LVCMOS33} [get_ports qspi_cs_n]
-set_property -dict {PACKAGE_PIN P22 IOSTANDARD LVCMOS33} [get_ports qspi_d0]
-set_property -dict {PACKAGE_PIN R22 IOSTANDARD LVCMOS33} [get_ports qspi_d1]
-set_property -dict {PACKAGE_PIN P21 IOSTANDARD LVCMOS33} [get_ports qspi_d2]
-set_property -dict {PACKAGE_PIN R21 IOSTANDARD LVCMOS33} [get_ports qspi_d3]
+

@@ -324,7 +324,6 @@ add_files -norecurse \
     ${ROOT}/rtl/integration/icap_ctrl.sv \
     ${ROOT}/rtl/integration/xadc_temp.sv \
     ${ROOT}/rtl/integration/xadc_prim.sv \
-    ${ROOT}/rtl/integration/spi_over_pcie.sv \
     ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
 set_property generic ADDERS=${ADDERS} [current_fileset]

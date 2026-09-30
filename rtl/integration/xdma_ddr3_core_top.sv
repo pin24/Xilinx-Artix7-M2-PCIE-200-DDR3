@@ -22,12 +22,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
      pcie_7x_mgt_rtl_0_rxp,
      pcie_7x_mgt_rtl_0_txn,
      pcie_7x_mgt_rtl_0_txp,
-   reset_rtl_0,
-   qspi_cs_n,
-   qspi_d0,
-   qspi_d1,
-   qspi_d2,
-   qspi_d3);
+   reset_rtl_0);
   output [13:0]DDR3_0_addr;
   output [2:0]DDR3_0_ba;
   output DDR3_0_cas_n;
@@ -52,11 +47,6 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
   output [3:0]pcie_7x_mgt_rtl_0_txn;
   output [3:0]pcie_7x_mgt_rtl_0_txp;
   input reset_rtl_0;
-  output qspi_cs_n;
-  inout  qspi_d0;
-  inout  qspi_d1;
-  inout  qspi_d2;
-  inout  qspi_d3;
 
   // ---- Такт/сброс fabric-домена 125 МГц (BUG-034, BUG-036) ----
   // XDMA в 64-битном варианте (Gen2 x4) тактирует axi_aclk частотой 250 МГц.
@@ -189,19 +179,14 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .S_AXI_RVALID(icap_rvalid), .S_AXI_RREADY(icap_rready)
   );
 
-  // ======================== SPI-over-PCIe (R-14, hot-flash without JTAG) ====================
-  spi_over_pcie #(.CLK_DIV(16)) u_spi (
-      .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
-      .S_AXI_AWADDR(spi_awaddr), .S_AXI_AWVALID(spi_awvalid), .S_AXI_AWREADY(spi_awready),
-      .S_AXI_WDATA(spi_wdata), .S_AXI_WSTRB(spi_wstrb),
-      .S_AXI_WVALID(spi_wvalid), .S_AXI_WREADY(spi_wready),
-      .S_AXI_BRESP(spi_bresp), .S_AXI_BVALID(spi_bvalid), .S_AXI_BREADY(spi_bready),
-      .S_AXI_ARADDR(spi_araddr), .S_AXI_ARVALID(spi_arvalid), .S_AXI_ARREADY(spi_arready),
-      .S_AXI_RDATA(spi_rdata), .S_AXI_RRESP(spi_rresp),
-      .S_AXI_RVALID(spi_rvalid), .S_AXI_RREADY(spi_rready),
-      .spi_cclk(), .qspi_cs_n(qspi_cs_n),
-      .qspi_d0(qspi_d0), .qspi_d1(qspi_d1), .qspi_d2(qspi_d2), .qspi_d3(qspi_d3)
-  );
+  // ======================== SPI-over-PCIe (REMOVED 2026-09-30) ========================
+  // spi_over_pcie and the qspi_* top ports were REMOVED so the QSPI flash pins are
+  // never claimed as user IO. While a design instantiated spi_over_pcie, the FPGA
+  // held FCS_B/D00-D03 as fabric IO and Labtools 27-3347 ("Failure to set flash
+  // parameters") occurred during JTAG flash programming. With no user claim of
+  // the flash pins, the configuration controller keeps control and cfgmem works.
+  // The BD S_AXI_SPI_REGS external port (M06 @0x40005000) remains but is unused.
+  //
 
   // ======================== XADC (температура/напряжение, база 0x46000000) ========================
   // FIX-5 RTL-1: инстанцируем xadc_temp.sv, чтобы BD-порт S_AXI_XADC_REGS (создаваемый
