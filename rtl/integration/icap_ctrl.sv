@@ -4,6 +4,7 @@
 // Регистры (32-бит, байтовый адрес, декод [3:2]):
 //   [0x00] CTRL   bit0 GO (самосброс), bit1 STOP
 //   [0x04] STATUS bit0 READY (mailbox свободен - можно писать следующее слово),
+//   [0x0C] MAGIC  RO 0x49434150 ('ICAP') - идентификация блока драйвером
 //                 bit1 BUSY (сессия: от GO до STOP)
 //   [0x08] DATA   write-only, 32-бит слово для ICAP
 //
@@ -204,6 +205,8 @@ module icap_ctrl #(
         case (araddr_q[ADDR_LSB+:2])
             2'd0: rdata = {30'b0, stop_reg, go_reg};
             2'd1: rdata = {30'b0, busy_sync_ff2, !mbox_busy}; // {BUSY, READY}
+            // 2'd3 [0x0C] MAGIC RO: 0x49434150 ('ICAP') - identity for driver
+            2'd3: rdata = 32'h49434150;
             default: rdata = 32'h0;
         endcase
     end

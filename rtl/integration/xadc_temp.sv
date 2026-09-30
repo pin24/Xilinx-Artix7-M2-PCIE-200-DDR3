@@ -5,6 +5,7 @@
 //   [0x00] TEMP    {16'h0, raw_temp[15:0]}      — температура (XADC format)
 //   [0x04] VCCINT  {16'h0, raw_vccint[15:0]}    — внутреннее питание
 //   [0x08] VALID   {31'b0, valid_q}             — флаг валидности данных
+//   [0x0C] MAGIC   RO: 0x58414443 ('XADC') — идентификация блока драйвером
 //
 // Источник данных: xadc_prim.sv (DRP-FSM вокруг примитива XADC), который
 // раз в секунду сэмплит температуру (DADDR 0x00) и VCCINT (DADDR 0x06) и
@@ -144,6 +145,8 @@ module xadc_temp #(
             2'd0: rdata = {16'h0, temp_val};        // TEMP
             2'd1: rdata = {16'h0, vccint_val};      // VCCINT
             2'd2: rdata = {31'b0, valid_q};         // VALID
+            // 2'd3 [0x0C] MAGIC RO: 0x58414443 ('XADC') - identity for driver
+            2'd3: rdata = 32'h58414443;
             default: rdata = 32'h0;
         endcase
     end

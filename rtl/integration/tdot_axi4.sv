@@ -40,6 +40,7 @@
 //   [0x5C] SCHED_STATUS RO: бит0 sched_busy, бит1 irq_pending
 //   [0x60] DONE_CNT     RO счётчик завершённых задач (16 бит, free-running)
 //   [0x64] CORE_PARAMS  RO: [7:0]=NUM_MAC, [15:8]=ADDERS (параметры компиляции)
+//   [0x68] MAGIC        RO: 0x54444F54 ('TDOT') — идентификация блока драйвером
 // Кольцо: 256 дескрипторов (таблица 8 КБ) / 256 завершений (4 КБ), указатели
 // 8-бит с естественным переполнением (mod 256).
 //
@@ -341,6 +342,8 @@ module tdot_axi4 #(
             // 6'd25 [0x64] CORE_PARAMS RO: [7:0]=NUM_MAC, [15:8]=ADDERS -
             // фиксирует параметры компиляции ядра для автоопределения драйвером.
             6'd25: rdata = {16'h0, ADDERS[7:0], NUM_MAC[7:0]};
+            // 6'd26 [0x68] MAGIC RO: 0x54444F54 ('TDOT') - identity for driver
+            6'd26: rdata = 32'h54444F54;
             default: rdata = 32'h0;
         endcase
     end
