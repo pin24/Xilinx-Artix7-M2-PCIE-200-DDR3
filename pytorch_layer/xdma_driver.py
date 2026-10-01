@@ -50,16 +50,16 @@ AXI_LITE_BASE = 0x4000_0000   # начало AXI-Lite окна (BAR0)
 DDR3_BASE     = 0x8000_0000   # база DDR3 (от неё отсчитываются смещения DMA)
 
 # адресная база AXI-Lite регистров ядра (DFX BD, xdma_axi_lite_smc):
-#   M00 GPIO  0x4000_0000    M03 TDOT   0x4000_3000
-#   M01 DFX sock 0x4000_2000 M04 ICAP   0x4000_4000
+#   M00 GPIO  0x4002_0000    M03 TDOT   0x4002_3000
+#   M01 DFX sock 0x4002_2000 M04 ICAP   0x4002_4000
 #   M02 HWICAP 0x4000_1000   M05 XADC   0x4600_0000
-#   M06 SPI   0x4000_5000
-REG_BASE  = 0x4000_3000      # tdot_axi4 регистры
-ICAP_BASE = 0x4000_4000      # ICAP-контроллер
-GPIO_BASE = 0x4000_0000      # axi_gpio (не используется)
+#   M06 SPI   0x4002_5000
+REG_BASE  = 0x4002_3000      # tdot_axi4 регистры
+ICAP_BASE = 0x4002_4000      # ICAP-контроллер
+GPIO_BASE = 0x4002_0000      # axi_gpio (не используется)
 HWICAP_BASE = 0x4000_1000    # axi_hwicap (если потребуется прямой доступ)
-DFX_SOCK_BASE = 0x4000_2000  # dfx_socket/decouple_shutdown_ctrl (shutdown/decouple GPIO)
-SPI_BASE = 0x4000_5000       # SPI-over-PCIe (hot-flash без JTAG)
+DFX_SOCK_BASE = 0x4002_2000  # dfx_socket/decouple_shutdown_ctrl (shutdown/decouple GPIO)
+SPI_BASE = 0x4002_5000       # SPI-over-PCIe (hot-flash без JTAG)
 # legacy alias (модульно совместим со старым именем)
 DDR_BASE = DDR3_BASE
 

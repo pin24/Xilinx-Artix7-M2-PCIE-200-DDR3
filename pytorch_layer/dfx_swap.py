@@ -4,10 +4,10 @@
 (xdma_ddr3_dfx.bd, DFX Socket = dfx_socket):
 
   1. (опционально) убедиться, что RP не обслуживает транзакции.
-  2. DFX Socket GPIO (0x4000_2000, канал 1): shutdown ОБОИХ AXI-мостов RP
+  2. DFX Socket GPIO (0x4002_2000, канал 1): shutdown ОБОИХ AXI-мостов RP
      + decouple сброса RP (rp_resetn уходит в безопасное состояние).
   3. Дождаться статуса (канал 2): in_shutdown мастера и слейва + decoupled.
-  4. Загрузить частичный битстрим RP через icap_ctrl (0x4000_4000)
+  4. Загрузить частичный битстрим RP через icap_ctrl (0x4002_4000)
      — переиспользует IcapLoader из icap_load.py.
   5. Очистить shutdown/decouple — dfx_axi_shutdown_manager возобновляет шину,
      dfx_decoupler выводит rp_resetn из сброса. PCIe-линк жив всё время
@@ -47,7 +47,7 @@ from icap_load import IcapLoader, IcapError, parse_bitstream, iter_words_le
 # ---------------------------------------------------------------------------
 # Адреса и биты (источник истины: docs/ADDRESS_MAP.md, DFX-карта)
 # ---------------------------------------------------------------------------
-DFX_SOCK_BASE = 0x4000_2000   # dfx_socket/decouple_shutdown_ctrl (axi_gpio)
+DFX_SOCK_BASE = 0x4002_2000   # dfx_socket/decouple_shutdown_ctrl (axi_gpio)
 
 # AXI GPIO v2.0 регистры (относительно базы)
 REG_GPIO1_DATA = 0x00         # канал 1: выходы shutdown/decouple
@@ -79,7 +79,7 @@ class DfxSwapError(RuntimeError):
 
 
 class DfxSocket:
-    """Управление DFX Socket (shutdown/decouple) через AXI GPIO 0x4000_2000."""
+    """Управление DFX Socket (shutdown/decouple) через AXI GPIO 0x4002_2000."""
 
     def __init__(self, dev: XdmaDevice):
         self.dev = dev

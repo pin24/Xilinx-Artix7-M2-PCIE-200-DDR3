@@ -8,7 +8,7 @@
 /*                                                                            */
 /*  Addressing contract (matches xdma_driver_win_src_2017 + ADDRESS_MAP.md):  */
 /*    control node : offset = full_AXI_addr - 0x40000000                      */
-/*                   e.g. TDOT 0x40003000 -> offset 0x3000                    */
+/*                   e.g. TDOT 0x40023000 -> offset 0x23000                   */
 /*    h2c/c2h DMA  : offset = RAW DDR3 offset, NO +0x80000000                 */
 /*    chunk size   : <= 1 MiB; XDMA_MAX_TRANSFER_SIZE = 8 MiB                 */
 /*    alignment    : >= 4 bytes (safe: 8)                                     */
@@ -44,13 +44,13 @@
  * The define is kept here only for reference/clarity. */
 #define DDR3_BASE       0x80000000ULL
 
-#define GPIO_BASE       0x40000000UL
+#define GPIO_BASE       0x40020000UL
 #define GPIO_DATA       (GPIO_BASE + 0x00)
 #define GPIO_TRI        (GPIO_BASE + 0x04)
 
-#define DFX_SOCK_BASE   0x40002000UL
+#define DFX_SOCK_BASE   0x40022000UL
 
-#define TDOT_BASE       0x40003000UL
+#define TDOT_BASE       0x40023000UL
 #define TDOT_CTRL       (TDOT_BASE + 0x00)   /* W: [0]=GO (self-clearing) */
 #define TDOT_STATUS     (TDOT_BASE + 0x04)   /* R: [0]=BUSY, [1]=DONE */
 #define TDOT_N_IN       (TDOT_BASE + 0x08)   /* R/W: number of pairs */
@@ -63,8 +63,8 @@
 #define TDOT_RESULT_ADDR_LO  (TDOT_BASE + 0x24)
 #define TDOT_RESULT_ADDR_HI  (TDOT_BASE + 0x28)
 
-#define ICAP_BASE       0x40004000UL
-#define SPI_BASE        0x40005000UL
+#define ICAP_BASE       0x40024000UL
+#define SPI_BASE        0x40025000UL
 #define XADC_BASE       0x46000000UL
 
 /* ========================================================================== */

@@ -19,8 +19,8 @@
 - **DFX Socket** — shutdown/decouple менеджеры для безопасной перезагрузки RP
 
 Перезагрузка RP через PCIe (без JTAG):
-1. Хост пишет в DFX Socket (0x40002000) → shutdown AXI buses + decouple reset
-2. Хост пишет partial bitstream в кастомный icap_ctrl (0x40004000)
+1. Хост пишет в DFX Socket (0x40022000) → shutdown AXI buses + decouple reset
+2. Хост пишет partial bitstream в кастомный icap_ctrl (0x40024000)
 3. Хост очищает DFX Socket → RP запускается с новой логикой
 
 Всё одной командой: `python pytorch_layer/dfx_swap.py build/artifacts_dfx/*partial*.bit`
@@ -49,12 +49,12 @@
 
 | Модуль | Адрес | Размер | Примечание |
 |---|---|---|---|
-| AXI GPIO (LED) | 0x4000_0000 | 4K | LED + MIG status |
+| AXI GPIO (LED) | 0x4002_0000 | 4K | LED + MIG status |
 | ~~AXI HWICAP~~ (удалён) | 0x4000_1000 | 4K | Удалён из DFX-сборки (dual-ICAP устранён); только legacy `block_design_top.tcl`. Единственный ICAP — `icap_ctrl` ниже |
-| DFX Socket | 0x4000_2000 | 4K | shutdown/decouple GPIO |
-| **TDOT registers** | **0x4000_3000** | 4K | Регистры троичного ускорителя |
-| **ICAP registers** | **0x4000_4000** | 4K | icap_ctrl (кастомный, не HWICAP) |
-| **SPI-over-PCIe** | **0x4000_5000** | 4K | spi_over_pcie (hot-flash без JTAG, R-14) |
+| DFX Socket | 0x4002_2000 | 4K | shutdown/decouple GPIO |
+| **TDOT registers** | **0x4002_3000** | 4K | Регистры троичного ускорителя |
+| **ICAP registers** | **0x4002_4000** | 4K | icap_ctrl (кастомный, не HWICAP) |
+| **SPI-over-PCIe** | **0x4002_5000** | 4K | spi_over_pcie (hot-flash без JTAG, R-14) |
 | DFX Partition MM2S | 0x4001_0000 | 4K | DataMover MM2S (окно RP 64K, остаток свободен) |
 | DFX Partition S2MM | 0x4001_8000 | 4K | DataMover S2MM (окно RP 64K, остаток свободен) |
 | XADC | 0x4600_0000 | 4K | Температура/напряжение. Через примитив `xadc_prim` (DCLK clk50) → реальные `raw_temp`/`raw_vccint`/`raw_valid` (ранее: BUG-031 «читаются 0, занят MIG» — разрешён) |
@@ -219,7 +219,7 @@ C:\Python39\python.exe program_fpga_icap.py ..\build\artifacts_dfx\xdma_ddr3_cor
 ## Открытые задачи
 - [x] DFX интеграция: `xdma_ddr3_dfx.bd`, DFX Socket, `dfx_partition` BDC
 - [x] ICAP fix: BUFGCE_DIV → BUFG + register divider (Artix-7 не поддерживает BUFGCE_DIV)
-- [x] Карта адресов DFX: TDOT 0x40003000, ICAP 0x40004000 (кастомный icap_ctrl); HWICAP 0x40001000 удалён — **единственный путь DFX/загрузки битстрима — через `icap_ctrl` (+ `dfx_swap.py`)**
+- [x] Карта адресов DFX: TDOT 0x40023000, ICAP 0x40024000 (кастомный icap_ctrl); HWICAP 0x40001000 удалён — **единственный путь DFX/загрузки битстрима — через `icap_ctrl` (+ `dfx_swap.py`)**
 - [x] Констрейны: `xdma_ddr3_early.xdc` обновлён под `xdma_ddr3_dfx_i/...`
 - [x] Встроены HDL-файлы из reference-репо в `third_party/`
 - [ ] DMA-тест DDR3 (ReadBlock/WriteBlock)

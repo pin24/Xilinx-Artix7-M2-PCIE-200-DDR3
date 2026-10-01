@@ -5,7 +5,7 @@
 # Creates xdma_ddr3_dfx.bd with:
 #   - XDMA (PCIe x4 Gen2)
 #   - MIG 7-series (DDR3 256 MB)
-#   - ICAP via external S_AXI_ICAP_REGS port @ 0x40004000 (custom icap_ctrl
+#   - ICAP via external S_AXI_ICAP_REGS port @ 0x40024000 (custom icap_ctrl
 #     in RTL, partial reconfiguration via PCIe; AXI HWICAP REMOVED - single ICAP)
 #   - DFX Socket (shutdown/decouple for reconfigurable partition)
 #   - DFX Partition (block design container for RP)
@@ -608,7 +608,7 @@ proc create_root_design { parentCell } {
   # Single-ICAP (DIFF-ICAP: dual-controller removed).
   # Only ONE controller drives the physical ICAPE2: the custom icap_ctrl
   # (rtl/integration/icap_ctrl.sv), wired by top xdma_ddr3_core_top.sv to the
-  # BD external port S_AXI_ICAP_REGS @ 0x40004000 (xdma_axi_lite_smc/M04).
+  # BD external port S_AXI_ICAP_REGS @ 0x40024000 (xdma_axi_lite_smc/M04).
   # The licensed AXI HWICAP (axi_hwicap_0) is REMOVED: two controllers on one
   # ICAPE2 created a risk of mutually-exclusive/racing ICAP access.
   # SmartConnect M02 becomes an unused dangling Master - valid, no seg left.
@@ -699,6 +699,8 @@ proc create_root_design { parentCell } {
     CONFIG.xdma_wnum_chnl {2} \
     CONFIG.pf0_bar0_scale {Megabytes} \
     CONFIG.pf0_bar0_size {128} \
+    CONFIG.axilite_master_scale {Megabytes} \
+    CONFIG.axilite_master_size {128} \
   ] $xdma_0
 
   set clk200_clk_wiz [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk200_clk_wiz ]
@@ -832,8 +834,8 @@ set_property -dict [list \
   assign_bd_address -offset 0x80000000 -range 0x10000000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI] [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
   assign_bd_address -offset 0x40010000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_partition/axi_datamover_mm2s_c_0/s_axi/reg0] -force
   assign_bd_address -offset 0x40018000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_partition/axi_datamover_s2mm_c_0/s_axi/reg0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
-  assign_bd_address -offset 0x40002000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
+  assign_bd_address -offset 0x40020000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
+  assign_bd_address -offset 0x40022000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
 
   current_bd_instance $oldCurInst
 
@@ -858,7 +860,7 @@ set_property -dict [list \
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $tdot_port
   connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M03_AXI] $tdot_port
-  assign_bd_address -offset 0x40003000 -range 0x1000 \
+  assign_bd_address -offset 0x40023000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $tdot_port/Reg] -force
 
   # S_AXI_ICAP_REGS
@@ -866,7 +868,7 @@ set_property -dict [list \
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $icap_port
   connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M04_AXI] $icap_port
-  assign_bd_address -offset 0x40004000 -range 0x1000 \
+  assign_bd_address -offset 0x40024000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $icap_port/Reg] -force
 
   # S_AXI_XADC_REGS
@@ -882,7 +884,7 @@ set_property -dict [list \
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $spi_port
   connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M06_AXI] $spi_port
-  assign_bd_address -offset 0x40005000 -range 0x1000 \
+  assign_bd_address -offset 0x40025000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $spi_port/Reg] -force
 
   # ---- BUG-035: РїСЂРёРІСЏР·РєР° РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ Рє fabric-РґРѕРјРµРЅСѓ 125 РњР“С† ----

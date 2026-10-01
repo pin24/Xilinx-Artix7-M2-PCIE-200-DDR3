@@ -1,7 +1,7 @@
 """program_fpga_icap.py - прошивка FPGA по PCIe (БЕЗ JTAG) через ICAP.
 
 Загружает битстрим (.bin/.bit) в FPGA через кастомный ICAP-контроллер
-(0x4000_4000: CTRL/STATUS/DATA) - т.е. по PCIe, без кабеля JTAG.
+(0x4002_4000: CTRL/STATUS/DATA) - т.е. по PCIe, без кабеля JTAG.
 
 Когда это работает
 ------------------

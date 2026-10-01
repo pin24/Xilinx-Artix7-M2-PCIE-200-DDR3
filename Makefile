@@ -8,8 +8,9 @@
 # Примеры:
 #   make build            # полная DFX-сборка (synth+impl+bitstream+partials)
 #   make proj             # только создать проект (SKIP_SYNTH=1)
-#   make num_mac=16 build # собрать с NUM_MAC=16
-#   make adders=4 build   # собрать с ADDERS=4 (аддеров в barrel-дереве)
+#   make num_mac=16 build # собрать с NUM_MAC=16 (и NUM_MAC=16 — эквивалент)
+#   make adders=4 build   # собрать с ADDERS=4 (и ADDERS=4 — эквивалент;
+#                         #   нижний регистр разрешён через алиасы ниже)
 #   make artifacts        # .bin/.mcs из готового impl_1 (без пересинтеза)
 #   make clean            # удалить каталог проекта и артефакты
 # ============================================================================
@@ -17,6 +18,20 @@
 NUM_MAC ?= 8
 ADDERS  ?= 4
 JOBS    ?= 7
+
+# Lowercase-алиасы (2026-10-01): позволяют писать `make num_mac=32 adders=8`
+# так же, как `make NUM_MAC=32 ADDERS=8`. GNU make чувствителен к регистру имён
+# переменных, поэтому раньше `num_mac=...` молча игнорировался и шёл дефолт.
+# Правило: если NUM_MAC/ADDERS не заданы в командной строке, они берутся из
+# num_mac/adders. (Команд-строка NUM_MAC=... имеет высший приоритет и не
+# перезаписывается — `:=` для неё действует только через override.)
+num_mac ?= $(NUM_MAC)
+adders  ?= $(ADDERS)
+jobs    ?= $(JOBS)
+NUM_MAC := $(num_mac)
+ADDERS  := $(adders)
+JOBS    := $(jobs)
+JOBS    := $(jobs)
 
 # Auto-detect Vivado on Windows
 VIVADO ?= vivado

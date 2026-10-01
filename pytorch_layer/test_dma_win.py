@@ -185,7 +185,7 @@ class XdmaWinDma(XdmaDevice):
         "XADC": 0x58414443,
     }
     # base AXI addresses; MAGIC at per-block offset, CORE_PARAMS at TDOT+0x64
-    A = {"TDOT": 0x40003000, "ICAP": 0x40004000, "XADC": 0x46000000}
+    A = {"TDOT": 0x40023000, "ICAP": 0x40024000, "XADC": 0x46000000}
 
     def read_magic(self, block):
         """Read the magic id register of a block (raises if misaligned)."""
@@ -206,7 +206,7 @@ class XdmaWinDma(XdmaDevice):
                 result[name] = None
         # CORE_PARAMS: TDOT[0x64] = [7:0]NUM_MAC, [15:8]ADDERS
         try:
-            cp = self.read32(0x40003000 + 0x64)
+            cp = self.read32(0x40023000 + 0x64)
             result["NUM_MAC"] = cp & 0xFF
             result["ADDERS"] = (cp >> 8) & 0xFF
             result["CORE_PARAMS"] = cp
@@ -290,18 +290,18 @@ class XdmaWinDma(XdmaDevice):
 # ---------------------------------------------------------------------------
 # Register / address constants for the tests (ADDRESS_MAP.md)
 # ---------------------------------------------------------------------------
-TDOT_CTRL = 0x40003000 + 0x00
-TDOT_STATUS = 0x40003000 + 0x04
-TDOT_N_IN = 0x40003000 + 0x08
-TDOT_RES0 = 0x40003000 + 0x0C
-TDOT_RES1 = 0x40003000 + 0x10
-TDOT_DATA_ADDR_LO = 0x40003000 + 0x14
-TDOT_DATA_ADDR_HI = 0x40003000 + 0x18
-TDOT_WEIGHTS_ADDR_LO = 0x40003000 + 0x1C
-TDOT_WEIGHTS_ADDR_HI = 0x40003000 + 0x20
-TDOT_RESULT_ADDR_LO = 0x40003000 + 0x24
-TDOT_RESULT_ADDR_HI = 0x40003000 + 0x28
-GPIO_DATA = 0x40000000 + 0x00
+TDOT_CTRL = 0x40023000 + 0x00
+TDOT_STATUS = 0x40023000 + 0x04
+TDOT_N_IN = 0x40023000 + 0x08
+TDOT_RES0 = 0x40023000 + 0x0C
+TDOT_RES1 = 0x40023000 + 0x10
+TDOT_DATA_ADDR_LO = 0x40023000 + 0x14
+TDOT_DATA_ADDR_HI = 0x40023000 + 0x18
+TDOT_WEIGHTS_ADDR_LO = 0x40023000 + 0x1C
+TDOT_WEIGHTS_ADDR_HI = 0x40023000 + 0x20
+TDOT_RESULT_ADDR_LO = 0x40023000 + 0x24
+TDOT_RESULT_ADDR_HI = 0x40023000 + 0x28
+GPIO_DATA = 0x40020000 + 0x00
 
 DATA_OFF = 0x0000
 WEIGHTS_OFF = 0x1000

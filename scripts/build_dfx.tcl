@@ -214,10 +214,19 @@ puts "=== 2d. CONFIGURE BD: BAR0=128MB, ADDRESSES ==="
 open_bd_design [get_files xdma_ddr3_dfx.bd]
 
 # BAR0 = 128 MB (покрывает всё AXI-Lite окно 0x40000000-0x47FFFFFF,
-# включая XADC @ 0x46000000)
+# включая XADC @ 0x46000000).
+#
+# ВАЖНО (FIX-BAR0_Size_Vector, 2026-10-01): pf0_bar0_size задаёт только
+# wrapper-параметр XDMA. Физический BAR0, который видит хост (и GUI,
+# и pcie2_ip.BAR0_Size_Vector), управляется окном AXI-Lite-мастера
+# (axilite_master_size). Без этого его дефолт = 1 МБ -> BAR0_Size_Vector="1M",
+# XADC @ 96 МБ недостижим, и в проекте xdma_0 показывает "1 MB".
+# Поэтому ставим ОБА и consolidate до 128 МБ.
 set_property -dict [list \
     CONFIG.pf0_bar0_scale {Megabytes} \
     CONFIG.pf0_bar0_size {128} \
+    CONFIG.axilite_master_scale {Megabytes} \
+    CONFIG.axilite_master_size {128} \
 ] [get_bd_cells xdma_0]
 
 # ---- Отчёт PCIe BAR / MSI-X (контроль PCIe-видимости до сборки) ----
@@ -235,6 +244,24 @@ if {[catch {
         if {${_sz} ne "" && ${_sz} ne "0"} {
             puts "    BAR${_bar}: scale=${_sc} size=${_sz}"
         }
+    }
+    # FIX-BAR0_Size_Vector: физический BAR0=128 МБ требует, чтобы ОКНО
+    # AXI-Lite-мастера (axilite_master_size) тоже было 128 МБ, иначе хост
+    # видит только 1 МБ (BAR0_Size_Vector="1M"), XADC @ 96 МБ недостижим.
+    # Жёсткий FATAL-гейт: если не 128 — сборку прервать (не флешить 1 МБ).
+    set _am_sc ""; catch { set _am_sc [get_property CONFIG.axilite_master_scale $xdma_cell] }
+    set _am_sz ""; catch { set _am_sz [get_property CONFIG.axilite_master_size  $xdma_cell] }
+    set _b0sz "";  catch { set _b0sz [get_property CONFIG.pf0_bar0_size $xdma_cell] }
+    puts "    AXI-Lite master window: scale=${_am_sc} size=${_am_sz} ; pf0_bar0_size=${_b0sz}"
+    if {${_b0sz} ne "128" || ${_am_sz} ne "128"} {
+        puts ""
+        puts "============================================================"
+        puts " FATAL: BAR0/AXI-LITE окно != 128 МБ (pf0_bar0_size=${_b0sz},"
+        puts "        axilite_master_size=${_am_sz}). Хост увидит 1 МБ,"
+        puts "        XADC недостижим. СМОТРИ FIX-BAR0_Size_Vector."
+        puts "============================================================"
+        close_project
+        exit 1
     }
     set _msix ""; catch { set _msix [get_property CONFIG.pf0_msix_enabled $xdma_cell] }
     set _bir "";  catch { set _bir  [get_property CONFIG.pf0_msix_cap_table_bir $xdma_cell] }
@@ -255,33 +282,33 @@ if {[catch {
 # перебиваем адреса финально с canonical картой
 set as_lite [get_bd_addr_spaces xdma_0/M_AXI_LITE]
 
-# GPIO: 0x40000000 (4K) — уже есть от DFX BD
+# GPIO: 0x40020000 (4K) — уже есть от DFX BD
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_axi_gpio_0_Reg}]
-assign_bd_address -offset 0x40000000 -range 0x1000 \
+assign_bd_address -offset 0x40020000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
 
-# DFX Socket control: 0x40002000 — тоже есть
+# DFX Socket control: 0x40022000 — тоже есть
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_decouple_shutdown_ctrl_Reg}]
-assign_bd_address -offset 0x40002000 -range 0x1000 \
+assign_bd_address -offset 0x40022000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
 
-# TDOT: 0x40003000 (via post_bd_dfx)
+# TDOT: 0x40023000 (via post_bd_dfx)
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_TDOT_REGS_Reg}]
-assign_bd_address -offset 0x40003000 -range 0x1000 \
+assign_bd_address -offset 0x40023000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs S_AXI_TDOT_REGS/Reg] -force
 
-# ICAP: 0x40004000 (via post_bd_dfx)
+# ICAP: 0x40024000 (via post_bd_dfx)
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_ICAP_REGS_Reg}]
-assign_bd_address -offset 0x40004000 -range 0x1000 \
+assign_bd_address -offset 0x40024000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs S_AXI_ICAP_REGS/Reg] -force
 
-# SPI-over-PCIe: 0x40005000 (M06)
+# SPI-over-PCIe: 0x40025000 (M06)
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_SPI_REGS_Reg}]
-assign_bd_address -offset 0x40005000 -range 0x1000 \
+assign_bd_address -offset 0x40025000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs S_AXI_SPI_REGS/Reg] -force
 
@@ -306,7 +333,7 @@ assign_bd_address -offset 0x40018000 -range 0x1000 \
 
 # (Двойной ICAP устранён: лицензионный axi_hwicap_0 удалён из BD —
 #  адрес 0x40001000 больше не назначается; единственный ICAP-контроллер —
-#  кастомный icap_ctrl @ 0x40004000 через S_AXI_ICAP_REGS.)
+#  кастомный icap_ctrl @ 0x40024000 через S_AXI_ICAP_REGS.)
 
 validate_bd_design
 save_bd_design
@@ -389,6 +416,53 @@ if {[string first "complete" [string tolower $st]] == -1} {
     puts "=== SYNTHESIS FAILED ==="
     close_project
     exit 1
+}
+
+# ---------- 7b. FATAL GATE: физический BAR0 (AXILITE_MASTER_APERTURE_SIZE) ----------
+# FIX-BAR0_SIZE_APERTURE (2026-10-02): НЕ читаем `pcie2_ip.xci` (sub-IP заглушка,
+# в ней BAR0_Size_Vector навсегда "1M" — это НЕ отражает реальность и вызывало
+# ложный FATAL). Реальный размер BAR0 зашит в ВЕРХНИЙ уровень XDMA:
+#   <PROJ>.srcs/sources_1/bd/xdma_ddr3_dfx/ip/xdma_ddr3_dfx_xdma_0_0/xdma_ddr3_dfx_xdma_0_0.xci
+#       -> AXILITE_MASTER_APERTURE_SIZE (generated)
+# (pcie2_ip.xci в .gen — это суб-IP ЗАГЛУШКА: там BAR0_Size_Vector навсегда
+# "1M" и не отражает реальность.)
+# Кодировка (get_aperture_value, xdma_v4_2.tcl:13340): для Megabyte
+#   1M = "0x0D", N M = 0x0D + log2(N)  =>  128M = 0x14, 1M = 0x0D.
+# Проверяем после синтеза, что оно = 0x14 (128 МБ), иначе host увидит 1 МБ.
+set _xdma_xci [glob -nocomplain \
+    ${PROJ_DIR}/m2_artix7_xdma_ddr3_dfx.srcs/sources_1/bd/xdma_ddr3_dfx/ip/xdma_ddr3_dfx_xdma_0_0/xdma_ddr3_dfx_xdma_0_0.xci]
+if {${_xdma_xci} eq ""} {
+    puts "WARNING: xdma xci ещё не сгенерирован на этом шаге — файл-гейт"
+    puts "         пропущен (свойство-гейт регистров в шаге 2d уже прогнан)."
+} else {
+    set _bar_ok 0
+    foreach _xci ${_xdma_xci} {
+        set _content ""
+        if {[catch {set _fh [open $_xci r]; set _content [read $_fh]; close $_fh}]} {
+            puts "WARNING: не удалось прочитать $_xci"
+            continue
+        }
+        # ожидаем 128 МБ = 0x14 (Megabyte, get_aperture_value)
+        set _vec ""
+        regexp {AXILITE_MASTER_APERTURE_SIZE[^\n]*"value":\s*"(0x[0-9a-fA-F]+)"} \
+            $_content -> _vec
+        if {${_vec} ne "" && [string equal -nocase ${_vec} "0x14"]} {
+            set _bar_ok 1
+            puts "=== AXILITE_MASTER_APERTURE_SIZE check OK (${_vec}=128M) in $_xci ==="
+        } else {
+            puts "WARNING: $_xci AXILITE_MASTER_APERTURE_SIZE = '${_vec}' (ожидалось 0x14=128M; 1M=0x0D)"
+        }
+    }
+    if {!${_bar_ok}} {
+        puts ""
+        puts "============================================================"
+        puts " FATAL: XDMA AXILITE_MASTER_APERTURE_SIZE != 0x14 (128M)."
+        puts " Хост увидит 1 МБ, XADC недостижим. СМОТРИ FIX-BAR0_SIZE_APERTURE"
+        puts " (axilite_master_size должен быть 128 МБ в xdma_ddr3_dfx_bd.tcl:702-703)."
+        puts "============================================================"
+        close_project
+        exit 1
+    }
 }
 
 # PCIe IP XDC demotion post-synth + GT LOC disable (BUG-051)
@@ -536,7 +610,7 @@ foreach rpt {utilization.txt timing_summary.rpt} {
 # ---------- 9b. Экспорт PARTIAL битстримов (горячая замена RP) ----------
 # В DFX-потоке Vivado создаёт дочерние имплементации для каждой конфигурации
 # RP; их write_bitstream производит частичные битстримы (*partial*). Именно
-# эти файлы загружаются через PCIe (icap_ctrl @ 0x40004000, icap_load.py /
+# эти файлы загружаются через PCIe (icap_ctrl @ 0x40024000, icap_load.py /
 # dfx_swap.py) — без JTAG, статическая область и PCIe-линк не сбрасываются.
 puts "=== 9b. EXPORT PARTIAL BITSTREAMS ==="
 set partial_files [glob -nocomplain \

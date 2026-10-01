@@ -9,12 +9,12 @@
 /* ========================================================================== */
 
 /* GPIO */
-#define GPIO_BASE       0x40000000UL
+#define GPIO_BASE       0x40020000UL
 #define GPIO_DATA       (GPIO_BASE + 0x00)
 #define GPIO_TRI        (GPIO_BASE + 0x04)
 
-/* TDOT compute core (DFX-BD: xdma_axi_lite_smc M03 @ 0x4000_3000) */
-#define TDOT_BASE       0x40003000UL
+/* TDOT compute core (DFX-BD: xdma_axi_lite_smc M03 @ 0x4002_3000) */
+#define TDOT_BASE       0x40023000UL
 #define TDOT_CTRL       (TDOT_BASE + 0x00)   /* W: [0]=GO (self-clearing) */
 #define TDOT_STATUS     (TDOT_BASE + 0x04)   /* R: [0]=BUSY, [1]=DONE */
 #define TDOT_N_IN       (TDOT_BASE + 0x08)   /* R/W: number of pairs */
@@ -29,8 +29,8 @@
 #define TDOT_CORE_RES0  (TDOT_BASE + 0x2C)
 #define TDOT_CORE_RES1  (TDOT_BASE + 0x30)
 
-/* ICAP -- CTRL/STATUS/DATA (DFX-BD: xdma_axi_lite_smc M04 @ 0x4000_4000) */
-#define ICAP_BASE       0x40004000UL
+/* ICAP -- CTRL/STATUS/DATA (DFX-BD: xdma_axi_lite_smc M04 @ 0x4002_4000) */
+#define ICAP_BASE       0x40024000UL
 #define ICAP_CTRL       (ICAP_BASE + 0x00)
 #define ICAP_STATUS     (ICAP_BASE + 0x04)
 #define ICAP_DATA       (ICAP_BASE + 0x08)

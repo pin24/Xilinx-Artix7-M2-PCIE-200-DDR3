@@ -1,7 +1,7 @@
 """program_spi_flash.py - update SPI flash via SPI-over-PCIe (R-14).
 
 Allows updating the on-board W25Q128JV SPI flash WITHOUT JTAG,
-through the custom spi_over_pcie AXI-Lite module at base 0x40005000.
+through the custom spi_over_pcie AXI-Lite module at base 0x40025000.
 
 Requirements:
   - FPGA must be running a bitstream that includes spi_over_pcie.sv
@@ -15,7 +15,7 @@ Usage:
   python program_spi_flash.py --read out.bin --addr 0 --len 4096
   python program_spi_flash.py bitstream.bin --iprog  # trigger reload from flash
 
-Register map (spi_over_pcie @ 0x40005000):
+Register map (spi_over_pcie @ 0x40025000):
   0x00 CTRL   [0] START (self-clear) [1] ABORT [2] WREN [3] RDID
   0x04 STATUS [0] BUSY [1] DONE [2] ERROR [3] WIP_FLASH
   0x08 CMD    SPI opcode byte
@@ -41,7 +41,7 @@ import sys
 import time
 
 # ICAP registers (for IPROG trigger) - from icap_load.py
-ICAP_BASE = 0x4000_4000
+ICAP_BASE = 0x4002_4000
 ICAP_CTRL = ICAP_BASE + 0x00
 ICAP_STATUS = ICAP_BASE + 0x04
 ICAP_DATA = ICAP_BASE + 0x08
@@ -49,7 +49,7 @@ ICAP_CTRL_GO = 0x1
 ICAP_CTRL_STOP = 0x2
 
 # SPI registers
-SPI_BASE = 0x4000_5000
+SPI_BASE = 0x4002_5000
 SPI_CTRL = SPI_BASE + 0x00
 SPI_STATUS = SPI_BASE + 0x04
 SPI_CMD = SPI_BASE + 0x08
