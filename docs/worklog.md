@@ -538,3 +538,31 @@ Work Log:
 - Верификация после push+fetch: ahead/behind 0/0, рабочее дерево чистое, origin HEAD = 4535447.
 Stage Summary:
 - На стенде теперь: git pull --ff-only → build.cmd → ожидать «Creating INF from INX (version 1.1.2.0)» без USAGE-дампа → install.cmd (админ) → reboot → test_xdma.exe.
+
+
+## 2026-10-02/03 — Драйвер v1.1.20→v1.1.21 + диагностика DDR3/DMA
+
+Этап закрытия BSOD и начала инструментальной диагностики стенда.
+
+### Драйвер (Windows, XDMA_DMA.sys)
+- v1.1.20 (commit a9f291a): исправлены BSOD 0x3B (wcscmp NULL в GetDevNodeType) и
+  0x50 (MMIO без ValidateBarParams); умное включение большого user BAR (BAR0 128MB);
+  синхронизация структуры XDMA_DMA_BAR_INFO.
+- v1.1.21 (commit 7e827f2): WPP-трассировка (по требованию, `ENABLE_WPP=1`),
+  регистрация источника Event Log в INF.
+- Подтверждено: периферия (TDOT/GPIO/ICAP) читается через `\\.\XDMA0dma\user`
+  (BAR0); `\control` = 64KB config BAR, периферию не достаёт.
+
+### Стабильность стенда
+- Серия внезапных выключений БЕЗ дампа (хард-оф): 19:12…23:11 (7 раз), нет
+  Kernel-Power 41, нет WHEA. Температуры в норме. Вывод: просадка/скачок питания
+  (БП/сеть), НЕ драйвер.
+- Один зафиксированный сбой 0x9C MCE (memory_corruption) — аппаратный.
+
+### Диагностика DDR3/DMA (03.10, commit 36b6926)
+- Установлено: MIG/DDR3 по 0x80000000 не отвечает — и XDMA h2c, и TDOT AXI-мастер
+  виснут (BUSY без DONE). Маршрут xdma_axi_smc→MIG в BD корректен.
+- Решение: default ядра 32/8→16/8; diag_axi_sniffer (счётчики AXI + сравнение);
+  BRAM-обход 8 КБ (0x00000000) для TDOT/XDMA + host AXI-Lite 0x40006000.
+  Полный план — DIAG_PLAN.md.
+- Vivado найден: C:\AMDDesignTools\2025.2 (пересинтез требует запуска в GUI/скрипте).

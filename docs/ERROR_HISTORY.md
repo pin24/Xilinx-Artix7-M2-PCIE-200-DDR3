@@ -633,3 +633,48 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 | **Ожидаемый эффект** | 16241 CARRY4 → ~0 (остаток: 4-битные ±1 накопления coeff); слайсы RM 20346 → ~5–6k → NUM_MAC=8 влезает в pblock 10281 с запасом; колонка 1 LUT6 → пути u_mul короткие, WNS 125 МГц достижим без MCP |
 | **Связанное** | MCP (set_multicycle_path 25) ОТКЛЮЧЁН в `constraints/xdma_ddr3_early.xdc`: маскировал бы однотактные пути (25 — латентность умножения, не бюджет пути); правило «тайминговое нарушение = fatal» |
 | **Статус** | 🟢 Реализовано и доказано локально; за стендом: синтез → report_utilization -hierarchical (CARRY4 по модулям), report_timing_summary (WNS u_mul БЕЗ MCP), полный build FATAL-гейт |
+
+---
+
+## 2026-10-02 — Хронология вчерашнего этапа (стабильность стенда + диагностика DDR3/DMA)
+
+### [BSOD-2026-10-02-1750] BugCheck 0x3B (SYSTEM_SERVICE_EXCEPTION, c0000005) в nt!wcscmp
+| Поле | Значение |
+|------|----------|
+| **Дамп** | `100226-43265-01.dmp`, 02.10 17:50:58 |
+| **Симптом** | `nt!wcscmp+3` (movzx [rcx]) с rcx=0; вызывающий XDMA_DMA+0x1eb8; процесс cmd.exe |
+| **Причина** | `GetDevNodeType()` (file_io.c:84) вызывал `wcscmp(fileName->Buffer, ...)` без проверки `Buffer==NULL/Length==0`. Открытие `\\.\XDMA0dma` без под-имени → NULL-фолт |
+| **Исправление** (v1.1.20) | EvtDeviceFileCreate добавляет гейт `fileName->Buffer==NULL||Length==0 → STATUS_INVALID_PARAMETER` до GetDevNodeType |
+| **Статус** | ✅ Исправлено, v1.1.20 (commit a9f291a) |
+
+### [BSOD-2026-10-01] BugCheck 0x50 (PAGE_FAULT_IN_NONPAGED_AREA) при MMIO чтении
+| Поле | Значение |
+|------|----------|
+| **Дамп** | `100226-49343-01.dmp`, 01.10 13:57; probe.exe, IRQL=2 |
+| **Симптом** | rep movs dword (READ_REGISTER_BUFFER_ULONG) по unmapped-адресу; XDMA_DMA+2c55 |
+| **Причина** | ReadBarToRequest не вызывал ValidateBarParams; offset за пределы MAPPED BAR → AV |
+| **Исправление** (v1.1.20) | ReadBarToRequest/WriteBarFromRequest зовут ValidateBarParams (offset+len<barLength) до READ/WRITE_REGISTER_*; out-of-range теперь возвращает GLE=1, не BSOD |
+| **Статус** | ✅ Исправлено, v1.1.20 |
+
+### [HW-2026-10-02-2118] BugCheck 0x9C (MACHINE_CHECK_EXCEPTION) — аппаратная
+| Поле | Значение |
+|------|----------|
+| **Дамп** | `100226-41609-01.dmp`, 02.10 21:21:57; FAILURE=MEMORY_CORRUPTION_LARGE |
+| **Симптом** | nt!KxMcheckAbort→HandleMcheck (HAL); процесс QHSafeTray, IRQL=f |
+| **Причина** | Аппаратный MCE (CPU/память/питание), НЕ драйвер (нет XDMA_DMA в стеке) |
+| **Статус** | ⏳ Не программа; связывается с нестабильным питанием/БП (серия хард-оффов) |
+
+### [HW-2026-10-02] Серия внезапных выключений БЕЗ дампа (характерно для просадки питания)
+| Поле | Значение |
+|------|----------|
+| **Симптом** | Неожиданные выключения (6008) без миндампа и без Kernel-Power 41: 19:12,20:02,20:14,20:47,21:13,21:53,23:11; температуры в норме |
+| **Причина** | Скачок/просадка напряжения (деградирующий БП или сеть); происходит и в простое, БЕЗ активности драйвера |
+| **Статус** | ⏳ Аппаратное; рекомендация — проверить/заменить БП, подключить через ИБП |
+
+### [DIAG-2026-10-03] MIG/DDR3 по 0x80000000 не отвечает (DMA и TDOT виснут)
+| Поле | Значение |
+|------|----------|
+| **Симптом** | XDMA h2c дескриптор к DDR3 и AXI4-мастер TDOT → BUSY без DONE; loopback виснет |
+| **Причина** | Маршрут xdma_axi_smc→MIG в BD корректен (0x80000000), но DDR3-контроллер/плата не отвечает (не калиброван/неисправен) |
+| **Решение (прошивка)** | NUM_MAC 32→16 default; diag_axi_sniffer; BRAM-обход 8 КБ (0x00000000) для TDOT/XDMA + хост AXI-Lite 0x40006000 (см. DIAG_PLAN.md, commit 36b6926) |
+| **Статус** | 🟡 Внесено в diff/RTL/BD; пересинтез Vivado обязателен |

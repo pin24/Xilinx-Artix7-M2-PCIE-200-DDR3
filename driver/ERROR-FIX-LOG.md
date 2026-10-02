@@ -177,3 +177,48 @@
 | Неисправность слота PCIe/M.2 или платы | Устройство стабильно перечисляется, конфиг-пространство читается, AER-ошибка возникает строго при обращении к BAR2 | Отклонена (на текущем этапе) |
 | Конфликт двух XADC | Ранее закрыто проектом (BUG-031, `XADC_En=Off`) | Отклонена |
 | Проблема в KMDF-версии/подписи | Драйвер загружается, импорты корректны, подпись принимается (testsigning on) | Отклонена |
+
+---
+
+## E-15 — BSOD 0x3B (SYSTEM_SERVICE_EXCEPTION, c0000005) в nt!wcscmp (02.10.2026)
+
+| Поле | Значение |
+|---|---|
+| **Дата** | 2026-10-02 17:50 |
+| **Дампы** | `C:\Windows\Minidump\100226-43265-01.dmp` |
+| **Симптом** | `nt!wcscmp+3` с `rcx=0`; вызывающий кадр `XDMA_DMA+0x1eb8` (GetDevNodeType); процесс cmd.exe, IRQL 0 |
+| **Перво/причина** | `GetDevNodeType()` (file_io.c:84) вызывал `wcscmp(fileName->Buffer, ...)` без проверки `Buffer==NULL/Length==0`. Открытие `\\.\XDMA0dma` без под-имени → NULL-фолт |
+| **Исправление** | EvtDeviceFileCreate: гейт `fileName->Buffer==NULL||Length==0 → STATUS_INVALID_PARAMETER` до GetDevNodeType |
+| **Файлы** | `xdma_driver_win_src_2017/sys/file_io.c` |
+| **Статус** | ✅ Исправлено, драйвер v1.1.20 (commit a9f291a) |
+
+## E-16 — BSOD 0x50 (PAGE_FAULT_IN_NONPAGED_AREA) при MMIO чтении (01.10.2026)
+
+| Поле | Значение |
+|---|---|
+| **Дата** | 2026-10-01 (или файл 02.10 13:57) |
+| **Дампы** | `100226-49343-01.dmp`; probe.exe, IRQL 2 |
+| **Симптом** | rep movs dword (READ_REGISTER_BUFFER_ULONG) по unmapped-адресу; `XDMA_DMA+0x2c55` |
+| **Перво/причина** | ReadBarToRequest не вызывал ValidateBarParams; offset за границы MAPPED BAR |
+| **Исправление** | ReadBarToRequest/WriteBarFromRequest вызывают ValidateBarParams (offset+len<barLength) до READ/WRITE_REGISTER_* |
+| **Файлы** | `file_io.c` |
+| **Статус** | ✅ Исправлено, v1.1.20; out-of-range теперь GLE=1, не BSOD |
+
+## E-17 — WPP-трассировка драйвера (v1.1.21, 02.10.2026 ночь)
+
+| Поле | Значение |
+|---|---|
+| **Цель** | Логировать шаги Entry/Exit при зависании (аппаратном, не драйверном) |
+| **Реализация** | `trace.h` гейт `!DBG && !WPP_ENABLED`; build.cmd `:do_wpp` подпрограмма (tracewpp + WppConfig); флаг `/DWPP_ENABLED`; WPP_INIT_TRACING в DriverEntry |
+| **Файлы** | `build.cmd`, `trace.h`, `file_io.c`, `dma_driver.c` |
+| **Статус** | ✅ Внесено, v1.1.21 (commit 7e827f2). Диск НЕ трогает (буфер ETW в RAM) |
+
+## E-18 — Диагностика DDR3/DMA: MIG по 0x80000000 не отвечает (03.10.2026)
+
+| Поле | Значение |
+|---|---|
+| **Симптом** | XDMA h2c дескриптор к DDR3 и AXI4-мастер TDOT → BUSY без DONE; loopback виснет |
+| **Причина** | Маршрут `xdma_axi_smc→MIG` в BD корректен (0x80000000), но DDR3-контроллер/плата не отвечает (не калиброван/неисправен) |
+| **Решение** | NUM_MAC 32→16 default; diag_axi_sniffer (счётчики AXI + сравнение); BRAM-обход 8 КБ (0x00000000) для TDOT/XDMA + хост AXI-Lite 0x40006000 (см. DIAG_PLAN.md) |
+| **Файлы** | `rtl/diag/diag_axi_sniffer.sv`, `xdma_ddr3_dfx_bd.tcl`, top/ядер RTL, build_*.tcl |
+| **Статус** | 🟡 Внесено (commit 36b6926); пересинтез Vivado обязателен. После него CORE_PARAMS → 0x810 (16/8) |
