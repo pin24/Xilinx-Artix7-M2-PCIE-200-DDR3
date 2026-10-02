@@ -58,6 +58,7 @@ typedef struct XDMA_DEVICE_T {
     ULONG barLength[XDMA_MAX_NUM_BARS];
     ULONG configBarIdx;
     LONG userBarIdx;
+    LONG axiliteBarIdx;
     LONG bypassBarIdx;
     volatile XDMA_CONFIG_REGS *configRegs;
     volatile XDMA_IRQ_REGS *interruptRegs;

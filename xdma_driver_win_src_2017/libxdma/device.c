@@ -190,11 +190,31 @@ static NTSTATUS IdentifyBars(IN PXDMA_DEVICE xdma) {
     // if config bar is bar0 then user bar doesnt exit
     xdma->userBarIdx = xdma->configBarIdx == 1 ? 0 : -1;
 
+    // AXI-Lite master (peripheral) window: the non-config BAR with the largest
+    // aperture (e.g. 128MB PF0 BAR0). Expose it as the user/axilite bar so the
+    // host reaching peripherals (offset = AXI - 0x40000000) maps to it. When the
+    // config register file is BAR0, userBarIdx above is -1, but the AXIL window
+    // still exists on another BAR - bind it explicitly.
+    xdma->axiliteBarIdx = -1;
+    {
+        ULONG bestLen = 0;
+        for (UINT i = 0; i < xdma->numBars; ++i) {
+            if ((LONG)i == (LONG)xdma->configBarIdx)
+                continue;
+            if (xdma->bar[i] != NULL && xdma->barLength[i] > bestLen) {
+                bestLen = xdma->barLength[i];
+                xdma->axiliteBarIdx = (LONG)i;
+            }
+        }
+        if (xdma->axiliteBarIdx >= 0)
+            xdma->userBarIdx = xdma->axiliteBarIdx;
+    }
+
     // if config bar is not the last bar then bypass bar exists
     xdma->bypassBarIdx = xdma->numBars - xdma->configBarIdx == 2 ? xdma->numBars - 1 : -1;
 
-    TraceInfo(DBG_INIT, "%!FUNC!, BAR index: user=%d, control=%d, bypass=%d",
-              xdma->userBarIdx, xdma->configBarIdx, xdma->bypassBarIdx);
+    TraceInfo(DBG_INIT, "%!FUNC!, BAR index: user=%d (axil=%d), control=%d, bypass=%d",
+              xdma->userBarIdx, xdma->axiliteBarIdx, xdma->configBarIdx, xdma->bypassBarIdx);
     return STATUS_SUCCESS;
 }
 

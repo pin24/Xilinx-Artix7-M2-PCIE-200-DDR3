@@ -6,7 +6,7 @@ Provider=%Provider%
 ; Автономный DMA-драйвер XDMA (upstream-стек: file_io.c + libxdma).
 ; Версию перезаписывает stampinf -v при сборке (build.cmd). Должна быть строго
 ; новее уже установленной, иначе pnputil не обновит пакет.
-DriverVer=10/01/2026,1.1.17.0
+DriverVer=10/02/2026,1.1.18.0
 CatalogFile=XDMA_DMA.cat
 
 [Manufacturer]
