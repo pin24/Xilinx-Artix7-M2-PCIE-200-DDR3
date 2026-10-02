@@ -40,6 +40,7 @@ typedef struct _FILE_CONTEXT {
         XDMA_EVENT* event;      // EVENTS
         XDMA_ENGINE* engine;    // H2C / C2H
     } u;
+    size_t barLength;           // mapped BAR length (from xdma->barLength[idx]) for USER/CONTROL/BYPASS
     WDFQUEUE queue;
 
 } FILE_CONTEXT, *PFILE_CONTEXT;
