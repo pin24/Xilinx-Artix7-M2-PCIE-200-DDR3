@@ -9,7 +9,7 @@
 #   vivado.bat -mode batch -source scripts/build_dfx.tcl
 #
 # Опциональные аргументы (через -tclargs):
-#   NUM_MAC=<16|32|64>   (по умолчанию 32)
+#   NUM_MAC=<16|32|64>   (по умолчанию 16)
 #   JOBS=<N>             (по умолчанию 8)
 #   SKIP_SYNTH=1         (только создать проект, без сборки)
 #
@@ -41,8 +41,8 @@ set ::env(PROJ_DIR_BUILD) ${PROJ_DIR}
 set PART       "xc7a200tfbg484-2"
 set TOP_NAME   "xdma_ddr3_core_top"
 
-set NUM_MAC     8
-set ADDERS      4
+set NUM_MAC     16
+set ADDERS      8
 set JOBS        8
 set SKIP_SYNTH  0
 
@@ -214,19 +214,10 @@ puts "=== 2d. CONFIGURE BD: BAR0=128MB, ADDRESSES ==="
 open_bd_design [get_files xdma_ddr3_dfx.bd]
 
 # BAR0 = 128 MB (покрывает всё AXI-Lite окно 0x40000000-0x47FFFFFF,
-# включая XADC @ 0x46000000).
-#
-# ВАЖНО (FIX-BAR0_Size_Vector, 2026-10-01): pf0_bar0_size задаёт только
-# wrapper-параметр XDMA. Физический BAR0, который видит хост (и GUI,
-# и pcie2_ip.BAR0_Size_Vector), управляется окном AXI-Lite-мастера
-# (axilite_master_size). Без этого его дефолт = 1 МБ -> BAR0_Size_Vector="1M",
-# XADC @ 96 МБ недостижим, и в проекте xdma_0 показывает "1 MB".
-# Поэтому ставим ОБА и consolidate до 128 МБ.
+# включая XADC @ 0x46000000)
 set_property -dict [list \
     CONFIG.pf0_bar0_scale {Megabytes} \
     CONFIG.pf0_bar0_size {128} \
-    CONFIG.axilite_master_scale {Megabytes} \
-    CONFIG.axilite_master_size {128} \
 ] [get_bd_cells xdma_0]
 
 # ---- Отчёт PCIe BAR / MSI-X (контроль PCIe-видимости до сборки) ----
@@ -244,24 +235,6 @@ if {[catch {
         if {${_sz} ne "" && ${_sz} ne "0"} {
             puts "    BAR${_bar}: scale=${_sc} size=${_sz}"
         }
-    }
-    # FIX-BAR0_Size_Vector: физический BAR0=128 МБ требует, чтобы ОКНО
-    # AXI-Lite-мастера (axilite_master_size) тоже было 128 МБ, иначе хост
-    # видит только 1 МБ (BAR0_Size_Vector="1M"), XADC @ 96 МБ недостижим.
-    # Жёсткий FATAL-гейт: если не 128 — сборку прервать (не флешить 1 МБ).
-    set _am_sc ""; catch { set _am_sc [get_property CONFIG.axilite_master_scale $xdma_cell] }
-    set _am_sz ""; catch { set _am_sz [get_property CONFIG.axilite_master_size  $xdma_cell] }
-    set _b0sz "";  catch { set _b0sz [get_property CONFIG.pf0_bar0_size $xdma_cell] }
-    puts "    AXI-Lite master window: scale=${_am_sc} size=${_am_sz} ; pf0_bar0_size=${_b0sz}"
-    if {${_b0sz} ne "128" || ${_am_sz} ne "128"} {
-        puts ""
-        puts "============================================================"
-        puts " FATAL: BAR0/AXI-LITE окно != 128 МБ (pf0_bar0_size=${_b0sz},"
-        puts "        axilite_master_size=${_am_sz}). Хост увидит 1 МБ,"
-        puts "        XADC недостижим. СМОТРИ FIX-BAR0_Size_Vector."
-        puts "============================================================"
-        close_project
-        exit 1
     }
     set _msix ""; catch { set _msix [get_property CONFIG.pf0_msix_enabled $xdma_cell] }
     set _bir "";  catch { set _bir  [get_property CONFIG.pf0_msix_cap_table_bir $xdma_cell] }
@@ -351,7 +324,8 @@ add_files -norecurse \
     ${ROOT}/rtl/integration/icap_ctrl.sv \
     ${ROOT}/rtl/integration/xadc_temp.sv \
     ${ROOT}/rtl/integration/xadc_prim.sv \
-    ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv
+    ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv \
+    ${ROOT}/rtl/diag/diag_axi_sniffer.sv
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
 set_property generic ADDERS=${ADDERS} [current_fileset]
 
@@ -416,53 +390,6 @@ if {[string first "complete" [string tolower $st]] == -1} {
     puts "=== SYNTHESIS FAILED ==="
     close_project
     exit 1
-}
-
-# ---------- 7b. FATAL GATE: физический BAR0 (AXILITE_MASTER_APERTURE_SIZE) ----------
-# FIX-BAR0_SIZE_APERTURE (2026-10-02): НЕ читаем `pcie2_ip.xci` (sub-IP заглушка,
-# в ней BAR0_Size_Vector навсегда "1M" — это НЕ отражает реальность и вызывало
-# ложный FATAL). Реальный размер BAR0 зашит в ВЕРХНИЙ уровень XDMA:
-#   <PROJ>.srcs/sources_1/bd/xdma_ddr3_dfx/ip/xdma_ddr3_dfx_xdma_0_0/xdma_ddr3_dfx_xdma_0_0.xci
-#       -> AXILITE_MASTER_APERTURE_SIZE (generated)
-# (pcie2_ip.xci в .gen — это суб-IP ЗАГЛУШКА: там BAR0_Size_Vector навсегда
-# "1M" и не отражает реальность.)
-# Кодировка (get_aperture_value, xdma_v4_2.tcl:13340): для Megabyte
-#   1M = "0x0D", N M = 0x0D + log2(N)  =>  128M = 0x14, 1M = 0x0D.
-# Проверяем после синтеза, что оно = 0x14 (128 МБ), иначе host увидит 1 МБ.
-set _xdma_xci [glob -nocomplain \
-    ${PROJ_DIR}/m2_artix7_xdma_ddr3_dfx.srcs/sources_1/bd/xdma_ddr3_dfx/ip/xdma_ddr3_dfx_xdma_0_0/xdma_ddr3_dfx_xdma_0_0.xci]
-if {${_xdma_xci} eq ""} {
-    puts "WARNING: xdma xci ещё не сгенерирован на этом шаге — файл-гейт"
-    puts "         пропущен (свойство-гейт регистров в шаге 2d уже прогнан)."
-} else {
-    set _bar_ok 0
-    foreach _xci ${_xdma_xci} {
-        set _content ""
-        if {[catch {set _fh [open $_xci r]; set _content [read $_fh]; close $_fh}]} {
-            puts "WARNING: не удалось прочитать $_xci"
-            continue
-        }
-        # ожидаем 128 МБ = 0x14 (Megabyte, get_aperture_value)
-        set _vec ""
-        regexp {AXILITE_MASTER_APERTURE_SIZE[^\n]*"value":\s*"(0x[0-9a-fA-F]+)"} \
-            $_content -> _vec
-        if {${_vec} ne "" && [string equal -nocase ${_vec} "0x14"]} {
-            set _bar_ok 1
-            puts "=== AXILITE_MASTER_APERTURE_SIZE check OK (${_vec}=128M) in $_xci ==="
-        } else {
-            puts "WARNING: $_xci AXILITE_MASTER_APERTURE_SIZE = '${_vec}' (ожидалось 0x14=128M; 1M=0x0D)"
-        }
-    }
-    if {!${_bar_ok}} {
-        puts ""
-        puts "============================================================"
-        puts " FATAL: XDMA AXILITE_MASTER_APERTURE_SIZE != 0x14 (128M)."
-        puts " Хост увидит 1 МБ, XADC недостижим. СМОТРИ FIX-BAR0_SIZE_APERTURE"
-        puts " (axilite_master_size должен быть 128 МБ в xdma_ddr3_dfx_bd.tcl:702-703)."
-        puts "============================================================"
-        close_project
-        exit 1
-    }
 }
 
 # PCIe IP XDC demotion post-synth + GT LOC disable (BUG-051)

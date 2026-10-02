@@ -141,7 +141,12 @@ module tdot_axi4 #(
     output logic                                  M_AXI_RREADY,
 
     // ---- IRQ планировщика (уровень 1, держится до irq_ack; домен S/M_AXI) ----
-    output logic                                  sched_irq
+    output logic                                  sched_irq,
+
+    // ---- DIAG-статус (2026-10-03): наблюдение за ядром без доступа внутрь ----
+    output logic                                  diag_go,    // внешний GO принят / ядро стартует
+    output logic                                  diag_busy,  // busy_q (ядро исполняет)
+    output logic                                  diag_done   // done_q
 );
 
     localparam int AW    = C_M_AXI_ADDR_WIDTH;
@@ -848,6 +853,11 @@ module tdot_axi4 #(
     end
 
     assign sched_irq = sched_irq_en_q && irq_pending_q;
+
+// DIAG-статус: наблюдаем внешний GO + состояние движка (для diag sniffer).
+assign diag_go   = go_reg;
+assign diag_busy = busy_q;
+assign diag_done = done_q;
 
 
     // fifo_pop в фазе загрузки: pop ТОЛЬКО в такт выдачи BRAM-чтения

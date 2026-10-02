@@ -40,8 +40,8 @@
 //     (тернарные веса {-1,0,+1}: нулевые продукты больше не «съедают» пары).
 // ============================================================================
 module compute_dot_par_raw #(
-    parameter int NUM_MAC = 32,
-    parameter int ADDERS  = 8      // barrel-аддеров в дереве (1 = последовательный режим)
+parameter int NUM_MAC = 16,   // FIX-DIAG 2026-10-03: 32->16 to free resources
+parameter int ADDERS  = 8     // barrel-аддеров в дереве (1 = последовательный режим)
 )(
     input  logic                       clk,
     input  logic                       rst_n,

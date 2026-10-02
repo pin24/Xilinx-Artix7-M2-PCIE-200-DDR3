@@ -1,4 +1,7 @@
-module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8)
+// FIX-DIAG 2026-10-03: NUM_MAC default lowered 32 -> 16 to free DSP48/LUT/BRAM
+// for the diagnostic modules (BRAM bypass, AXI sniffers, compare regfile).
+// ADDERS kept at 8 (tree at 16 inputs still benefits; <= NUM_MAC/2 not required).
+module xdma_ddr3_core_top #(parameter int NUM_MAC = 16, parameter int ADDERS = 8)
    (DDR3_0_addr,
      DDR3_0_ba,
      DDR3_0_cas_n,
@@ -49,20 +52,17 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
   input reset_rtl_0;
 
   // ---- Такт/сброс fabric-домена 125 МГц (BUG-034, BUG-036) ----
-  // XDMA в 64-битном варианте (Gen2 x4) тактирует axi_aclk частотой 250 МГц.
-  // Тернарное ядро (tfmul_raw: 40-тритовая последовательная цепочка сложения)
-  // и RP (DataMover 128 бит) закрывают тайминг только при 125 МГц.
-  // BD генерирует такт 125 МГц (clk125_core_wiz из clk50) и сброс (rst_core_125M),
-  // экспортирует их через clk_core_out/core_resetn_out. НЕ объявляем core_clk/
-  // core_resetn входными портами топа — иначе на сети будет 2 драйвера
-  // (выход clk125_core_wiz внутри BD + IBUF от input-порта) → DRC MDRV-1.
+  // BD генерирует такт 125 МГц (clk125_core_wiz из clk50) и сброс
+  // (rst_core_125M), экспортирует их через clk_core_out/core_resetn_out.
+  // НЕ объявляем core_clk/core_resetn входными портами топа — иначе на сети
+  // будет 2 драйвера (выход clk_wiz внутри BD + IBUF от input-порта) -> DRC
+  // MDRV-1. (FLAT: без icap/u_icap — icap_clk группы больше нет.)
   logic core_clk;
   logic core_resetn;
 
-  // ---- Такт/сброс PCIe-домена: экспортируются из BD (post_bd_dfx.tcl:step 5) ----
-  // BD выводит axi_aclk_out (xdma_0/axi_aclk, 250 МГц в 64-битном варианте)
-  // и axi_aresetn_out (xdma_0/axi_aresetn); используется только
-  // PCIe-доменом (SmartConnect S-стороны). Периферия и ядро — в core_clk.
+  // ---- Такт/сброс PCIe-домена: экспортируются из BD (post_bd_flat.tcl) ----
+  // BD выводит axi_aclk_out (xdma_0/axi_aclk) и axi_aresetn_out; используется
+  // только PCIe-доменом (SmartConnect S-стороны). Периферия и ядро — в core_clk.
   logic axi_aclk;
   logic axi_aresetn;
 
@@ -99,15 +99,18 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
   logic        m_axi_rvalid, m_axi_rready, m_axi_rlast;
   logic [1:0]  m_axi_rresp;
 
-  // ---- IRQ планировщика TDOT: уровень из fabric 125 -> домен XDMA 250 ----
+  // ---- IRQ планировщика TDOT: уровень из fabric 125 -> домен XDMA 125 ----
   // Уровень держится до irq_ack (миллисекунды) — 2-FF синхронизация достаточна;
-  // дальше в BD: tdot_irq -> xlconcat -> xdma_0/usr_irq_req (MSI-X вектор).
+  // дальше в BD: tdot_irq -> xdma_0/usr_irq_req (MSI-X вектор 0).
   logic tdot_irq_w;
   (* ASYNC_REG = "TRUE" *) logic [1:0] tdot_irq_sync;
   always_ff @(posedge axi_aclk or negedge axi_aresetn) begin
       if (!axi_aresetn) tdot_irq_sync <= 2'b00;
       else              tdot_irq_sync <= {tdot_irq_sync[0], tdot_irq_w};
   end
+
+  // DIAG-статус tdot (2026-10-03): выведены из tdot_axi4 для diag сниффера.
+  logic tdot_go_w, tdot_busy_w, tdot_done_w;
 
   tdot_axi4 #(.NUM_MAC(NUM_MAC), .ADDERS(ADDERS)) u_tdot (
       .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
@@ -137,68 +140,15 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .M_AXI_ARVALID(m_axi_arvalid), .M_AXI_ARREADY(m_axi_arready),
       .M_AXI_RID(), .M_AXI_RDATA(m_axi_rdata), .M_AXI_RRESP(m_axi_rresp),
       .M_AXI_RLAST(m_axi_rlast), .M_AXI_RVALID(m_axi_rvalid), .M_AXI_RREADY(m_axi_rready),
-      .sched_irq(tdot_irq_w)
+      .sched_irq(tdot_irq_w),
+      .diag_go(tdot_go_w), .diag_busy(tdot_busy_w), .diag_done(tdot_done_w)
   );
-
-  // ======================== ICAP (перезагрузка на лету через AXI-Lite) ========================
-  logic [7:0]  icap_awaddr, icap_araddr;
-  logic        icap_awvalid, icap_awready;
-  logic [31:0] icap_wdata;
-  logic [3:0]  icap_wstrb;
-  logic        icap_wvalid, icap_wready;
-  logic        icap_bvalid, icap_bready;
-  logic        icap_arvalid, icap_arready;
-  logic [31:0] icap_rdata;
-  logic        icap_rvalid, icap_rready;
-  logic [1:0]  icap_bresp;
-  logic [1:0]  icap_rresp;
-
-  // ---- SPI-over-PCIe (R-14): AXI-Lite @ 0x40005000 ----
-  logic [7:0]  spi_awaddr, spi_araddr;
-  logic        spi_awvalid, spi_awready;
-  logic [31:0] spi_wdata;
-  logic [3:0]  spi_wstrb;
-  logic        spi_wvalid, spi_wready;
-  logic        spi_bvalid, spi_bready;
-  logic        spi_arvalid, spi_arready;
-  logic [31:0] spi_rdata;
-  logic        spi_rvalid, spi_rready;
-  logic [1:0]  spi_bresp;
-  logic [1:0]  spi_rresp;
-
-  icap_ctrl u_icap (
-      .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
-      .S_AXI_AWADDR(icap_awaddr), .S_AXI_AWPROT(1'b0),
-      .S_AXI_AWVALID(icap_awvalid), .S_AXI_AWREADY(icap_awready),
-      .S_AXI_WDATA(icap_wdata), .S_AXI_WSTRB(icap_wstrb),
-      .S_AXI_WVALID(icap_wvalid), .S_AXI_WREADY(icap_wready),
-      .S_AXI_BRESP(), .S_AXI_BVALID(icap_bvalid), .S_AXI_BREADY(icap_bready),
-      .S_AXI_ARADDR(icap_araddr), .S_AXI_ARPROT(1'b0),
-      .S_AXI_ARVALID(icap_arvalid), .S_AXI_ARREADY(icap_arready),
-      .S_AXI_RDATA(icap_rdata), .S_AXI_RRESP(),
-      .S_AXI_RVALID(icap_rvalid), .S_AXI_RREADY(icap_rready)
-  );
-
-  // ======================== SPI-over-PCIe (REMOVED 2026-09-30) ========================
-  // spi_over_pcie and the qspi_* top ports were REMOVED so the QSPI flash pins are
-  // never claimed as user IO. While a design instantiated spi_over_pcie, the FPGA
-  // held FCS_B/D00-D03 as fabric IO and Labtools 27-3347 ("Failure to set flash
-  // parameters") occurred during JTAG flash programming. With no user claim of
-  // the flash pins, the configuration controller keeps control and cfgmem works.
-  // The BD S_AXI_SPI_REGS external port (M06 @0x40005000) remains but is unused.
-  //
 
   // ======================== XADC (температура/напряжение, база 0x46000000) ========================
-  // FIX-5 RTL-1: инстанцируем xadc_temp.sv, чтобы BD-порт S_AXI_XADC_REGS (создаваемый
-  // scripts/post_bd_dfx.tcl на M05 @ 0x46000000) был подключён к реальному
-  // AXI-Lite slave. Без этого wrapper-порт остаётся floating, monitor_temp.py
-  // получает decoder error / undefined. Соответствует ANALYSIS_AND_SPEC_FIX.md B-5.
-  //
-  // BUG-031: Artix-7 имеет только 1 XADC. MIG 7-series IP в DFX-варианте
-  // отключил XADC (XADC_En=Off в xdma_ddr3_dfx_bd.tcl:199 — отключён ради
-  // избежания UTLZ-1). xadc_wiz IP НЕ создаётся (создал бы 2-й виртуальный
-  // XADC → UTLZ-1). raw_temp/raw_vccint/raw_valid = 0 — monitor_temp.py
-  // читает 0°C / 0V. См. BUG-031, scripts/post_bd_dfx.tcl блок 4c.
+  // FIX-5 RTL-1: инстанцируем xadc_temp.sv, чтобы BD-порт S_AXI_XADC_REGS
+  // (M03 @ 0x46000000) был подключён к реальному AXI-Lite slave.
+  // BUG-031: Artix-7 имеет только 1 XADC. MIG отключил XADC (XADC_En=Off),
+  // xadc_wiz НЕ создаётся; xadc_prim (ниже) подаёт реальные raw_temp/raw_vccint.
   logic [7:0]  xadc_awaddr, xadc_araddr;
   logic        xadc_awvalid, xadc_awready;
   logic [31:0] xadc_wdata;
@@ -210,10 +160,9 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
   logic        xadc_rvalid, xadc_rready;
   logic [1:0]  xadc_bresp, xadc_rresp;
 
-  // BUG-031 RTL-fix: xadc_prim (ниже) подаёт реальные данные температуры/VCCINT.
-  // MIG 7-series IP в DFX-варианте: XADC_En=Off (см. xdma_ddr3_dfx_bd.tcl:199) —
-  // физический XADC свободен, примитив один (UTLZ-1 не возникает). monitor_temp.py
-  // читает реальные 0x46000000 TEMP/VCCINT/VALID.
+  logic [15:0] xadc_raw_temp;
+  logic [15:0] xadc_raw_vccint;
+  logic        xadc_raw_valid;
 
   xadc_temp u_xadc (
       .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
@@ -226,23 +175,13 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .S_AXI_ARVALID(xadc_arvalid), .S_AXI_ARREADY(xadc_arready),
       .S_AXI_RDATA(xadc_rdata), .S_AXI_RRESP(xadc_rresp),
       .S_AXI_RVALID(xadc_rvalid), .S_AXI_RREADY(xadc_rready),
-      // BUG-031 RTL-fix: xadc_prim (примитив XADC через DRP) подаёт реальные
-      // raw_temp/raw_vccint/raw_valid. MIG сконфигурирован XADC_En=Off — физический
-      // XADC свободен, примитив один, UTLZ-1 не возникает.
+      // BUG-031 RTL-fix: xadc_prim подаёт реальные raw_temp/raw_vccint/raw_valid
       .raw_temp(xadc_raw_temp), .raw_vccint(xadc_raw_vccint), .raw_valid(xadc_raw_valid)
   );
 
   // ---- XADC primitive: реальный мониторинг температуры/VCCINT (BUG-031 fix) ----
-  // xadc_prim = DRP-FSM вокруг примитива XADC (xadc_prim.sv): раз в секунду
-  // читает DADDR 0x00 (temp) и 0x06 (VCCINT), подаёт raw_temp/raw_vccint/raw_valid
-  // в xadc_temp. Тактирование — clk50 (50 МГц, в спецификации XADC DCLK 8..250 МГц;
-  // см. шапку xadc_prim.sv: DCLK=clk50), сброс — fabric-домен core_resetn (clk50 —
-  // источник core_clk, так что reset согласован с DCLK). AXI-Lite интерфейс u_xadc
-  // не тронут: host-тесты register access работают как раньше.
-  logic [15:0] xadc_raw_temp;
-  logic [15:0] xadc_raw_vccint;
-  logic        xadc_raw_valid;
-
+  // xadc_prim = DRP-FSM вокруг примитива XADC: раз в секунду читает DADDR 0x00
+  // (temp) и 0x06 (VCCINT). Тактируется clk50 (DCLK), сброс — fabric core_resetn.
   xadc_prim u_xadc_prim (
       .clk       (clk50[0]),
       .rst_n     (core_resetn),
@@ -251,9 +190,11 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .raw_valid (xadc_raw_valid)
   );
 
-  // ======================== BD (DFX variant) ========================
-  // BD wrapper: xdma_ddr3_dfx_wrapper (from xdma_ddr3_dfx.bd)
-  // Включает XDMA, MIG, HWICAP, DFX Socket, DFX Partition
+  // ======================== BD (FLAT, no-DFX variant) ========================
+  // BD wrapper: xdma_ddr3_dfx (from xdma_ddr3_dfx.bd, FLAT)
+  // Включает XDMA, MIG, inlined DataMover MM2S/S2MM + ctrl, GPIO, clk wizards.
+  // БЕЗ icap_ctrl (S_AXI_ICAP_REGS убран) и БЕЗ SPI-over-PCIe (S_AXI_SPI_REGS
+  // убран). icap_ctrl.sv остаётся в дереве как неиспользуемый файл.
   xdma_ddr3_dfx xdma_ddr3_dfx_i (
       .DDR3_0_addr(DDR3_0_addr),
       .DDR3_0_ba(DDR3_0_ba),
@@ -270,12 +211,12 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .DDR3_0_ras_n(DDR3_0_ras_n),
       .DDR3_0_reset_n(DDR3_0_reset_n),
       .DDR3_0_we_n(DDR3_0_we_n),
-      .axi_aclk_out(axi_aclk),      // экспорт xdma_0/axi_aclk из BD (250 МГц, 64-бит)
-      .axi_aresetn_out(axi_aresetn),// экспорт xdma_0/axi_aresetn из BD
-      .axi_aclk_in(axi_aclk),       // loopback: та же цепь, что axi_aclk_out
-      .tdot_irq(tdot_irq_sync[1]),  // IRQ планировщика (синхр. в 250, -> usr_irq_req)
-      .clk_core_out(core_clk),      // 125 МГц fabric/ядро (BUG-034, clk125_core_wiz)
-      .core_resetn_out(core_resetn),// сброс fabric-домена (rst_core_125M)
+      .axi_aclk_out(axi_aclk),       // экспорт xdma_0/axi_aclk из BD (125 МГц, 128-бит)
+      .axi_aresetn_out(axi_aresetn), // экспорт xdma_0/axi_aresetn из BD
+      .axi_aclk_in(axi_aclk),        // loopback: та же цепь, что axi_aclk_out
+      .tdot_irq(tdot_irq_sync[1]),   // IRQ планировщика (синхр. в 125, -> usr_irq_req)
+      .clk_core_out(core_clk),       // 125 МГц fabric/ядро (BUG-034, clk125_core_wiz)
+      .core_resetn_out(core_resetn), // сброс fabric-домена (rst_core_125M)
       .diff_clock_rtl_0_clk_n(diff_clock_rtl_0_clk_n),
       .diff_clock_rtl_0_clk_p(diff_clock_rtl_0_clk_p),
       .clk50(clk50),
@@ -308,18 +249,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .S_AXI_TDOT_REGS_arvalid(s_axil_arvalid), .S_AXI_TDOT_REGS_arready(s_axil_arready),
       .S_AXI_TDOT_REGS_rdata(s_axil_rdata), .S_AXI_TDOT_REGS_rresp(s_axil_rresp),
       .S_AXI_TDOT_REGS_rvalid(s_axil_rvalid), .S_AXI_TDOT_REGS_rready(s_axil_rready),
-      .S_AXI_ICAP_REGS_awaddr(icap_awaddr), .S_AXI_ICAP_REGS_awprot(1'b0),
-      .S_AXI_ICAP_REGS_awvalid(icap_awvalid), .S_AXI_ICAP_REGS_awready(icap_awready),
-      .S_AXI_ICAP_REGS_wdata(icap_wdata), .S_AXI_ICAP_REGS_wstrb(icap_wstrb),
-      .S_AXI_ICAP_REGS_wvalid(icap_wvalid), .S_AXI_ICAP_REGS_wready(icap_wready),
-      .S_AXI_ICAP_REGS_bresp(icap_bresp), .S_AXI_ICAP_REGS_bvalid(icap_bvalid),
-      .S_AXI_ICAP_REGS_bready(icap_bready),
-      .S_AXI_ICAP_REGS_araddr(icap_araddr), .S_AXI_ICAP_REGS_arprot(1'b0),
-      .S_AXI_ICAP_REGS_arvalid(icap_arvalid), .S_AXI_ICAP_REGS_arready(icap_arready),
-      .S_AXI_ICAP_REGS_rdata(icap_rdata), .S_AXI_ICAP_REGS_rresp(icap_rresp),
-      .S_AXI_ICAP_REGS_rvalid(icap_rvalid), .S_AXI_ICAP_REGS_rready(icap_rready),
-      // FIX-5 RTL-1: S_AXI_XADC_REGS подключается к u_xadc (раньше floating).
-      // Канонический адрес 0x46000000 (см. docs/ADDRESS_MAP.md §2.1, resize_bar0.tcl).
+      // FIX-5 RTL-1: S_AXI_XADC_REGS подключён к u_xadc. Канонический адрес 0x46000000.
       .S_AXI_XADC_REGS_awaddr(xadc_awaddr), .S_AXI_XADC_REGS_awprot(1'b0),
       .S_AXI_XADC_REGS_awvalid(xadc_awvalid), .S_AXI_XADC_REGS_awready(xadc_awready),
       .S_AXI_XADC_REGS_wdata(xadc_wdata), .S_AXI_XADC_REGS_wstrb(xadc_wstrb),
@@ -330,22 +260,49 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 32, parameter int ADDERS = 8
       .S_AXI_XADC_REGS_arvalid(xadc_arvalid), .S_AXI_XADC_REGS_arready(xadc_arready),
       .S_AXI_XADC_REGS_rdata(xadc_rdata), .S_AXI_XADC_REGS_rresp(xadc_rresp),
       .S_AXI_XADC_REGS_rvalid(xadc_rvalid), .S_AXI_XADC_REGS_rready(xadc_rready),
-      // ---- SPI-over-PCIe regs (R-14, M06 @ 0x40005000) ----
-      .S_AXI_SPI_REGS_awaddr(spi_awaddr), .S_AXI_SPI_REGS_awprot(1'b0),
-      .S_AXI_SPI_REGS_awvalid(spi_awvalid), .S_AXI_SPI_REGS_awready(spi_awready),
-      .S_AXI_SPI_REGS_wdata(spi_wdata), .S_AXI_SPI_REGS_wstrb(spi_wstrb),
-      .S_AXI_SPI_REGS_wvalid(spi_wvalid), .S_AXI_SPI_REGS_wready(spi_wready),
-      .S_AXI_SPI_REGS_bresp(spi_bresp), .S_AXI_SPI_REGS_bvalid(spi_bvalid),
-      .S_AXI_SPI_REGS_bready(spi_bready),
-      .S_AXI_SPI_REGS_araddr(spi_araddr), .S_AXI_SPI_REGS_arprot(1'b0),
-      .S_AXI_SPI_REGS_arvalid(spi_arvalid), .S_AXI_SPI_REGS_arready(spi_arready),
-      .S_AXI_SPI_REGS_rdata(spi_rdata), .S_AXI_SPI_REGS_rresp(spi_rresp),
-      .S_AXI_SPI_REGS_rvalid(spi_rvalid), .S_AXI_SPI_REGS_rready(spi_rready),
-      // legacy-порт M_AXI_ICAP очищается в scripts/post_bd_dfx.tcl step 6.
-      // Если warning в impl остаётся — запустить make_wrapper -force.
       .pcie_7x_mgt_rtl_0_rxn(pcie_7x_mgt_rtl_0_rxn),
       .pcie_7x_mgt_rtl_0_rxp(pcie_7x_mgt_rtl_0_rxp),
       .pcie_7x_mgt_rtl_0_txn(pcie_7x_mgt_rtl_0_txn),
       .pcie_7x_mgt_rtl_0_txp(pcie_7x_mgt_rtl_0_txp),
       .reset_rtl_0(reset_rtl_0));
+
+  // ======================== DIAG (2026-10-03): сниффер пути ядро->DDR3 ========================
+  // Наблюдает мастер-шину tdot_axi4 (m_axi_* = путь TDOT->xdma_axi_smc->MIG) и статусы
+  // ядра. Даёт счётчики транзакций read/write, RRESP/BRESP!=OKAY, stall-таймаут и
+  // BRAM-реестр сравнения "ожидал/получил" — без вмешательства в шину.
+  // NOTE: сниффер включён только в тестовую/диагностическую сборку; для продакшена
+  // этот блок можно удалить или выключить константой DIAG_EN.
+  localparam int DIAG_EN = 1;
+  generate
+  if (DIAG_EN) begin : g_diag
+    diag_axi_sniffer #(
+      .C_S_AXI_ADDR_WIDTH(8),
+      .C_S_AXI_DATA_WIDTH(32),
+      .AW(32)
+    ) u_diag (
+      .clk(core_clk), .rst_n(core_resetn),
+      // AXI-Lite watch port не подключён в DFX-варианте (нет свободного M_AXI_LITE).
+      // Сниффер пока работает как watch-only + сравнение; чтение реестра хостом
+      // станет доступно после выделения S_AXI_DIAG порта в BD (см. план внедрения).
+      .s_axi_awvalid(1'b0), .s_axi_awaddr('0), .s_axi_awready(),
+      .s_axi_wvalid(1'b0), .s_axi_wdata('0), .s_axi_wready(),
+      .s_axi_bvalid(), .s_axi_bready(1'b0),
+      .s_axi_arvalid(1'b0), .s_axi_araddr('0), .s_axi_arready(),
+      .s_axi_rvalid(), .s_axi_rdata(), .s_axi_rready(1'b0),
+      // мастер-шина tdot (путь к DDR3/MIG)
+      .m_axi_awvalid(m_axi_awvalid), .m_axi_awready(m_axi_awready),
+      .m_axi_awaddr(m_axi_awaddr),
+      .m_axi_wvalid(m_axi_wvalid), .m_axi_wready(m_axi_wready), .m_axi_wlast(m_axi_wlast),
+      .m_axi_bvalid(m_axi_bvalid), .m_axi_bresp(m_axi_bresp), .m_axi_bready(m_axi_bready),
+      .m_axi_arvalid(m_axi_arvalid), .m_axi_arready(m_axi_arready),
+      .m_axi_araddr(m_axi_araddr),
+      .m_axi_rvalid(m_axi_rvalid), .m_axi_rlast(m_axi_rlast),
+      .m_axi_rresp(m_axi_rresp), .m_axi_rready(m_axi_rready),
+      // статусы ядра
+      .tdot_go(tdot_go_w), .tdot_busy(tdot_busy_w), .tdot_done(tdot_done_w),
+      // DDR3 статус не выведен в RTL-top (MIG внутри BD) — заглушка 0
+      .mig_init_calib_complete(1'b0), .mig_mmcm_locked(1'b0)
+    );
+  end
+  endgenerate
 endmodule

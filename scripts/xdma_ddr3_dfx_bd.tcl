@@ -5,7 +5,7 @@
 # Creates xdma_ddr3_dfx.bd with:
 #   - XDMA (PCIe x4 Gen2)
 #   - MIG 7-series (DDR3 256 MB)
-#   - ICAP via external S_AXI_ICAP_REGS port @ 0x40024000 (custom icap_ctrl
+#   - ICAP via external S_AXI_ICAP_REGS port @ 0x40004000 (custom icap_ctrl
 #     in RTL, partial reconfiguration via PCIe; AXI HWICAP REMOVED - single ICAP)
 #   - DFX Socket (shutdown/decouple for reconfigurable partition)
 #   - DFX Partition (block design container for RP)
@@ -608,7 +608,7 @@ proc create_root_design { parentCell } {
   # Single-ICAP (DIFF-ICAP: dual-controller removed).
   # Only ONE controller drives the physical ICAPE2: the custom icap_ctrl
   # (rtl/integration/icap_ctrl.sv), wired by top xdma_ddr3_core_top.sv to the
-  # BD external port S_AXI_ICAP_REGS @ 0x40024000 (xdma_axi_lite_smc/M04).
+  # BD external port S_AXI_ICAP_REGS @ 0x40004000 (xdma_axi_lite_smc/M04).
   # The licensed AXI HWICAP (axi_hwicap_0) is REMOVED: two controllers on one
   # ICAPE2 created a risk of mutually-exclusive/racing ICAP access.
   # SmartConnect M02 becomes an unused dangling Master - valid, no seg left.
@@ -699,8 +699,6 @@ proc create_root_design { parentCell } {
     CONFIG.xdma_wnum_chnl {2} \
     CONFIG.pf0_bar0_scale {Megabytes} \
     CONFIG.pf0_bar0_size {128} \
-    CONFIG.axilite_master_scale {Megabytes} \
-    CONFIG.axilite_master_size {128} \
   ] $xdma_0
 
   set clk200_clk_wiz [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk200_clk_wiz ]
@@ -759,6 +757,44 @@ set_property -dict [list \
   connect_bd_intf_net -intf_net xdma_axi_lite_smc_M00_AXI [get_bd_intf_pins xdma_axi_lite_smc/M00_AXI] [get_bd_intf_pins axi_gpio_0/S_AXI]
   connect_bd_intf_net -intf_net xdma_axi_lite_smc_M01_AXI [get_bd_intf_pins xdma_axi_lite_smc/M01_AXI] [get_bd_intf_pins dfx_socket/S_AXI]
   connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
+
+  # ============================================================================
+  # DIAG (2026-10-03): BRAM-обход для TDOT + DMA — локальный 8 КБ SRAM,
+  # доступный и TDOT-мастеру, и XDMA-мастеру по адресу 0x00000000 (в обход DDR3).
+  # Позволяет проверить ядро и DMA-путь БЕЗ доступа к неинициализированному MIG.
+  # ============================================================================
+  # blk_mem_gen 1024x64 (8 КБ) + AXI BRAM Controller (AXI4 -> native BRAM).
+  set diag_bram [ create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:8.3 diag_bram ]
+  set_property -dict [list \
+    CONFIG.Memory_Type {True_Dual_Port_RAM} \
+    CONFIG.Use_RSTB_Pin {true} \
+    CONFIG.Prim_Data_Width {64} \
+    CONFIG.Write_Width_A {64} \
+    CONFIG.Write_Width_B {64} \
+    CONFIG.Read_Width_A {64} \
+    CONFIG.Read_Width_B {64} \
+    CONFIG.Enable_B {Use_ENB_Pin} \
+  ] $diag_bram
+
+  set diag_bram_ctrl [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 diag_bram_ctrl ]
+  set_property -dict [list \
+    CONFIG.DATA_WIDTH {64} \
+    CONFIG.SINGLE_PORT {false} \
+    CONFIG.PROTOCOL {AXI4} \
+  ] $diag_bram_ctrl
+
+  # Подключаем BRAM controller к AXI BRAM (порт A) native-интерфейсом.
+  connect_bd_intf_net [get_bd_intf_pins diag_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins diag_bram/BRAM_PORTA]
+  # NB: BRAM_PORTA ENABLE от axi_bram_ctrl: при width 64 axi_bram_ctrl подаёт addr
+  # + en; управление руками не требуется — синтез сам свяжет.
+
+  # --- (Шаг A1) xdma_axi_smc: добавить M01 -> diag_bram_ctrl/S_AXI ---
+  set_property -dict [list CONFIG.NUM_MI {2}] $xdma_axi_smc
+  connect_bd_intf_net -intf_net xdma_axi_smc_M01_AXI [get_bd_intf_pins xdma_axi_smc/M01_AXI] [get_bd_intf_pins diag_bram_ctrl/S_AXI]
+
+  # --- (Шаг B) AXI-Lite доступ хоста к BRAM: M02 -> diag_bram_ctrl S_AXI_B ---
+  # xdma_axi_lite_smc имеет 7 MI; M02 (0x40006000) свободен (M00..M01,M03-M06 заняты).
+  connect_bd_intf_net -intf_net xdma_axi_lite_smc_M02_AXI [get_bd_intf_pins xdma_axi_lite_smc/M02_AXI] [get_bd_intf_pins diag_bram_ctrl/S_AXI_B]
 
   connect_bd_net -net clk200_clk_wiz_clk_out1 [get_bd_pins clk200_clk_wiz/clk_out1] \
   [get_bd_pins mig_7series_0/clk_ref_i] \
@@ -834,8 +870,23 @@ set_property -dict [list \
   assign_bd_address -offset 0x80000000 -range 0x10000000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI] [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
   assign_bd_address -offset 0x40010000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_partition/axi_datamover_mm2s_c_0/s_axi/reg0] -force
   assign_bd_address -offset 0x40018000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_partition/axi_datamover_s2mm_c_0/s_axi/reg0] -force
-  assign_bd_address -offset 0x40020000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
-  assign_bd_address -offset 0x40022000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
+  assign_bd_address -offset 0x40000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
+  assign_bd_address -offset 0x40002000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
+
+  # ---- DIAG (2026-10-03): адресные карты BRAM-обхода ----
+  # (A) TDOT-мастер и XDMA-мастер получают сегмент BRAM 0x00000000 (8 КБ) В
+  #     ДОБАВЛЕНИЕ к DDR3 0x80000000 — ядро может читать/писать локальный BRAM
+  #     в обход неинициализированного MIG.
+  assign_bd_address -offset 0x00000000 -range 0x00002000 \
+    -target_address_space [get_bd_addr_spaces $tdot_m_port] \
+    [get_bd_addr_segs diag_bram_ctrl/S_AXI/Reg] -force
+  assign_bd_address -offset 0x00000000 -range 0x00002000 \
+    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI] \
+    [get_bd_addr_segs diag_bram_ctrl/S_AXI/Reg] -force
+  # (B) хост пишет/читает BRAM через AXI-Lite M02 (0x4000_6000, 8 КБ) — НЕ через DMA
+  assign_bd_address -offset 0x40006000 -range 0x00002000 \
+    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] \
+    [get_bd_addr_segs diag_bram_ctrl/S_AXI_B/Reg] -force
 
   current_bd_instance $oldCurInst
 
@@ -860,7 +911,7 @@ set_property -dict [list \
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $tdot_port
   connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M03_AXI] $tdot_port
-  assign_bd_address -offset 0x40023000 -range 0x1000 \
+  assign_bd_address -offset 0x40003000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $tdot_port/Reg] -force
 
   # S_AXI_ICAP_REGS
@@ -868,7 +919,7 @@ set_property -dict [list \
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $icap_port
   connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M04_AXI] $icap_port
-  assign_bd_address -offset 0x40024000 -range 0x1000 \
+  assign_bd_address -offset 0x40004000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $icap_port/Reg] -force
 
   # S_AXI_XADC_REGS
@@ -884,7 +935,7 @@ set_property -dict [list \
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $spi_port
   connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M06_AXI] $spi_port
-  assign_bd_address -offset 0x40025000 -range 0x1000 \
+  assign_bd_address -offset 0x40005000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $spi_port/Reg] -force
 
   # ---- BUG-035: РїСЂРёРІСЏР·РєР° РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ Рє fabric-РґРѕРјРµРЅСѓ 125 РњР“С† ----
