@@ -34,7 +34,7 @@ set VS_ROOT=C:\Program Files (x86)\Microsoft Visual Studio 14.0
 
 REM ������ ��������: ����� ��� ������ ������ (pnputil �� �������� �����,
 REM ���� ����� DriverVer �� ������ ����� �������������).
-set DRIVER_VERSION=1.1.20.0
+set DRIVER_VERSION=1.1.21.0
 
 REM FIX F2: ����� ����� �������������� (certutil -addstore, bcdedit).
 net session >nul 2>&1
@@ -81,11 +81,19 @@ if exist "%UPSTREAM%\sys\driver.c" (
 )
 
 REM ============================================================================
-echo === Compiling sources (WPP off, no /DBG) ===
+echo === Compiling sources (WPP=%ENABLE_WPP%) ===
 REM Include paths: this dir (dma_driver.h) + km/shared + wdf kmdf 1.15 + upstream inc/libxdma/sys.
 set INC=/I"%DMA_DIR%" /I"%KIT_ROOT%\Include\%WDK_VERSION%\km" /I"%KIT_ROOT%\Include\%WDK_VERSION%\shared" /I"%KIT_ROOT%\Include\wdf\kmdf\1.15" /I"%UPSTREAM%\inc" /I"%UPSTREAM%\libxdma" /I"%UPSTREAM%\sys"
 
 set CFLAGS=/nologo /c /O1 /GS- /kernel /Zp8 /Gy /GF /GR- /Gz /TC /D_WIN64 /D_AMD64_ /DAMD64 /DWINNT=1 /D_WIN32_WINNT=0x0A00 /DNTDDI_VERSION=0x0A000002 /D_UNICODE /DUNICODE /Zi
+
+REM Optional WPP software tracing: tracewpp pre-generates .tmh headers, then we
+REM compile the two traced translation units with /DWPP_ENABLED so the real
+REM Trace* functions emit into the WPP/ETW buffer. Off by default (no disk I/O).
+REM NOTE: the invocation must live in the :do_wpp subroutine because the tool
+REM path contains "Program Files (x86)" whose parentheses break cmd inside an
+REM "if ( ... )" block.
+if "%ENABLE_WPP%"=="1" call :do_wpp
 
 echo -- dma_driver.c -- 
 cl.exe %CFLAGS% %INC% /Fo"%TMP_DIR%\dma_driver.obj" "%DMA_DIR%\dma_driver.c" || exit /b 1
@@ -161,4 +169,22 @@ bcdedit /set testsigning on >nul 2>&1
 echo.
 echo === Build FULL SUCCESS ===
 dir "%PKG_DIR%\"
-endlocal
+goto :eof
+
+:do_wpp
+echo -- tracewpp: generate .tmh for file_io.c and dma_driver.c --
+if not exist "%TMP_DIR%\wpp" mkdir "%TMP_DIR%\wpp"
+"C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\tracewpp.exe" -km "-scan:%UPSTREAM%\sys\trace.h" "-oDir:%TMP_DIR%\wpp" "-gen:{km-default.tpl}*.tmh" "-IC:\Program Files (x86)\Windows Kits\10\bin\WppConfig\Rev1" "%UPSTREAM%\sys\file_io.c"
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: tracewpp file_io.c failed
+    exit /b 1
+)
+"C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\tracewpp.exe" -km "-scan:%UPSTREAM%\sys\trace.h" "-oDir:%TMP_DIR%\wpp" "-gen:{km-default.tpl}*.tmh" "-IC:\Program Files (x86)\Windows Kits\10\bin\WppConfig\Rev1" "%DMA_DIR%\dma_driver.c"
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: tracewpp dma_driver.c failed
+    exit /b 1
+)
+copy /Y "%TMP_DIR%\wpp\file_io.tmh"   "%UPSTREAM%\sys\file_io.tmh"   >nul || exit /b 1
+copy /Y "%TMP_DIR%\wpp\dma_driver.tmh" "%DMA_DIR%\dma_driver.tmh" >nul || exit /b 1
+set CFLAGS=%CFLAGS% /DWPP_ENABLED
+exit /b 0

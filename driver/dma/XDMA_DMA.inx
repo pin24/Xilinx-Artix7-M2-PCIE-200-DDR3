@@ -6,7 +6,7 @@ Provider=%Provider%
 ; Автономный DMA-драйвер XDMA (upstream-стек: file_io.c + libxdma).
 ; Версию перезаписывает stampinf -v при сборке (build.cmd). Должна быть строго
 ; новее уже установленной, иначе pnputil не обновит пакет.
-DriverVer=09/27/2026,1.1.15.0
+DriverVer=10/02/2026,1.1.21.0
 CatalogFile=XDMA_DMA.cat
 
 [Manufacturer]
@@ -17,6 +17,14 @@ CatalogFile=XDMA_DMA.cat
 
 [XDMA_DMA_Inst.NT]
 CopyFiles=CopyFiles
+AddReg=XDMA_DMA_AddReg
+
+; Регистрация источника событий для IoWriteErrorLogEntry (Event Log, System log).
+; Без EventMessageFile журнал не отображает записи от драйвера — поэтому добавляем
+; ключ в Services\EventLog\System\XDMA_DMA, указывая на .sys как message file.
+[XDMA_DMA_AddReg]
+HKLM, "SYSTEM\CurrentControlSet\Services\EventLog\System\XDMA_DMA", "EventMessageFile", %REG_EXPAND_SZ%, "%12%\XDMA_DMA.sys"
+HKLM, "SYSTEM\CurrentControlSet\Services\EventLog\System\XDMA_DMA", "TypesSupported", %REG_DWORD%, 0x7
 
 [XDMA_DMA_Inst.NT.Services]
 AddService=XDMA_DMA,0x00000002,ServiceInstall
@@ -50,3 +58,5 @@ XDMA_DMA.sys = 1
 Provider="MultiTool"
 DeviceDesc="XDMA DMA Subsystem (upstream stack, h2c/c2h channels)"
 DiskId1="XDMA DMA Driver Installation Disk"
+REG_EXPAND_SZ=0x00020000
+REG_DWORD=0x00010001

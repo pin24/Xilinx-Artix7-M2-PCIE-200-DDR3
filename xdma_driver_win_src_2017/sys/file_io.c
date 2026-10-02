@@ -32,8 +32,12 @@
 #include "xdma_public.h"
 #include "file_io.h"
 
+// DIAG-EVENTLOG forward declarations (used before their definitions below).
+VOID XdmaDiagOpen(WDFFILEOBJECT file, NTSTATUS status);
+VOID XdmaDiagRead(WDFQUEUE queue, ULONG ctx0, ULONG ctx1);
+
 #include "trace.h"
-#ifdef DBG
+#if defined(DBG) || defined(WPP_ENABLED)
 // The trace message header (.tmh) file must be included in a source file before any WPP macro 
 // calls and after defining a WPP_CONTROL_GUIDS macro (defined in trace.h). see trace.h
 #include "file_io.tmh"
@@ -91,6 +95,11 @@ static VOID GetDevNodeType(PUNICODE_STRING fileName, PFILE_CONTEXT file, ULONG* 
     file->devType = ID_DEVNODE_UNKNOWN;
 }
 
+// DIAG-EVENTLOG (2026-10-02): Event-Log diagnostics are provided by the
+// existing helper chain below (XdmaDiagOpen / XdmaDiagRead -> XdmaDiagLog),
+// writing through the classic WDM IoWriteErrorLogEntry API to the System
+// event log, source "XDMA_DMA". File-based open-log was removed.
+
 VOID EvtDeviceFileCreate(IN WDFDEVICE device, IN WDFREQUEST Request, IN WDFFILEOBJECT WdfFile) {
     PUNICODE_STRING fileName = WdfFileObjectGetFileName(WdfFile);
     DeviceContext* ctx = GetDeviceContext(device);
@@ -104,6 +113,9 @@ VOID EvtDeviceFileCreate(IN WDFDEVICE device, IN WDFREQUEST Request, IN WDFFILEO
         status = STATUS_INVALID_PARAMETER;
         goto ErrExit;
     }
+    // WPP-DIAG: file-create entry with the requested sub-node name (visible live
+    // under tracelog/xperf before and after the hang).
+    TraceInfo(DBG_IO, "FILE-CREATE enter name=%wZ", fileName);
 
     // device node has zero length?
     ASSERTMSG("fileName is empty string", fileName->Length != 0);
@@ -186,6 +198,7 @@ VOID EvtDeviceFileCreate(IN WDFDEVICE device, IN WDFREQUEST Request, IN WDFFILEO
     TraceInfo(DBG_IO, "Created %wZ device file", fileName);
 
 ErrExit:
+    XdmaDiagOpen(WdfFile, status);
     WdfRequestComplete(Request, status);
     TraceVerbose(DBG_IO, "returns %!STATUS!", status);
 }
@@ -204,6 +217,52 @@ VOID EvtFileCleanup(IN WDFFILEOBJECT FileObject) {
         }
     }
     TraceVerbose(DBG_IO, "Cleanup %wZ", fileName);
+}
+
+// DIAG-EVENTLOG 2026-10-02: write a diagnostic step to the system Event Log via
+// the classic WDM IoWriteErrorLogEntry API (available in ntddk/wdm.h on every
+// build; no INF/registry channel registration required). Each call produces one
+// System log entry from the driver with a unique ErrorCode + two DWORDs of
+// context (offset/status). This is memory-safe (single small packet) and does
+// not touch the disk on every IO, only on explicit step boundaries.
+static VOID XdmaDiagLog(WDFDEVICE device, ULONG errorCode, ULONG ctx0, ULONG ctx1)
+{
+    // Map WDFDEVICE -> WDM PDEVICE_OBJECT to log as the correct device.
+    PDEVICE_OBJECT devObj = WdfDeviceWdmGetDeviceObject(device);
+    if (!devObj) {
+        return;
+    }
+    ULONG pktSize = sizeof(IO_ERROR_LOG_PACKET) + 2 * sizeof(ULONG);
+    PIO_ERROR_LOG_PACKET pkt = (PIO_ERROR_LOG_PACKET)IoAllocateErrorLogEntry(devObj, pktSize);
+    if (!pkt) {
+        return; // Log full — skip, never crash for logging.
+    }
+    pkt->MajorFunctionCode = 0;
+    pkt->RetryCount = 0;
+    pkt->DumpDataSize = 2 * sizeof(ULONG);
+    pkt->NumberOfStrings = 0;
+    pkt->StringOffset = 0;
+    pkt->ErrorCode = errorCode;
+    pkt->UniqueErrorValue = 0x5844; // 'XD'
+    pkt->FinalStatus = (NTSTATUS)ctx0;
+    pkt->SequenceNumber = 0;        // reserved
+    pkt->IoControlCode = 0;
+    pkt->DeviceOffset.QuadPart = (LONGLONG)ctx1;
+    ((PULONG)(pkt + 1))[0] = ctx0;
+    ((PULONG)(pkt + 1))[1] = ctx1;
+    IoWriteErrorLogEntry(pkt);
+}
+
+VOID XdmaDiagOpen(WDFFILEOBJECT file, NTSTATUS status)
+{
+    WDFDEVICE dev = WdfFileObjectGetDevice(file);
+    XdmaDiagLog(dev, 0xC0000001, (ULONG)status, 0);
+}
+
+VOID XdmaDiagRead(WDFQUEUE queue, ULONG ctx0, ULONG ctx1)
+{
+    WDFDEVICE dev = WdfIoQueueGetDevice(queue);
+    XdmaDiagLog(dev, 0xC0000002, ctx0, ctx1);
 }
 
 static NTSTATUS ValidateBarParams(IN PXDMA_DEVICE xdma, ULONG nBar, size_t offset, size_t length) {
@@ -342,15 +401,30 @@ VOID EvtIoRead(IN WDFQUEUE queue, IN WDFREQUEST request, IN size_t length)
     TraceVerbose(DBG_IO, "(Queue=%p, Request=%p, Length=%llu)", queue, request, length);
     TraceVerbose(DBG_IO, "devNodeType %d", file->devType);
 
+    // DIAG: log every read dispatch boundary (device type + request length).
+    XdmaDiagRead(queue, (ULONG)file->devType, (ULONG)length);
+
     switch (file->devType) {
     case DEVNODE_TYPE_USER:
     case DEVNODE_TYPE_CONTROL:
     case DEVNODE_TYPE_BYPASS:
         ASSERTMSG("no BAR ptr attached to file context", file->u.bar != NULL);
+        // WPP-DIAG: emit the read intent (node type, DeviceOffset, len) so the
+        // last-loggable step is visible under tracelog when the machine hangs.
+        {
+            WDF_REQUEST_PARAMETERS params;
+            WDF_REQUEST_PARAMETERS_INIT(&params);
+            WdfRequestGetParameters(request, &params);
+            TraceInfo(DBG_IO, "READ enter devType=%d offset=%I64u len=%I64u",
+                      file->devType,
+                      (ULONGLONG)params.Parameters.Read.DeviceOffset,
+                      (ULONGLONG)params.Parameters.Read.Length);
+        }
         // handle request here without forwarding - read from PCIe BAR into request memory
         status = ReadBarToRequest(request, file->u.bar,
                                   &GetDeviceContext(WdfIoQueueGetDevice(queue))->xdma,
                                   file->barIdx);
+        TraceInfo(DBG_IO, "READ exit devType=%d status=%!STATUS!", file->devType, status);
         if (NT_SUCCESS(status)) {
             // complete the request - read bytes are in the requestMemory
             WdfRequestCompleteWithInformation(request, status, length);

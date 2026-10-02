@@ -34,6 +34,10 @@
 #include "dma_driver.h"
 #include "xdma_public.h"
 #include "file_io.h"
+#include "trace.h"
+#if defined(DBG) || defined(WPP_ENABLED)
+#include "dma_driver.tmh"
+#endif
 
 // ========================= forward declarations =================================================
 
@@ -54,6 +58,13 @@ DriverEntry(
 
     WDF_DRIVER_CONFIG_INIT(&config, EvtDriverDeviceAdd);
     config.DriverPoolTag = 'XDMA';
+
+    // WPP software tracing (enabled via /DWPP_ENABLED in build.cmd). This must
+    // be the first thing in DriverEntry; Trace* calls in file_io.c etc. then
+    // emit into the WPP/ETW buffer (viewable via tracelog/xperf; no disk writes).
+#if defined(DBG) || defined(WPP_ENABLED)
+    WPP_INIT_TRACING(DriverObject, RegistryPath);
+#endif
 
     // WdfDriverCreate: точка входа /entry:FxDriverEntry в build.cmd (FIX-8), т.е.
     // стаб wdfdriverentry.lib проинициализирует WdfFunctions/WdfDriverGlobals ДО

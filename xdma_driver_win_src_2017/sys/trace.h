@@ -64,7 +64,8 @@
 //
 
 // WPP tracing is disabled in release configuration. so stub out definitions and functions
-#ifndef DBG
+// WPP_ENABLED (2026-10-02): forces real WPP software tracing without enabling DBG/ASSERT.
+#if !defined(DBG) && !defined(WPP_ENABLED)
 #define WPP_INIT_TRACING(...)  (__VA_ARGS__)
 #define WPP_CLEANUP(...)       (__VA_ARGS__)
 #define DBG_GENERIC         0
@@ -81,3 +82,8 @@
 #define TraceError(...)     (__VA_ARGS__)
 #define TraceEvents(...)    (__VA_ARGS__)
 #endif 
+
+// When WPP_ENABLED is set, hand off to the trace preprocessor: include the
+// generated .tmh which defines the real Trace* functions (must appear after
+// WPP_CONTROL_GUIDS and before any Trace* call). file_io.c etc. include their
+// own *.tmh below; this header only carries the shared WPP config/macros. 
