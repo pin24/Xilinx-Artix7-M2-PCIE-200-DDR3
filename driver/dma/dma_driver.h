@@ -57,5 +57,7 @@ typedef struct _XDMA_DMA_BAR_INFO {
     ULONG   Bar0Length;
     ULONG   NumBars;
     LONG    UserBarIdx;
+    ULONG   ConfigBarIdx;
+    ULONG   BarLength[XDMA_MAX_NUM_BARS];
 } XDMA_DMA_BAR_INFO;
 #pragma pack(pop)

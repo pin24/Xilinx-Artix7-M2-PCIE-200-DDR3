@@ -107,6 +107,17 @@ VOID EvtDeviceFileCreate(IN WDFDEVICE device, IN WDFREQUEST Request, IN WDFFILEO
 
     // device node has zero length?
     ASSERTMSG("fileName is empty string", fileName->Length != 0);
+    // FIX-AUDIT 2026-10-02 (BSOD 0x3B): WdfFileObjectGetFileName may return a
+    // UNICODE_STRING with Buffer==NULL / Length==0 when the device is opened
+    // WITHOUT a sub-name (e.g. CreateFileW(L"\\\\.\\XDMA0dma", ...)). The
+    // ASSERT above is compiled out in free builds, so GetDevNodeType() calls
+    // wcscmp(fileName->Buffer, ...) with a NULL pointer -> SYSTEM_SERVICE_EXCEPTION
+    // (c0000005 in nt!wcscmp). Guard it explicitly.
+    if (fileName->Buffer == NULL || fileName->Length == 0) {
+        TraceError(DBG_IO, "Device opened without a sub-name; append \\control, \\user, \\h2c_0 etc.");
+        status = STATUS_INVALID_PARAMETER;
+        goto ErrExit;
+    }
     ULONG index = 0;
     GetDevNodeType(fileName, devNode, &index);
     if (devNode->devType == ID_DEVNODE_UNKNOWN) {
@@ -119,7 +130,7 @@ VOID EvtDeviceFileCreate(IN WDFDEVICE device, IN WDFREQUEST Request, IN WDFFILEO
     switch (devNode->devType) {
     case DEVNODE_TYPE_CONTROL:
         devNode->u.bar = xdma->bar[xdma->configBarIdx];
-        devNode->barLength = xdma->barLength[xdma->configBarIdx];
+        devNode->barIdx = xdma->configBarIdx;
         break;
     case DEVNODE_TYPE_USER:
         if (xdma->userBarIdx < 0) {
@@ -128,7 +139,7 @@ VOID EvtDeviceFileCreate(IN WDFDEVICE device, IN WDFREQUEST Request, IN WDFFILEO
             goto ErrExit;
         }
         devNode->u.bar = xdma->bar[xdma->userBarIdx];
-        devNode->barLength = xdma->barLength[xdma->userBarIdx];
+        devNode->barIdx = xdma->userBarIdx;
         break;
     case DEVNODE_TYPE_BYPASS:
         if (xdma->bypassBarIdx < 0) {
@@ -137,7 +148,7 @@ VOID EvtDeviceFileCreate(IN WDFDEVICE device, IN WDFREQUEST Request, IN WDFFILEO
             goto ErrExit;
         }
         devNode->u.bar = xdma->bar[xdma->bypassBarIdx];
-        devNode->barLength = xdma->barLength[xdma->bypassBarIdx];
+        devNode->barIdx = xdma->bypassBarIdx;
         break;
     case DEVNODE_TYPE_H2C:
     case DEVNODE_TYPE_C2H:
@@ -195,116 +206,128 @@ VOID EvtFileCleanup(IN WDFFILEOBJECT FileObject) {
     TraceVerbose(DBG_IO, "Cleanup %wZ", fileName);
 }
 
-// Hard cap for one MMIO read/write request (4 KB). Prevents a bogus/huge
-// Length from overreading the mapped BAR into unmapped space (BSOD 0x50).
-#define XDMA_BAR_ACCESS_MAX_LEN 0x1000UL
-
-static NTSTATUS ValidateBarRange(size_t offset, size_t length, size_t barLength)
-{
+static NTSTATUS ValidateBarParams(IN PXDMA_DEVICE xdma, ULONG nBar, size_t offset, size_t length) {
     if (length == 0) {
-        TraceError(DBG_IO, "Error: attempting to access 0 bytes");
+        TraceError(DBG_IO, "Error: attempting to read 0 bytes");
         return STATUS_INVALID_DEVICE_REQUEST;
     }
-    if (length > XDMA_BAR_ACCESS_MAX_LEN) {
-        TraceError(DBG_IO, "Error: BAR access length %llu exceeds max 0x%x",
-                   (ULONGLONG)length, XDMA_BAR_ACCESS_MAX_LEN);
-        return STATUS_INVALID_PARAMETER;
+
+    // invalid BAR index?
+    if (nBar >= xdma->numBars || nBar >= XDMA_MAX_NUM_BARS) {
+        TraceError(DBG_IO, "Error: attempting to read BAR %u but only %u exist", nBar, xdma->numBars);
+        return STATUS_INVALID_DEVICE_REQUEST;
     }
-    // Guard against offset+length overflow and any access beyond the MAPPED
-    // BAR region. MMIO faults on unmapped addresses BUGCHECK 0x50 (SEH does
-    // NOT catch hardware MMIO faults), so this check must run BEFORE access.
-    if (offset >= barLength || length > (barLength - offset)) {
-        TraceError(DBG_IO, "Error: BAR access out of range offset=%llu len=%llu barLen=%llu",
-                   (ULONGLONG)offset, (ULONGLONG)length, (ULONGLONG)barLength);
-        return STATUS_INVALID_PARAMETER;
+
+    // access outside valid BAR address range?
+    if (offset + length >= xdma->barLength[nBar]) {
+        TraceError(DBG_IO, "Error: attempting to read BAR %u offset=%llu size=%llu (barLength=%lu)",
+                   nBar, offset, length, xdma->barLength[nBar]);
+        return STATUS_INVALID_DEVICE_REQUEST;
     }
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS ReadBarToRequest(WDFREQUEST request, PVOID bar, size_t barLength)
+static NTSTATUS ReadBarToRequest(WDFREQUEST request, PVOID bar, PXDMA_DEVICE xdma, ULONG nBar)
 {
     NTSTATUS status = STATUS_SUCCESS;
+    size_t offset = 0;
+    size_t length = 0;
     WDF_REQUEST_PARAMETERS params;
+
     WDF_REQUEST_PARAMETERS_INIT(&params);
     WdfRequestGetParameters(request, &params);
-    size_t offset = (size_t)params.Parameters.Read.DeviceOffset;
-    size_t length = params.Parameters.Read.Length;
+    offset = (size_t)params.Parameters.Read.DeviceOffset;
+    length = params.Parameters.Read.Length;
 
-    status = ValidateBarRange(offset, length, barLength);
-    if (!NT_SUCCESS(status))
-        return status;
+    if (length == 0) {
+        TraceError(DBG_IO, "Error: attempting to read 0 bytes");
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
 
-    WDFMEMORY requestMemory;
-    status = WdfRequestRetrieveOutputMemory(request, &requestMemory);
+    // FIX-AUDIT 2026-10-02 (BSOD 0x50): range-check the BAR access BEFORE any
+    // READ_REGISTER_* is issued. Previously an out-of-range offset produced a
+    // rep movs on an unmapped virtual address -> PAGE_FAULT_IN_NONPAGED_AREA at
+    // IRQL 2 (AV_R_INVALID_XDMA_DMA). ValidateBarParams exists and is now used.
+    status = ValidateBarParams(xdma, nBar, offset, length);
     if (!NT_SUCCESS(status)) {
-        TraceError(DBG_IO, "WdfRequestRetrieveOutputMemory failed: %!STATUS!", status);
+        TraceError(DBG_IO, "ReadBarToRequest: ValidateBarParams failed: %!STATUS!", status);
         return status;
     }
-    PUCHAR reqBuffer = (PUCHAR)WdfMemoryGetBuffer(requestMemory, NULL);
-    volatile PUCHAR readAddr = (volatile PUCHAR)bar + offset;
 
-    // Read strictly DWORD-by-DWORD; first fault aborts immediately (no overrun).
-    // __try is a secondary safety net only: hardware MMIO faults bugcheck before
-    // SEH dispatch, so the real protection is ValidateBarRange above.
-    size_t pos = 0;
     __try {
-        while (length - pos >= sizeof(ULONG)) {
-            ULONG tmp = READ_REGISTER_ULONG((volatile ULONG*)(readAddr + pos));
-            RtlCopyMemory(reqBuffer + pos, &tmp, sizeof(tmp));
-            pos += sizeof(ULONG);
+        PUCHAR readAddr = (PUCHAR)bar + offset;
+
+        WDFMEMORY requestMemory;
+        status = WdfRequestRetrieveOutputMemory(request, &requestMemory);
+        if (!NT_SUCCESS(status)) {
+            TraceError(DBG_IO, "WdfRequestRetrieveOutputMemory failed: %!STATUS!", status);
+            return status;
         }
-        if (pos < length) {
-            ULONG tmp = READ_REGISTER_ULONG((volatile ULONG*)(readAddr + pos));
-            RtlCopyMemory(reqBuffer + pos, &tmp, length - pos);
+
+        PVOID reqBuffer = WdfMemoryGetBuffer(requestMemory, NULL);
+
+        if (length % sizeof(ULONG) == 0) {
+            READ_REGISTER_BUFFER_ULONG((volatile ULONG*)readAddr, (PULONG)reqBuffer, (ULONG)length / sizeof(ULONG));
+        } else if (length % sizeof(USHORT) == 0) {
+            READ_REGISTER_BUFFER_USHORT((volatile USHORT*)readAddr, (PUSHORT)reqBuffer, (ULONG)length / sizeof(USHORT));
+        } else {
+            READ_REGISTER_BUFFER_UCHAR((volatile UCHAR*)readAddr, (PUCHAR)reqBuffer, (ULONG)length);
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        TraceError(DBG_IO, "ReadBarToRequest: access violation at offset=%llu", (ULONGLONG)(offset + pos));
+        TraceError(DBG_IO, "ReadBarToRequest: access violation at offset=%llu", offset);
         return STATUS_DEVICE_DATA_ERROR;
     }
     return status;
 }
 
-static NTSTATUS WriteBarFromRequest(WDFREQUEST request, PVOID bar, size_t barLength)
-// Write from an IO request into PCIe mmap'ed memory
+static NTSTATUS WriteBarFromRequest(WDFREQUEST request, PVOID bar, PXDMA_DEVICE xdma, ULONG nBar)
+// Write from an IO request into PCIe mmap'ed memory 
 {
     WDF_REQUEST_PARAMETERS params;
+    NTSTATUS status = STATUS_SUCCESS;
     WDF_REQUEST_PARAMETERS_INIT(&params);
     WdfRequestGetParameters(request, &params);
     size_t offset = (size_t)params.Parameters.Read.DeviceOffset;
     size_t length = params.Parameters.Read.Length;
 
-    NTSTATUS status = ValidateBarRange(offset, length, barLength);
-    if (!NT_SUCCESS(status))
+    // Static Driver Verifier is not smart enough to see that length is checked in ValidateBarParams
+    // Therefore we need to check it here as well
+    if (length == 0) {
+        TraceError(DBG_IO, "Error: attempting to read 0 bytes");
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+
+    // FIX-AUDIT 2026-10-02 (BSOD 0x124 / AER): range-check before WRITE_REGISTER_*.
+    status = ValidateBarParams(xdma, nBar, offset, length);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_IO, "WriteBarFromRequest: ValidateBarParams failed: %!STATUS!", status);
         return status;
+    }
 
-    volatile PUCHAR writeAddr = (volatile PUCHAR)bar + offset;
+    // calculate virtual address of the mmap'd BAR location
+    PUCHAR writeAddr = (PUCHAR)bar + offset;
 
-    // get handle to the IO request memory which holds data to write
     WDFMEMORY requestMemory;
+    // get handle to the IO request memory which holds data to write
     status = WdfRequestRetrieveInputMemory(request, &requestMemory);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_IO, "WdfRequestRetrieveInputMemory failed: %!STATUS!", status);
         return status;
     }
-    PUCHAR reqBuffer = (PUCHAR)WdfMemoryGetBuffer(requestMemory, NULL);
 
-    size_t pos = 0;
-    __try {
-        while (length - pos >= sizeof(ULONG)) {
-            ULONG tmp;
-            RtlCopyMemory(&tmp, reqBuffer + pos, sizeof(tmp));
-            WRITE_REGISTER_ULONG((volatile ULONG*)(writeAddr + pos), tmp);
-            pos += sizeof(ULONG);
-        }
-        if (pos < length) {
-            ULONG tmp = 0;
-            RtlCopyMemory(&tmp, reqBuffer + pos, length - pos);
-            WRITE_REGISTER_ULONG((volatile ULONG*)(writeAddr + pos), tmp);
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        TraceError(DBG_IO, "WriteBarFromRequest: access violation at offset=%llu", (ULONGLONG)(offset + pos));
-        return STATUS_DEVICE_DATA_ERROR;
+    // get pointer to buffer
+    PVOID reqBuffer = WdfMemoryGetBuffer(requestMemory, NULL);
+
+    // write to BAR
+    if (length % sizeof(ULONG) == 0) {
+        WRITE_REGISTER_BUFFER_ULONG((volatile ULONG*)writeAddr, (PULONG)reqBuffer, (ULONG)length / sizeof(ULONG));
+    } else if (length % sizeof(USHORT) == 0) {
+        WRITE_REGISTER_BUFFER_USHORT((volatile USHORT*)writeAddr, (PUSHORT)reqBuffer, (ULONG)length / sizeof(USHORT));
+    } else {
+        WRITE_REGISTER_BUFFER_UCHAR((volatile UCHAR*)writeAddr, (PUCHAR)reqBuffer, (ULONG)length);
     }
+
+
     return status;
 }
 
@@ -325,7 +348,9 @@ VOID EvtIoRead(IN WDFQUEUE queue, IN WDFREQUEST request, IN size_t length)
     case DEVNODE_TYPE_BYPASS:
         ASSERTMSG("no BAR ptr attached to file context", file->u.bar != NULL);
         // handle request here without forwarding - read from PCIe BAR into request memory
-        status = ReadBarToRequest(request, file->u.bar, file->barLength);
+        status = ReadBarToRequest(request, file->u.bar,
+                                  &GetDeviceContext(WdfIoQueueGetDevice(queue))->xdma,
+                                  file->barIdx);
         if (NT_SUCCESS(status)) {
             // complete the request - read bytes are in the requestMemory
             WdfRequestCompleteWithInformation(request, status, length);
@@ -375,7 +400,9 @@ VOID EvtIoWrite(IN WDFQUEUE queue, IN WDFREQUEST request, IN size_t length)
     case DEVNODE_TYPE_BYPASS:
         ASSERTMSG("no BAR ptr attached to file context", file->u.bar != NULL);
         // handle request here without forwarding. write to PCIe BAR from request memory
-        status = WriteBarFromRequest(request, file->u.bar, file->barLength);
+        status = WriteBarFromRequest(request, file->u.bar,
+                                     &GetDeviceContext(WdfIoQueueGetDevice(queue))->xdma,
+                                     file->barIdx);
         if (NT_SUCCESS(status)) {
             WdfRequestCompleteWithInformation(request, status, length);  // complete the request        }
         }

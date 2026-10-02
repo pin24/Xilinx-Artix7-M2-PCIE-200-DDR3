@@ -224,11 +224,23 @@ EvtDevicePrepareHardware(
 
     // Запрещаем host-доступ к user/bypass BAR'ам (в т.ч. MSI-X BAR2). Отказ СПЛАНИРОВАН:
     // драйвер загружается, control + h2c_0/c2h_0 работают через BAR0 (config).
-    devCtx->xdma.userBarIdx = -1;
+    // FIX-AUDIT 2026-10-02: НЕ глушим большой user BAR (AXI-Lite, >= 4MB) — именно
+    // через него хост читает периферию (GPIO/TDOT/ICAP на BAR0=128MB). Глушим
+    // только маленькие BAR'ы, которые могут быть MSI-X page (fatal AER при записи).
+    if (devCtx->xdma.userBarIdx >= 0 &&
+        devCtx->xdma.userBarIdx < XDMA_MAX_NUM_BARS &&
+        devCtx->xdma.barLength[devCtx->xdma.userBarIdx] >= 4 * 1024 * 1024) {
+        // большой user BAR: оставляем доступным (безопасно для чтения/записи AXI-Lite)
+        DbgPrint("XDMA_DMA: user BAR %d (len=%lu) KEPT enabled (large AXI-Lite)\n",
+                 devCtx->xdma.userBarIdx, devCtx->xdma.barLength[devCtx->xdma.userBarIdx]);
+    } else {
+        devCtx->xdma.userBarIdx = -1;
+        DbgPrint("XDMA_DMA: user BAR disabled (small/MSI-X or absent)\n");
+    }
     devCtx->xdma.bypassBarIdx = -1;
 
     DbgPrint("XDMA_DMA: post-fix indices -> userBarIdx=%d bypassBarIdx=%d "
-             "(user/bypass узлы недоступны хосту; загрузка НЕ блокируется)\n",
+             "(user большой BAR доступен; маленькие BAR'ы заблокированы)\n",
              devCtx->xdma.userBarIdx,
              devCtx->xdma.bypassBarIdx);
 
@@ -386,6 +398,10 @@ EvtIoControlDispatch(
         info.Bar0Length   = devCtx->bar0Length;
         info.NumBars      = devCtx->xdma.numBars;
         info.UserBarIdx   = devCtx->xdma.userBarIdx;
+        info.ConfigBarIdx = devCtx->xdma.configBarIdx;
+        for (ULONG bi = 0; bi < XDMA_MAX_NUM_BARS && bi < (sizeof(info.BarLength) / sizeof(info.BarLength[0])); bi++) {
+            info.BarLength[bi] = devCtx->xdma.barLength[bi];
+        }
 
         status = WdfRequestRetrieveOutputBuffer(
             Request, sizeof(info), &pBuf, &bufSize);

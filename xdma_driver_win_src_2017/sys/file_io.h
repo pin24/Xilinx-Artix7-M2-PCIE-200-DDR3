@@ -40,8 +40,9 @@ typedef struct _FILE_CONTEXT {
         XDMA_EVENT* event;      // EVENTS
         XDMA_ENGINE* engine;    // H2C / C2H
     } u;
-    size_t barLength;           // mapped BAR length (from xdma->barLength[idx]) for USER/CONTROL/BYPASS
     WDFQUEUE queue;
+    ULONG barIdx;               // FIX-AUDIT 2026-10-02: BAR index used by this file
+                                // node, needed for ValidateBarParams() range check.
 
 } FILE_CONTEXT, *PFILE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(FILE_CONTEXT, GetFileContext)
