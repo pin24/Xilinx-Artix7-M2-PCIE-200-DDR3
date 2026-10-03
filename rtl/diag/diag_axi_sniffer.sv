@@ -85,6 +85,7 @@ module diag_axi_sniffer #(
 
     // ==================== AXI-Lite slave (простая защёлка w/ b) ====================
     logic                    wr_pending, rd_pending;
+    logic                    wr_aw, wr_w;   // FIX-AUDIT 03.10: защёлки AW и W независимо
     logic [C_S_AXI_ADDR_WIDTH-1:0] awaddr_q, araddr_q;
     logic [C_S_AXI_DATA_WIDTH-1:0] wdata_q;
     logic                    bvalid_q, rvalid_q;
@@ -99,14 +100,20 @@ module diag_axi_sniffer #(
         if (!rst_n) begin
             wr_pending <= 0; rd_pending <= 0; bvalid_q <= 0; rvalid_q <= 0;
             awaddr_q <= 0; wdata_q <= 0; araddr_q <= 0;
-            expect_word <= 0; got_word <= 0; cmp_en <= 0; cmp_mismatch <= 0;
+            expect_word <= 0; got_word <= 0; cmp_en <= 0;
             marker_expect <= 0; marker_got <= 0;
         end else begin
-            // write channel
-            if (s_axi_awvalid && !wr_pending) begin awaddr_q <= s_axi_awaddr; wr_pending <= 1; end
-            if (s_axi_wvalid && !wr_pending)  begin wdata_q <= s_axi_wdata;  wr_pending <= 1; end
-            if (wr_pending && s_axi_awvalid && s_axi_wvalid) begin
-                // commit: W и AW уже приняты (wr_pending установлен первым)
+            // ---- write channel (AXI-Lite, FIX-AUDIT 03.10) ----
+            // Защёлкиваем AW-адрес и W-данные независимо (каждый по своему
+            // handshake); commit происходит, когда ОБА защёлкнуты (wr_pending),
+            // по защёлнутым значениям, БЕЗ повторного предъявления valid'ов.
+            // Это устраняет deadlock: раньше commit требовал awvalid&&wvalid и
+            // после первого handshake мастер их снимает -> вечый wr_pending=1.
+            if (s_axi_awvalid && !wr_pending) begin awaddr_q <= s_axi_awaddr; wr_aw <= 1; end
+            if (s_axi_wvalid  && !wr_pending) begin wdata_q  <= s_axi_wdata;  wr_w  <= 1; end
+            wr_pending <= wr_aw || wr_w;
+            if (wr_aw && wr_w && !bvalid_q) begin
+                // commit: оба защёлкνаны, B свободен
                 case (awaddr_q[C_S_AXI_ADDR_WIDTH-1:2])
                     6'd0:  expect_word  <= wdata_q;
                     6'd1:  got_word     <= wdata_q;
@@ -115,15 +122,14 @@ module diag_axi_sniffer #(
                     6'd4:  marker_got   <= wdata_q;
                     default: ;
                 endcase
-                wr_pending <= 0;
+                wr_aw <= 0; wr_w <= 0; bvalid_q <= 1;
             end
             if (bvalid_q && s_axi_bready) bvalid_q <= 0;
-            if (wr_pending && s_axi_awvalid && s_axi_wvalid && !bvalid_q) bvalid_q <= 1;
-            // read channel
-            if (s_axi_arvalid && !rd_pending) begin araddr_q <= s_axi_araddr; rd_pending <= 1; end
+            // ---- read channel ----
+            if (s_axi_arvalid && !rd_pending && !rvalid_q) begin araddr_q <= s_axi_araddr; rd_pending <= 1; end
             if (rd_pending && !rvalid_q) rvalid_q <= 1;
-            if (rvalid_q && s_axi_rready) begin rvalid_q <= 0; rd_pending <= 0; end
-            if (rd_pending && !rvalid_q) rd_pending <= 0; // consumed into rvalid
+            if (rvalid_q && s_axi_rready) begin rvalid_q <= 0; end
+            if (rvalid_q && s_axi_rready) rd_pending <= 0;
         end
     end
 
