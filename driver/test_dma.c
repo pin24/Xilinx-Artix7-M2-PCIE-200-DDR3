@@ -497,21 +497,24 @@ static int ModeDot(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
 /* ========================================================================== */
 /*  Использует узлы \\.\XDMA0dma\h2c_bram_0 / c2h_bram_0 (translateAxiBase=   */
 /*  FALSE): хост передаёт ПОЛНЫЙ картовый адрес. Локальный BRAM (8 КБ) лежит   */
-/*  по 0x00000000..0x00001FFF и подключён к xdma_axi_smc.M01 (обход MIG/DDR3). */
+/*  по 0x10000000..0x10001FFF и подключён к xdma_axi_smc.M01 (обход MIG/DDR3). */
 /*  Карта BRAM для этого теста:                                               */
-/*    DATA    0x0000  (data[0..n-1], 8 Б/элемент)                             */
-/*    WEIGHTS 0x0800  (weights[0..n-1])                                       */
-/*    RESULT  0x1000  (результат TDOT, 8 Б)                                   */
+/*    DATA    0x10000000 (data[0..n-1], 8 Б/элемент)                          */
+/*    WEIGHTS 0x10000800 (weights[0..n-1])                                    */
+/*    RESULT  0x10001000 (результат TDOT, 8 Б)                                */
 /* ========================================================================== */
 static int ModeDotBram(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
 {
     UINT64 buf[32];
     UINT64 result = 0;
     int i;
-    const UINT64 DATA_OFF_B    = 0x0000ULL;   /* полный картовый адрес: BRAM 0x0 */
-    const UINT64 WEIGHTS_OFF_B = 0x0800ULL;   /* BRAM + 2 КБ */
-    const UINT64 RESULT_OFF_B  = 0x1000ULL;   /* BRAM + 4 КБ */
-    UINT64 full_data = DATA_OFF_B;            /* без +0x80000000! */
+    /* BRAM base в DFX-прошивке = 0x10000000 (8 KB, см. xdma_ddr3_dfx_bd.tcl).
+       BRAM-узлы h2c_bram_0/c2h_bram_0 передают ПОЛНЫЙ картовый адрес. */
+    const UINT64 DIAG_BRAM_BASE = 0x10000000ULL;
+    const UINT64 DATA_OFF_B     = DIAG_BRAM_BASE + 0x0000ULL;
+    const UINT64 WEIGHTS_OFF_B  = DIAG_BRAM_BASE + 0x0800ULL;
+    const UINT64 RESULT_OFF_B   = DIAG_BRAM_BASE + 0x1000ULL;
+    UINT64 full_data = DATA_OFF_B;            /* полный адрес, без +0x80000000 */
     UINT64 full_wgt  = WEIGHTS_OFF_B;
     UINT64 full_res  = RESULT_OFF_B;
 
