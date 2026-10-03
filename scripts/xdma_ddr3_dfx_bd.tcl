@@ -1,5 +1,5 @@
-################################################################
-# xdma_ddr3_dfx_bd.tcl вЂ” DFX Block Design for XDMA + DDR3
+﻿################################################################
+# xdma_ddr3_dfx_bd.tcl РІР‚вЂќ DFX Block Design for XDMA + DDR3
 # Vivado 2025.2 compatible version of block_design_top.tcl
 #
 # Creates xdma_ddr3_dfx.bd with:
@@ -9,7 +9,7 @@
 #     in RTL, partial reconfiguration via PCIe; AXI HWICAP REMOVED - single ICAP)
 #   - DFX Socket (shutdown/decouple for reconfigurable partition)
 #   - DFX Partition (block design container for RP)
-#   - Clocking Wizard (50 MHz в†’ 200 MHz for MIG)
+#   - Clocking Wizard (50 MHz РІвЂ вЂ™ 200 MHz for MIG)
 #   - AXI GPIO (LEDs + MIG status)
 #
 # Requires dfx_partition.bd (from dfx_block_designs/default.tcl)
@@ -35,7 +35,7 @@ set current_vivado_version [version -short]
 if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
    puts ""
    puts "WARNING: This script was generated using Vivado <$scripts_vivado_version> but is being run in <$current_vivado_version>."
-   puts "Proceeding anyway вЂ” if IP upgrade is needed, run \"Tools => Report => Report IP Status...\" after sourcing."
+   puts "Proceeding anyway РІР‚вЂќ if IP upgrade is needed, run \"Tools => Report => Report IP Status...\" after sourcing."
 }
 
 ################################################################
@@ -168,12 +168,12 @@ if { $bCheckIPsPassed != 1 } {
   foreach ip_vlnv $list_check_ips {
     set ip_obj [get_ipdefs -all $ip_vlnv]
     if { $ip_obj eq "" } {
-      common::send_gid_msg -ssname BD::TCL -id 2023 -severity "WARNING" "IP $ip_vlnv still not found after refresh вЂ” layout may fail at generate_target."
+      common::send_gid_msg -ssname BD::TCL -id 2023 -severity "WARNING" "IP $ip_vlnv still not found after refresh РІР‚вЂќ layout may fail at generate_target."
       lappend list_ips_missing $ip_vlnv
     }
   }
   if { [llength $list_ips_missing] > 0 } {
-    common::send_gid_msg -ssname BD::TCL -id 2023 -severity "WARNING" "Continuing anyway вЂ” missing IPs: $list_ips_missing"
+    common::send_gid_msg -ssname BD::TCL -id 2023 -severity "WARNING" "Continuing anyway РІР‚вЂќ missing IPs: $list_ips_missing"
   }
 }
 
@@ -644,29 +644,29 @@ proc create_root_design { parentCell } {
     CONFIG.XML_INPUT_FILE {mig_a.prj} \
   ] $mig_7series_0
 
-  # BUG-052: device_temp_i (12 Р±РёС‚) вЂ” MIG XADC_En=Off, РїРёРЅ РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.
-  # РљРѕРЅСЃС‚Р°РЅС‚Сѓ СЃРѕР·РґР°С‘Рј Р—Р”Р•РЎР¬ (РґРѕ validate РІ СЌС‚РѕРј СЃРєСЂРёРїС‚Рµ), РёРЅР°С‡Рµ BD 41-759.
+  # BUG-052: device_temp_i (12 Р В±Р С‘РЎвЂљ) РІР‚вЂќ MIG XADC_En=Off, Р С—Р С‘Р Р… Р Р…Р Вµ Р С—Р С•Р Т‘Р С”Р В»РЎР‹РЎвЂЎРЎвЂР Р….
+  # Р С™Р С•Р Р…РЎРѓРЎвЂљР В°Р Р…РЎвЂљРЎС“ РЎРѓР С•Р В·Р Т‘Р В°РЎвЂР С Р вЂ”Р вЂќР вЂўР РЋР В¬ (Р Т‘Р С• validate Р Р† РЎРЊРЎвЂљР С•Р С РЎРѓР С”РЎР‚Р С‘Р С—РЎвЂљР Вµ), Р С‘Р Р…Р В°РЎвЂЎР Вµ BD 41-759.
   set const_device_temp [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 const_device_temp]
   set_property -dict [list CONFIG.CONST_WIDTH {12} CONFIG.CONST_VAL {0}] $const_device_temp
   connect_bd_net [get_bd_pins $const_device_temp/dout] [get_bd_pins mig_7series_0/device_temp_i]
 
   set rst_mig_7series_0_100M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_mig_7series_0_100M ]
 
-  # BUG-034: СЃР±СЂРѕСЃ fabric-РґРѕРјРµРЅР° 125 РњР“С† (СЏРґСЂРѕ/RP/РїРµСЂРёС„РµСЂРёСЏ).
-  # ext_reset = РїР»Р°С‚РЅС‹Р№ reset_rtl_0 (Р°РєС‚РёРІРЅС‹Р№ РЅРёР·РєРёР№, РїРѕР»СЏСЂРЅРѕСЃС‚СЊ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
-  # ACTIVE_LOW СЃРѕРѕС‚РІРµС‚СЃС‚РІСѓРµС‚), locked = РєР»РѕРє-wizard 125 РњР“С†.
+  # BUG-034: РЎРѓР В±РЎР‚Р С•РЎРѓ fabric-Р Т‘Р С•Р СР ВµР Р…Р В° 125 Р СљР вЂњРЎвЂ  (РЎРЏР Т‘РЎР‚Р С•/RP/Р С—Р ВµРЎР‚Р С‘РЎвЂћР ВµРЎР‚Р С‘РЎРЏ).
+  # ext_reset = Р С—Р В»Р В°РЎвЂљР Р…РЎвЂ№Р в„– reset_rtl_0 (Р В°Р С”РЎвЂљР С‘Р Р†Р Р…РЎвЂ№Р в„– Р Р…Р С‘Р В·Р С”Р С‘Р в„–, Р С—Р С•Р В»РЎРЏРЎР‚Р Р…Р С•РЎРѓРЎвЂљРЎРЉ Р С—Р С• РЎС“Р СР С•Р В»РЎвЂЎР В°Р Р…Р С‘РЎР‹
+  # ACTIVE_LOW РЎРѓР С•Р С•РЎвЂљР Р†Р ВµРЎвЂљРЎРѓРЎвЂљР Р†РЎС“Р ВµРЎвЂљ), locked = Р С”Р В»Р С•Р С”-wizard 125 Р СљР вЂњРЎвЂ .
   set rst_core_125M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_core_125M ]
 
   set util_ds_buf [ create_bd_cell -type ip -vlnv xilinx.com:ip:util_ds_buf:2.2 util_ds_buf ]
   set_property CONFIG.C_BUF_TYPE {IBUFDSGTE} $util_ds_buf
 
   set xdma_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xdma:4.2 xdma_0 ]
-  # BUG-051: XDMA 64-Р±РёС‚ @ 250 РњР“С† РќР• Р·Р°РєСЂС‹РІР°РµС‚ С‚Р°Р№РјРёРЅРі РЅР° Artix-7
-  # (РІРЅСѓС‚СЂРµРЅРЅРёР№ userclk1 dsc_eng/dma_pcie_rc: WNS=-2.2ns, 13375 endpoints).
+  # BUG-051: XDMA 64-Р В±Р С‘РЎвЂљ @ 250 Р СљР вЂњРЎвЂ  Р СњР вЂў Р В·Р В°Р С”РЎР‚РЎвЂ№Р Р†Р В°Р ВµРЎвЂљ РЎвЂљР В°Р в„–Р СР С‘Р Р…Р С– Р Р…Р В° Artix-7
+  # (Р Р†Р Р…РЎС“РЎвЂљРЎР‚Р ВµР Р…Р Р…Р С‘Р в„– userclk1 dsc_eng/dma_pcie_rc: WNS=-2.2ns, 13375 endpoints).
   # AMD community: "design simply cannot run at 250 MHz in Artix-7".
-  # Р РµС€РµРЅРёРµ: 128-Р±РёС‚ @ 125 РњР“С† вЂ” С‚Р° Р¶Рµ РїРѕР»РѕСЃР° 16BГ—125Рњ = 2.0 Р“Р‘/СЃ,
-  # userclk1 = 125 РњР“С† вЂ” С‚Р°Р№РјРёРЅРі Р·Р°РєСЂС‹РІР°РµС‚СЃСЏ С€С‚Р°С‚РЅРѕ.
-  # РљР°РЅР°Р»С‹ DMA 2+2 РЎРћРҐР РђРќР•РќР«. РџРµСЂРёС„РµСЂРёСЏ/СЏРґСЂРѕ/RP вЂ” РґРѕРјРµРЅ 125 РњР“С†.
+  # Р В Р ВµРЎв‚¬Р ВµР Р…Р С‘Р Вµ: 128-Р В±Р С‘РЎвЂљ @ 125 Р СљР вЂњРЎвЂ  РІР‚вЂќ РЎвЂљР В° Р В¶Р Вµ Р С—Р С•Р В»Р С•РЎРѓР В° 16BР“вЂ”125Р Сљ = 2.0 Р вЂњР вЂ/РЎРѓ,
+  # userclk1 = 125 Р СљР вЂњРЎвЂ  РІР‚вЂќ РЎвЂљР В°Р в„–Р СР С‘Р Р…Р С– Р В·Р В°Р С”РЎР‚РЎвЂ№Р Р†Р В°Р ВµРЎвЂљРЎРѓРЎРЏ РЎв‚¬РЎвЂљР В°РЎвЂљР Р…Р С•.
+  # Р С™Р В°Р Р…Р В°Р В»РЎвЂ№ DMA 2+2 Р РЋР С›Р ТђР В Р С’Р СњР вЂўР СњР В«. Р СџР ВµРЎР‚Р С‘РЎвЂћР ВµРЎР‚Р С‘РЎРЏ/РЎРЏР Т‘РЎР‚Р С•/RP РІР‚вЂќ Р Т‘Р С•Р СР ВµР Р… 125 Р СљР вЂњРЎвЂ .
   set_property -dict [list \
     CONFIG.PF0_DEVICE_ID_mqdma {9024} \
     CONFIG.PF0_SRIOV_VF_DEVICE_ID {A034} \
@@ -712,10 +712,10 @@ set_property -dict [list \
     CONFIG.RESET_TYPE {ACTIVE_LOW} \
   ] $clk200_clk_wiz
 
-  # BUG-034: РѕС‚РґРµР»СЊРЅС‹Р№ РґРѕРјРµРЅ 125 РњР“С† РґР»СЏ fabric/СЏРґСЂР°/RP.
-  # РџСЂРё XDMA 64-Р±РёС‚ axi_aclk = 250 РњР“С†; С‚РµСЂРЅР°СЂРЅРѕРµ СЏРґСЂРѕ Рё RP DataMover 128-Р±РёС‚
-  # Р·Р°РєСЂС‹РІР°СЋС‚ С‚Р°Р№РјРёРЅРі С‚РѕР»СЊРєРѕ РїСЂРё 125 РњР“С† (WNS 0.370 РЅСЃ @ 125 РњР“С†).
-  # 50 РњР“С† Г— 20 = VCO 1000 РњР“С†, /8 = 125 РњР“С† (IP СЃР°Рј СЃС‡РёС‚Р°РµС‚ РґРµР»РёС‚РµР»Рё).
+  # BUG-034: Р С•РЎвЂљР Т‘Р ВµР В»РЎРЉР Р…РЎвЂ№Р в„– Р Т‘Р С•Р СР ВµР Р… 125 Р СљР вЂњРЎвЂ  Р Т‘Р В»РЎРЏ fabric/РЎРЏР Т‘РЎР‚Р В°/RP.
+  # Р СџРЎР‚Р С‘ XDMA 64-Р В±Р С‘РЎвЂљ axi_aclk = 250 Р СљР вЂњРЎвЂ ; РЎвЂљР ВµРЎР‚Р Р…Р В°РЎР‚Р Р…Р С•Р Вµ РЎРЏР Т‘РЎР‚Р С• Р С‘ RP DataMover 128-Р В±Р С‘РЎвЂљ
+  # Р В·Р В°Р С”РЎР‚РЎвЂ№Р Р†Р В°РЎР‹РЎвЂљ РЎвЂљР В°Р в„–Р СР С‘Р Р…Р С– РЎвЂљР С•Р В»РЎРЉР С”Р С• Р С—РЎР‚Р С‘ 125 Р СљР вЂњРЎвЂ  (WNS 0.370 Р Р…РЎРѓ @ 125 Р СљР вЂњРЎвЂ ).
+  # 50 Р СљР вЂњРЎвЂ  Р“вЂ” 20 = VCO 1000 Р СљР вЂњРЎвЂ , /8 = 125 Р СљР вЂњРЎвЂ  (IP РЎРѓР В°Р С РЎРѓРЎвЂЎР С‘РЎвЂљР В°Р ВµРЎвЂљ Р Т‘Р ВµР В»Р С‘РЎвЂљР ВµР В»Р С‘).
   set clk125_core_wiz [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk125_core_wiz ]
 set_property -dict [list \
     CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {125.000} \
@@ -726,9 +726,9 @@ set_property -dict [list \
   ] $clk125_core_wiz
 
   set xdma_axi_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_smc ]
-  # 3 РґРѕРјРµРЅР°, 3 SI, 1 MI вЂ” РЎР РђР—РЈ С„РёРЅР°Р»СЊРЅС‹Рµ Р·РЅР°С‡РµРЅРёСЏ (S02 Р±СѓРґРµС‚ РїРѕРґРєР»СЋС‡С‘РЅ РІ post_bd_dfx).
-  # BUG-035: РќР• СЃС‚Р°РІРёРј ASSOCIATED_BUSIF/FREQ_HZ РЅР° clock-РїРёРЅР°С… вЂ” read-only (BD 41-737)
-  # Рё Р»РѕРјР°СЋС‚ Р°РІС‚Рѕ-РІС‹РІРѕРґ РґРѕРјРµРЅРѕРІ. Vivado СЃР°Рј РІС‹РІРѕРґРёС‚ РґРѕРјРµРЅС‹ РёР· FREQ_HZ РїРѕСЂС‚РѕРІ/IP.
+  # 3 Р Т‘Р С•Р СР ВµР Р…Р В°, 3 SI, 1 MI РІР‚вЂќ Р РЋР В Р С’Р вЂ”Р Р€ РЎвЂћР С‘Р Р…Р В°Р В»РЎРЉР Р…РЎвЂ№Р Вµ Р В·Р Р…Р В°РЎвЂЎР ВµР Р…Р С‘РЎРЏ (S02 Р В±РЎС“Р Т‘Р ВµРЎвЂљ Р С—Р С•Р Т‘Р С”Р В»РЎР‹РЎвЂЎРЎвЂР Р… Р Р† post_bd_dfx).
+  # BUG-035: Р СњР вЂў РЎРѓРЎвЂљР В°Р Р†Р С‘Р С ASSOCIATED_BUSIF/FREQ_HZ Р Р…Р В° clock-Р С—Р С‘Р Р…Р В°РЎвЂ¦ РІР‚вЂќ read-only (BD 41-737)
+  # Р С‘ Р В»Р С•Р СР В°РЎР‹РЎвЂљ Р В°Р Р†РЎвЂљР С•-Р Р†РЎвЂ№Р Р†Р С•Р Т‘ Р Т‘Р С•Р СР ВµР Р…Р С•Р Р†. Vivado РЎРѓР В°Р С Р Р†РЎвЂ№Р Р†Р С•Р Т‘Р С‘РЎвЂљ Р Т‘Р С•Р СР ВµР Р…РЎвЂ№ Р С‘Р В· FREQ_HZ Р С—Р С•РЎР‚РЎвЂљР С•Р Р†/IP.
   set_property -dict [list \
     CONFIG.NUM_CLKS {3} \
     CONFIG.NUM_SI {3} \
@@ -736,7 +736,7 @@ set_property -dict [list \
   ] $xdma_axi_smc
 
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
-  # 2 РґРѕРјРµРЅР°, 6 MI РЎР РђР—РЈ (M03-M05 Р±СѓРґСѓС‚ РїРѕРґРєР»СЋС‡РµРЅС‹ РІ post_bd_dfx).
+  # 2 Р Т‘Р С•Р СР ВµР Р…Р В°, 6 MI Р РЋР В Р С’Р вЂ”Р Р€ (M03-M05 Р В±РЎС“Р Т‘РЎС“РЎвЂљ Р С—Р С•Р Т‘Р С”Р В»РЎР‹РЎвЂЎР ВµР Р…РЎвЂ№ Р Р† post_bd_dfx).
   set_property -dict [list \
     CONFIG.NUM_MI {7} \
     CONFIG.NUM_SI {1} \
@@ -759,44 +759,56 @@ set_property -dict [list \
   connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
 
   # ============================================================================
-  # DIAG (2026-10-03): BRAM-обход для TDOT + DMA — локальный 8 КБ SRAM,
-  # доступный и TDOT-мастеру, и XDMA-мастеру по адресу 0x00000000 (в обход DDR3).
-  # Позволяет проверить ядро и DMA-путь БЕЗ доступа к неинициализированному MIG.
+  # DIAG (2026-10-03): BRAM-РѕР±С…РѕРґ РґР»СЏ TDOT + DMA вЂ” Р»РѕРєР°Р»СЊРЅС‹Р№ 8 РљР‘ SRAM,
+  # РґРѕСЃС‚СѓРїРЅС‹Р№ Рё TDOT-РјР°СЃС‚РµСЂСѓ, Рё XDMA-РјР°СЃС‚РµСЂСѓ РїРѕ Р°РґСЂРµСЃСѓ 0x00000000 (РІ РѕР±С…РѕРґ DDR3).
+  # РџРѕР·РІРѕР»СЏРµС‚ РїСЂРѕРІРµСЂРёС‚СЊ СЏРґСЂРѕ Рё DMA-РїСѓС‚СЊ Р‘Р•Р— РґРѕСЃС‚СѓРїР° Рє РЅРµРёРЅРёС†РёР°Р»РёР·РёСЂРѕРІР°РЅРЅРѕРјСѓ MIG.
   # ============================================================================
-  # DIAG BRAM (BRAM-обход для TDOT + DMA): ОДИН порт S_AXI (INTERNAL).
+  # DIAG BRAM (BRAM-РѕР±С…РѕРґ РґР»СЏ TDOT + DMA): РћР”РРќ РїРѕСЂС‚ S_AXI (INTERNAL).
   #
-  # РАЗБОР ПРЕДЫДУЩЕЙ ОШИБКИ сборки (vivado.log, BD 5-216):
+  # Р РђР—Р‘РћР  РџР Р•Р”Р«Р”РЈР©Р•Р™ РћРЁРР‘РљР СЃР±РѕСЂРєРё (vivado.log, BD 5-216):
   #   "VLNV <xilinx.com:ip:blk_mem_gen:8.3> is not supported for the current
   #    part. The latest supported version for this part is: <8.4>"
-  # Ручной blk_mem_gen 8.3 не поддерживается на xc7a200t в Vivado 2025.2.
-  # Решение: НЕ создаём blk_mem_gen вручную. axi_bram_ctrl в режиме
-  # BRAM_INST_MODE=INTERNAL(по умолч.) САМ генерирует внутренний blk_mem_gen
-  # корректной версии, а наружу выдаёт только AXI-порт S_AXI — и отдельного
-  # внешнего BRAM не требуется, и ошибки 8.3/8.4 не возникает.
+  # Р СѓС‡РЅРѕР№ blk_mem_gen 8.3 РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚СЃСЏ РЅР° xc7a200t РІ Vivado 2025.2.
+  # Р РµС€РµРЅРёРµ: РќР• СЃРѕР·РґР°С‘Рј blk_mem_gen РІСЂСѓС‡РЅСѓСЋ. axi_bram_ctrl РІ СЂРµР¶РёРјРµ
+  # BRAM_INST_MODE=INTERNAL(РїРѕ СѓРјРѕР»С‡.) РЎРђРњ РіРµРЅРµСЂРёСЂСѓРµС‚ РІРЅСѓС‚СЂРµРЅРЅРёР№ blk_mem_gen
+  # РєРѕСЂСЂРµРєС‚РЅРѕР№ РІРµСЂСЃРёРё, Р° РЅР°СЂСѓР¶Сѓ РІС‹РґР°С‘С‚ С‚РѕР»СЊРєРѕ AXI-РїРѕСЂС‚ S_AXI вЂ” Рё РѕС‚РґРµР»СЊРЅРѕРіРѕ
+  # РІРЅРµС€РЅРµРіРѕ BRAM РЅРµ С‚СЂРµР±СѓРµС‚СЃСЏ, Рё РѕС€РёР±РєРё 8.3/8.4 РЅРµ РІРѕР·РЅРёРєР°РµС‚.
   #
-  # Важно про порт B: axi_bram_ctrl v4.1 не поддерживает РАЗНЫЕ протоколы на
-  # S_AXI и S_AXI_B (оба одним C_S_AXI_PROTOCOL=AXI4). Хост (AXI-Lite M02 из
-  # xdma_axi_lite_smc) к AXI4-порту B подключить нельзя. Поэтому используем
-  # ОДИН порт S_AXI (AXI4): и XDMA M_AXI, и TDOT-мастер идут через
-  # xdma_axi_smc → M01 → S_AXI. Хост пишет/читает BRAM через S00 (XDMA M_AXI)
-  # обычным DMA хост->0x00000000 (BRAM) — это и есть обходной тест без DDR3.
+  # Р’Р°Р¶РЅРѕ РїСЂРѕ РїРѕСЂС‚ B: axi_bram_ctrl v4.1 РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ Р РђР—РќР«Р• РїСЂРѕС‚РѕРєРѕР»С‹ РЅР°
+  # S_AXI Рё S_AXI_B (РѕР±Р° РѕРґРЅРёРј C_S_AXI_PROTOCOL=AXI4). РҐРѕСЃС‚ (AXI-Lite M02 РёР·
+  # xdma_axi_lite_smc) Рє AXI4-РїРѕСЂС‚Сѓ B РїРѕРґРєР»СЋС‡РёС‚СЊ РЅРµР»СЊР·СЏ. РџРѕСЌС‚РѕРјСѓ РёСЃРїРѕР»СЊР·СѓРµРј
+  # РћР”РРќ РїРѕСЂС‚ S_AXI (AXI4): Рё XDMA M_AXI, Рё TDOT-РјР°СЃС‚РµСЂ РёРґСѓС‚ С‡РµСЂРµР·
+  # xdma_axi_smc в†’ M01 в†’ S_AXI. РҐРѕСЃС‚ РїРёС€РµС‚/С‡РёС‚Р°РµС‚ BRAM С‡РµСЂРµР· S00 (XDMA M_AXI)
+  # РѕР±С‹С‡РЅС‹Рј DMA С…РѕСЃС‚->0x00000000 (BRAM) вЂ” СЌС‚Рѕ Рё РµСЃС‚СЊ РѕР±С…РѕРґРЅРѕР№ С‚РµСЃС‚ Р±РµР· DDR3.
   # ============================================================================
+  set diag_bram [ create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:8.4 diag_bram ]
+  set_property -dict [list \
+    CONFIG.Memory_Type {Single_Port_RAM} \
+    CONFIG.Write_Width_A {64} \
+    CONFIG.Write_Depth_A {1024} \
+    CONFIG.Read_Width_A {64} \
+    CONFIG.use_bram_block {BRAM_Controller} \
+  ] $diag_bram
+
   set diag_bram_ctrl [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 diag_bram_ctrl ]
   set_property -dict [list \
     CONFIG.DATA_WIDTH {64} \
     CONFIG.PROTOCOL {AXI4} \
-    CONFIG.SINGLE_PORT {true} \
-    CONFIG.BMG_INSTANCE {INTERNAL} \
+    CONFIG.SINGLE_PORT_BRAM {1} \
   ] $diag_bram_ctrl
 
-  # --- (Шаг A1) xdma_axi_smc: добавить M01 -> diag_bram_ctrl/S_AXI ---
+  # AXI BRAM Controller РІ EXTERNAL (Р·Р°С€РёС‚Рѕ РЅР°РјРµСЂС‚РІРѕ, read-only) С‚СЂРµР±СѓРµС‚ Р’РќР•РЁРќРР™
+  # blk_mem_gen РЅР° BRAM_PORTA (РѕРґРёРЅ РїРѕСЂС‚ S_AXI). РџРѕРґРєР»СЋС‡Р°РµРј.
+  connect_bd_intf_net [get_bd_intf_pins diag_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins diag_bram/BRAM_PORTA]
+
+  # --- (РЁР°Рі A1) xdma_axi_smc: РґРѕР±Р°РІРёС‚СЊ M01 -> diag_bram_ctrl/S_AXI ---
   set_property -dict [list CONFIG.NUM_MI {2}] $xdma_axi_smc
   connect_bd_intf_net -intf_net xdma_axi_smc_M01_AXI [get_bd_intf_pins xdma_axi_smc/M01_AXI] [get_bd_intf_pins diag_bram_ctrl/S_AXI]
 
-  # --- (Шаг B) доступ хоста к BRAM ---
-  # Хост пишет/читает BRAM через S00 (XDMA M_AXI → xdma_axi_smc → M01 → S_AXI),
-  # обычным DMA на адрес 0x00000000 (8 КБ). AXI-Lite порт B не используется
-  # (axi_bram_ctrl v4.1 не даёт разных протоколов A/B; SINGLE_PORT=true).
+  # --- (РЁР°Рі B) РґРѕСЃС‚СѓРї С…РѕСЃС‚Р° Рє BRAM ---
+  # РҐРѕСЃС‚ РїРёС€РµС‚/С‡РёС‚Р°РµС‚ BRAM С‡РµСЂРµР· S00 (XDMA M_AXI в†’ xdma_axi_smc в†’ M01 в†’ S_AXI),
+  # РѕР±С‹С‡РЅС‹Рј DMA РЅР° Р°РґСЂРµСЃ 0x00000000 (8 РљР‘). AXI-Lite РїРѕСЂС‚ B РЅРµ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ
+  # (axi_bram_ctrl v4.1 РЅРµ РґР°С‘С‚ СЂР°Р·РЅС‹С… РїСЂРѕС‚РѕРєРѕР»РѕРІ A/B; SINGLE_PORT=true).
 
   connect_bd_net -net clk200_clk_wiz_clk_out1 [get_bd_pins clk200_clk_wiz/clk_out1] \
   [get_bd_pins mig_7series_0/clk_ref_i] \
@@ -857,8 +869,8 @@ set_property -dict [list \
   connect_bd_net -net util_ds_buf_IBUF_OUT [get_bd_pins util_ds_buf/IBUF_OUT] \
   [get_bd_pins xdma_0/sys_clk]
 
-  # PCIe-РґРѕРјРµРЅ XDMA (250 РњР“С† РїСЂРё 64-Р±РёС‚, BUG-034): С‚РѕР»СЊРєРѕ XDMA Рё
-  # S-СЃС‚РѕСЂРѕРЅС‹ SmartConnect. РџРµСЂРёС„РµСЂРёСЏ/СЏРґСЂРѕ/RP вЂ” РІ РґРѕРјРµРЅРµ clk125_core_wiz.
+  # PCIe-Р Т‘Р С•Р СР ВµР Р… XDMA (250 Р СљР вЂњРЎвЂ  Р С—РЎР‚Р С‘ 64-Р В±Р С‘РЎвЂљ, BUG-034): РЎвЂљР С•Р В»РЎРЉР С”Р С• XDMA Р С‘
+  # S-РЎРѓРЎвЂљР С•РЎР‚Р С•Р Р…РЎвЂ№ SmartConnect. Р СџР ВµРЎР‚Р С‘РЎвЂћР ВµРЎР‚Р С‘РЎРЏ/РЎРЏР Т‘РЎР‚Р С•/RP РІР‚вЂќ Р Р† Р Т‘Р С•Р СР ВµР Р…Р Вµ clk125_core_wiz.
 connect_bd_net -net xdma_0_axi_aclk [get_bd_pins xdma_0/axi_aclk] \
   [get_bd_pins xdma_axi_lite_smc/aclk] \
   [get_bd_pins xdma_axi_smc/aclk] \
@@ -877,24 +889,24 @@ connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
   assign_bd_address -offset 0x40000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40002000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
 
-  # ---- DIAG (2026-10-03): адресные карты BRAM-обхода ----
-  # (A) XDMA-мастер получает сегмент BRAM 0x00000000 (8 КБ) В ДОБАВЛЕНИЕ к
-  #     DDR3 0x80000000. (assign для tdot_m_port — ниже, после его создания.)
-  assign_bd_address -offset 0x00000000 -range 0x00002000 \
+  # ---- DIAG (2026-10-03): Р°РґСЂРµСЃРЅС‹Рµ РєР°СЂС‚С‹ BRAM-РѕР±С…РѕРґР° ----
+  # (A) XDMA-РјР°СЃС‚РµСЂ РїРѕР»СѓС‡Р°РµС‚ СЃРµРіРјРµРЅС‚ BRAM 0x00000000 (8 РљР‘) Р’ Р”РћР‘РђР’Р›Р•РќРР• Рє
+  #     DDR3 0x80000000. (assign РґР»СЏ tdot_m_port вЂ” РЅРёР¶Рµ, РїРѕСЃР»Рµ РµРіРѕ СЃРѕР·РґР°РЅРёСЏ.)
+  assign_bd_address -offset 0x10000000 -range 0x00002000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI] \
-    [get_bd_addr_segs diag_bram_ctrl/S_AXI/Reg] -force
-  # (B) Хост пишет/читает BRAM через XDMA M_AXI (S00) по 0x00000000 (8 КБ) — DMA.
-  # AXI-Lite порт не нужен (SINGLE_PORT); адрес 0x40006000 не используется.
+    [get_bd_addr_segs diag_bram_ctrl/S_AXI/Mem0] -force
+  # (B) РҐРѕСЃС‚ РїРёС€РµС‚/С‡РёС‚Р°РµС‚ BRAM С‡РµСЂРµР· XDMA M_AXI (S00) РїРѕ 0x00000000 (8 РљР‘) вЂ” DMA.
+  # AXI-Lite РїРѕСЂС‚ РЅРµ РЅСѓР¶РµРЅ (SINGLE_PORT); Р°РґСЂРµСЃ 0x40006000 РЅРµ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ.
 
   current_bd_instance $oldCurInst
 
   # ============================================================================
-  # РЎРѕР·РґР°РЅРёРµ РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ (Р±С‹РІС€РёР№ post_bd_dfx С€Р°РіРё 1-4)
-  # Р”РµР»Р°РµРј Р—Р”Р•РЎР¬ РґРѕ validate_bd_design, С‡С‚РѕР±С‹ Vivado РІРёРґРµР» FREQ_HZ=125 РЅР° РїРѕСЂС‚Р°С…
-  # Рё Р°РІС‚Рѕ-РІС‹РІРµР» РґРѕРјРµРЅ fabric (125 РњР“С†) РґР»СЏ S02/M03-M05 (BUG-035).
+  # Р РЋР С•Р В·Р Т‘Р В°Р Р…Р С‘Р Вµ Р Р†Р Р…Р ВµРЎв‚¬Р Р…Р С‘РЎвЂ¦ Р С—Р С•РЎР‚РЎвЂљР С•Р Р† (Р В±РЎвЂ№Р Р†РЎв‚¬Р С‘Р в„– post_bd_dfx РЎв‚¬Р В°Р С–Р С‘ 1-4)
+  # Р вЂќР ВµР В»Р В°Р ВµР С Р вЂ”Р вЂќР вЂўР РЋР В¬ Р Т‘Р С• validate_bd_design, РЎвЂЎРЎвЂљР С•Р В±РЎвЂ№ Vivado Р Р†Р С‘Р Т‘Р ВµР В» FREQ_HZ=125 Р Р…Р В° Р С—Р С•РЎР‚РЎвЂљР В°РЎвЂ¦
+  # Р С‘ Р В°Р Р†РЎвЂљР С•-Р Р†РЎвЂ№Р Р†Р ВµР В» Р Т‘Р С•Р СР ВµР Р… fabric (125 Р СљР вЂњРЎвЂ ) Р Т‘Р В»РЎРЏ S02/M03-M05 (BUG-035).
   # ============================================================================
 
-  # M_AXI_TDOT вЂ” AXI4 master РѕС‚ tdot_axi4 Рє DDR3
+  # M_AXI_TDOT РІР‚вЂќ AXI4 master Р С•РЎвЂљ tdot_axi4 Р С” DDR3
   set tdot_m_port [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI_TDOT]
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4 CONFIG.DATA_WIDTH 64 CONFIG.ADDR_WIDTH 32 \
@@ -903,10 +915,10 @@ connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
   assign_bd_address -offset 0x80000000 -range 0x10000000 \
     -target_address_space [get_bd_addr_spaces $tdot_m_port] \
     [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
-  # DIAG: TDOT-мастер также видит BRAM 0x00000000 (8 КБ) — обход DDR3.
-  assign_bd_address -offset 0x00000000 -range 0x00002000 \
+  # DIAG: TDOT-РјР°СЃС‚РµСЂ С‚Р°РєР¶Рµ РІРёРґРёС‚ BRAM 0x00000000 (8 РљР‘) вЂ” РѕР±С…РѕРґ DDR3.
+  assign_bd_address -offset 0x10000000 -range 0x00002000 \
     -target_address_space [get_bd_addr_spaces $tdot_m_port] \
-    [get_bd_addr_segs diag_bram_ctrl/S_AXI/Reg] -force
+    [get_bd_addr_segs diag_bram_ctrl/S_AXI/Mem0] -force
 
   # S_AXI_TDOT_REGS
   set tdot_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_TDOT_REGS]
@@ -940,23 +952,23 @@ connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
   assign_bd_address -offset 0x40005000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $spi_port/Reg] -force
 
-  # ---- BUG-035: РїСЂРёРІСЏР·РєР° РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ Рє fabric-РґРѕРјРµРЅСѓ 125 РњР“С† ----
-  # Vivado РЅРµ Р°РІС‚Рѕ-РІС‹РІРѕРґРёС‚ РґРѕРјРµРЅ РґР»СЏ РІРЅРµС€РЅРёС… AXI-РїРѕСЂС‚РѕРІ вЂ” РѕРЅРё СЃР°РґСЏС‚СЃСЏ РЅР°
-  # aclk=250 в†’ BD 41-237 (FREQ_HZ mismatch 250 vs 125). Р РµС€РµРЅРёРµ (probe3 V5):
-  # Р°СЃСЃРѕС†РёРёСЂРѕРІР°С‚СЊ РёРјРµРЅР° РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ СЃ СЌРєСЃРїРѕСЂС‚РёСЂРѕРІР°РЅРЅС‹Рј РєР»РѕРє-РїРѕСЂС‚РѕРј
-  # clk_core_out (125 РњР“С†, РїРёС‚Р°РµС‚ С‚РѕС‚ Р¶Рµ РґРѕРјРµРЅ, С‡С‚Рѕ aclk2/aclk1).
+  # ---- BUG-035: Р С—РЎР‚Р С‘Р Р†РЎРЏР В·Р С”Р В° Р Р†Р Р…Р ВµРЎв‚¬Р Р…Р С‘РЎвЂ¦ Р С—Р С•РЎР‚РЎвЂљР С•Р Р† Р С” fabric-Р Т‘Р С•Р СР ВµР Р…РЎС“ 125 Р СљР вЂњРЎвЂ  ----
+  # Vivado Р Р…Р Вµ Р В°Р Р†РЎвЂљР С•-Р Р†РЎвЂ№Р Р†Р С•Р Т‘Р С‘РЎвЂљ Р Т‘Р С•Р СР ВµР Р… Р Т‘Р В»РЎРЏ Р Р†Р Р…Р ВµРЎв‚¬Р Р…Р С‘РЎвЂ¦ AXI-Р С—Р С•РЎР‚РЎвЂљР С•Р Р† РІР‚вЂќ Р С•Р Р…Р С‘ РЎРѓР В°Р Т‘РЎРЏРЎвЂљРЎРѓРЎРЏ Р Р…Р В°
+  # aclk=250 РІвЂ вЂ™ BD 41-237 (FREQ_HZ mismatch 250 vs 125). Р В Р ВµРЎв‚¬Р ВµР Р…Р С‘Р Вµ (probe3 V5):
+  # Р В°РЎРѓРЎРѓР С•РЎвЂ Р С‘Р С‘РЎР‚Р С•Р Р†Р В°РЎвЂљРЎРЉ Р С‘Р СР ВµР Р…Р В° Р Р†Р Р…Р ВµРЎв‚¬Р Р…Р С‘РЎвЂ¦ Р С—Р С•РЎР‚РЎвЂљР С•Р Р† РЎРѓ РЎРЊР С”РЎРѓР С—Р С•РЎР‚РЎвЂљР С‘РЎР‚Р С•Р Р†Р В°Р Р…Р Р…РЎвЂ№Р С Р С”Р В»Р С•Р С”-Р С—Р С•РЎР‚РЎвЂљР С•Р С
+  # clk_core_out (125 Р СљР вЂњРЎвЂ , Р С—Р С‘РЎвЂљР В°Р ВµРЎвЂљ РЎвЂљР С•РЎвЂљ Р В¶Р Вµ Р Т‘Р С•Р СР ВµР Р…, РЎвЂЎРЎвЂљР С• aclk2/aclk1).
   if {[get_bd_ports -quiet clk_core_out] eq ""} {
       create_bd_port -dir O -type clk -freq_hz 125000000 clk_core_out
   }
-  # BUG-035: РїСЂРёРІСЏР·РєР° РІРЅРµС€РЅРёС… РїРѕСЂС‚РѕРІ Рє fabric-РґРѕРјРµРЅСѓ 125 РњР“С†.
-  # Р’РђР–РќРћ: СЂР°Р·РґРµР»РёС‚РµР»СЊ РІ ASSOCIATED_BUSIF вЂ” Р”Р’РћР•РўРћР§РР• (РєР°Рє РІ default.tcl
-  # {rp_M_AXI:rp_S_AXI}), РќР• РїСЂРѕР±РµР»! РЎ РїСЂРѕР±РµР»Р°РјРё Vivado РёС‰РµС‚ РёРЅС‚РµСЂС„РµР№СЃ
-  # СЃ РѕРґРЅРёРј РёРјРµРЅРµРј "<a> <b>" в†’ BD 41-1287 "not found".
-  # РРјРµРЅР° вЂ” РІРЅРµС€РЅРёС… BD-РїРѕСЂС‚РѕРІ (M_AXI_TDOT...), РѕРЅРё РїСЂРѕРІРµСЂРµРЅС‹ РІ diag8: VALIDATE OK.
+  # BUG-035: Р С—РЎР‚Р С‘Р Р†РЎРЏР В·Р С”Р В° Р Р†Р Р…Р ВµРЎв‚¬Р Р…Р С‘РЎвЂ¦ Р С—Р С•РЎР‚РЎвЂљР С•Р Р† Р С” fabric-Р Т‘Р С•Р СР ВµР Р…РЎС“ 125 Р СљР вЂњРЎвЂ .
+  # Р вЂ™Р С’Р вЂ“Р СњР С›: РЎР‚Р В°Р В·Р Т‘Р ВµР В»Р С‘РЎвЂљР ВµР В»РЎРЉ Р Р† ASSOCIATED_BUSIF РІР‚вЂќ Р вЂќР вЂ™Р С›Р вЂўР СћР С›Р В§Р ВР вЂў (Р С”Р В°Р С” Р Р† default.tcl
+  # {rp_M_AXI:rp_S_AXI}), Р СњР вЂў Р С—РЎР‚Р С•Р В±Р ВµР В»! Р РЋ Р С—РЎР‚Р С•Р В±Р ВµР В»Р В°Р СР С‘ Vivado Р С‘РЎвЂ°Р ВµРЎвЂљ Р С‘Р Р…РЎвЂљР ВµРЎР‚РЎвЂћР ВµР в„–РЎРѓ
+  # РЎРѓ Р С•Р Т‘Р Р…Р С‘Р С Р С‘Р СР ВµР Р…Р ВµР С "<a> <b>" РІвЂ вЂ™ BD 41-1287 "not found".
+  # Р ВР СР ВµР Р…Р В° РІР‚вЂќ Р Р†Р Р…Р ВµРЎв‚¬Р Р…Р С‘РЎвЂ¦ BD-Р С—Р С•РЎР‚РЎвЂљР С•Р Р† (M_AXI_TDOT...), Р С•Р Р…Р С‘ Р С—РЎР‚Р С•Р Р†Р ВµРЎР‚Р ВµР Р…РЎвЂ№ Р Р† diag8: VALIDATE OK.
   if {[get_bd_ports -quiet clk_core_out] eq ""} {
       create_bd_port -dir O -type clk -freq_hz 125000000 clk_core_out
   }
-  # РРґРµРјРїРѕС‚РµРЅС‚РЅРѕ: РїРѕРґРєР»СЋС‡Р°РµРј clk_core_out С‚РѕР»СЊРєРѕ РµСЃР»Рё РѕРЅ РµС‰С‘ РЅРµ РЅР° СЃРµС‚Рё
+  # Р ВР Т‘Р ВµР СР С—Р С•РЎвЂљР ВµР Р…РЎвЂљР Р…Р С•: Р С—Р С•Р Т‘Р С”Р В»РЎР‹РЎвЂЎР В°Р ВµР С clk_core_out РЎвЂљР С•Р В»РЎРЉР С”Р С• Р ВµРЎРѓР В»Р С‘ Р С•Р Р… Р ВµРЎвЂ°РЎвЂ Р Р…Р Вµ Р Р…Р В° РЎРѓР ВµРЎвЂљР С‘
   if {[llength [get_bd_nets -quiet -of_objects [get_bd_ports clk_core_out]]] == 0} {
       set _cpin [get_bd_pins clk125_core_wiz/clk_out1]
       set _cnet [get_bd_nets -quiet -of_objects $_cpin]
@@ -976,3 +988,4 @@ connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
 # MAIN FLOW
 ##################################################################
 create_root_design ""
+
