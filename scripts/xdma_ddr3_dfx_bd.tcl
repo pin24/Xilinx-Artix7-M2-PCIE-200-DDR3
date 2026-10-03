@@ -786,6 +786,7 @@ set_property -dict [list \
     CONFIG.DATA_WIDTH {64} \
     CONFIG.PROTOCOL {AXI4} \
     CONFIG.SINGLE_PORT {true} \
+    CONFIG.BMG_INSTANCE {INTERNAL} \
   ] $diag_bram_ctrl
 
   # --- (Шаг A1) xdma_axi_smc: добавить M01 -> diag_bram_ctrl/S_AXI ---
@@ -858,13 +859,15 @@ set_property -dict [list \
 
   # PCIe-РґРѕРјРµРЅ XDMA (250 РњР“С† РїСЂРё 64-Р±РёС‚, BUG-034): С‚РѕР»СЊРєРѕ XDMA Рё
   # S-СЃС‚РѕСЂРѕРЅС‹ SmartConnect. РџРµСЂРёС„РµСЂРёСЏ/СЏРґСЂРѕ/RP вЂ” РІ РґРѕРјРµРЅРµ clk125_core_wiz.
-  connect_bd_net -net xdma_0_axi_aclk [get_bd_pins xdma_0/axi_aclk] \
+connect_bd_net -net xdma_0_axi_aclk [get_bd_pins xdma_0/axi_aclk] \
   [get_bd_pins xdma_axi_lite_smc/aclk] \
-  [get_bd_pins xdma_axi_smc/aclk]
+  [get_bd_pins xdma_axi_smc/aclk] \
+  [get_bd_pins diag_bram_ctrl/s_axi_aclk]
 
-  connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
+connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
   [get_bd_pins xdma_axi_lite_smc/aresetn] \
-  [get_bd_pins xdma_axi_smc/aresetn]
+  [get_bd_pins xdma_axi_smc/aresetn] \
+  [get_bd_pins diag_bram_ctrl/s_axi_aresetn]
 
   assign_bd_address -offset 0x00000000 -range 0x10000000 -target_address_space [get_bd_addr_spaces dfx_partition/axi_datamover_0/Data_MM2S] [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
   assign_bd_address -offset 0x00000000 -range 0x10000000 -target_address_space [get_bd_addr_spaces dfx_partition/axi_datamover_1/Data_S2MM] [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
@@ -875,12 +878,8 @@ set_property -dict [list \
   assign_bd_address -offset 0x40002000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
 
   # ---- DIAG (2026-10-03): адресные карты BRAM-обхода ----
-  # (A) TDOT-мастер и XDMA-мастер получают сегмент BRAM 0x00000000 (8 КБ) В
-  #     ДОБАВЛЕНИЕ к DDR3 0x80000000 — ядро может читать/писать локальный BRAM
-  #     в обход неинициализированного MIG.
-  assign_bd_address -offset 0x00000000 -range 0x00002000 \
-    -target_address_space [get_bd_addr_spaces $tdot_m_port] \
-    [get_bd_addr_segs diag_bram_ctrl/S_AXI/Reg] -force
+  # (A) XDMA-мастер получает сегмент BRAM 0x00000000 (8 КБ) В ДОБАВЛЕНИЕ к
+  #     DDR3 0x80000000. (assign для tdot_m_port — ниже, после его создания.)
   assign_bd_address -offset 0x00000000 -range 0x00002000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI] \
     [get_bd_addr_segs diag_bram_ctrl/S_AXI/Reg] -force
@@ -904,6 +903,10 @@ set_property -dict [list \
   assign_bd_address -offset 0x80000000 -range 0x10000000 \
     -target_address_space [get_bd_addr_spaces $tdot_m_port] \
     [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
+  # DIAG: TDOT-мастер также видит BRAM 0x00000000 (8 КБ) — обход DDR3.
+  assign_bd_address -offset 0x00000000 -range 0x00002000 \
+    -target_address_space [get_bd_addr_spaces $tdot_m_port] \
+    [get_bd_addr_segs diag_bram_ctrl/S_AXI/Reg] -force
 
   # S_AXI_TDOT_REGS
   set tdot_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_TDOT_REGS]
