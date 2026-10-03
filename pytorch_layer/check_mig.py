@@ -1,7 +1,11 @@
 ﻿import struct, sys, time
 from xdma_driver import XdmaWinDriver, XdmaWindows, XdmaError
 
-GPIO2_DATA = 0x40000008
+# Правка 2026-10-03 (аудит 6 агентов): каноническая карта GPIO = 0x40020000
+# (build_dfx.tcl:258-292 переносит периферию выше XDMA internal window 0x0-0x7FFF),
+# поэтому GPIO2_DATA = 0x40020008, а НЕ 0x40000008 (старый адрес попадал в зону
+# перехвата внутренних регистров XDMA BAR0 и выдавал мусор вместо MIG-статуса).
+GPIO2_DATA = 0x40020008
 
 def main():
     dev = None

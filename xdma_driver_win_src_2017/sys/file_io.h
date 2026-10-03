@@ -43,6 +43,9 @@ typedef struct _FILE_CONTEXT {
     WDFQUEUE queue;
     ULONG barIdx;               // FIX-AUDIT 2026-10-02: BAR index used by this file
                                 // node, needed for ValidateBarParams() range check.
+    BOOLEAN translateAxiBase;   // DIAG 2026-10-03: TRUE (default) -> ProgramDma adds
+                                // XDMA_DDR3_AXI_BASE; FALSE for h2c_bram_0/c2h_bram_0
+                                // (host passes full card address, BRAM 0x0 reachable).
 
 } FILE_CONTEXT, *PFILE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(FILE_CONTEXT, GetFileContext)

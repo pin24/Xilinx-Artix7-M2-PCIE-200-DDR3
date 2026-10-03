@@ -54,6 +54,12 @@ DEFINE_GUID(GUID_DEVINTERFACE_XDMA,
 #define	XDMA_FILE_C2H_2		L"\\c2h_2"
 #define	XDMA_FILE_C2H_3		L"\\c2h_3"
 
+// BRAM bypass (DIAG 2026-10-03): DMA узлы без трансляции базы 0x80000000.
+// Host передаёт ПОЛНЫЙ картовый адрес: 0x0..0x1FFF -> локальный BRAM,
+// 0x80000000+ -> DDR3. Используются обходным тестом без неинициализированного MIG.
+#define	XDMA_FILE_H2C_BRAM_0	L"\\h2c_bram_0"
+#define	XDMA_FILE_C2H_BRAM_0	L"\\c2h_bram_0"
+
 #define XDMA_IOCTL(index) CTL_CODE(FILE_DEVICE_UNKNOWN, index, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #define IOCTL_XDMA_GET_VERSION  XDMA_IOCTL(0x0)

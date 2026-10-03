@@ -344,6 +344,9 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
 
     // Incremental or Non-Incremental address mode? 0 = inc, 1=non-inc
     engine->addressMode = (engine->regs->control & XDMA_CTRL_NON_INCR_ADDR) != 0;
+    // DIAG 2026-10-03: по умолчанию база DDR3 добавляется (translateAxiBase=TRUE).
+    // h2c_bram_0/c2h_bram_0 выставляют FALSE в EvtDeviceFileCreate.
+    engine->translateAxiBase = TRUE;
 
     // set interrupt sources
     EngineConfigureInterrupt(engine, engineIndex);
@@ -490,7 +493,12 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     // (unlike Linux), so the host passes a plain DDR3 offset; we add the AXI
     // base here for BOTH H2C (dstAddr) and C2H (srcAddr) since both use
     // deviceOffset below. Matches ADDRESS_MAP §6 (DDR3 @ 0x80000000).
-    deviceOffset += XDMA_DDR3_AXI_BASE;
+    // DIAG 2026-10-03 (BRAM bypass): if the engine was opened via the *_bram_0
+    // nodes (translateAxiBase=FALSE), do NOT add the base -> host drives the
+    // full card address (0x0..0x1FFF = local BRAM, 0x80000000+ = DDR3).
+    if (engine->translateAxiBase) {
+        deviceOffset += XDMA_DDR3_AXI_BASE;
+    }
 
     // DBG-SRCADDR 2026-09-28: always visible in DebugView (plain DbgPrint,
     // independent of WPP). Reports the exact card-side address and SG count

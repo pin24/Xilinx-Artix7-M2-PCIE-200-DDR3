@@ -51,34 +51,37 @@ const static struct {
     DEVNODE_TYPE devType;
     const wchar_t *wstr;
     ULONG channel;
+    BOOLEAN translateBase;  // DIAG 2026-10-03: FALSE -> не добавлять XDMA_DDR3_AXI_BASE (BRAM-узлы)
 } FileNameLUT[] = {
-    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_0,        0 },
-    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_0,        0 },
-    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_1,        1 },
-    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_1,        1 },
-    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_2,        2 },
-    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_2,        2 },
-    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_3,        3 },
-    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_3,        3 },
-    { DEVNODE_TYPE_USER,        XDMA_FILE_USER,         0 },
-    { DEVNODE_TYPE_CONTROL,     XDMA_FILE_CONTROL,      0 },
-    { DEVNODE_TYPE_BYPASS,      XDMA_FILE_BYPASS,       0 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_0,      0 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_1,      1 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_2,      2 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_3,      3 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_4,      4 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_5,      5 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_6,      6 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_7,      7 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_8,      8 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_9,      9 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_10,     10 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_11,     11 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_12,     12 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_13,     13 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_14,     14 },
-    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_15,     15 },
+    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_0,        0, TRUE  },
+    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_0,        0, TRUE  },
+    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_1,        1, TRUE  },
+    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_1,        1, TRUE  },
+    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_2,        2, TRUE  },
+    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_2,        2, TRUE  },
+    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_3,        3, TRUE  },
+    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_3,        3, TRUE  },
+    { DEVNODE_TYPE_H2C,         XDMA_FILE_H2C_BRAM_0,   0, FALSE },
+    { DEVNODE_TYPE_C2H,         XDMA_FILE_C2H_BRAM_0,   0, FALSE },
+    { DEVNODE_TYPE_USER,        XDMA_FILE_USER,         0, TRUE  },
+    { DEVNODE_TYPE_CONTROL,     XDMA_FILE_CONTROL,      0, TRUE  },
+    { DEVNODE_TYPE_BYPASS,      XDMA_FILE_BYPASS,       0, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_0,      0, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_1,      1, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_2,      2, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_3,      3, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_4,      4, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_5,      5, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_6,      6, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_7,      7, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_8,      8, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_9,      9, TRUE  },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_10,     10, TRUE },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_11,     11, TRUE },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_12,     12, TRUE },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_13,     13, TRUE },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_14,     14, TRUE },
+    { DEVNODE_TYPE_EVENTS,      XDMA_FILE_EVENT_15,     15, TRUE },
 };
 
 static VOID GetDevNodeType(PUNICODE_STRING fileName, PFILE_CONTEXT file, ULONG* index)
@@ -88,6 +91,7 @@ static VOID GetDevNodeType(PUNICODE_STRING fileName, PFILE_CONTEXT file, ULONG* 
         if (!wcscmp(fileName->Buffer, FileNameLUT[i].wstr)) {
             file->devType = FileNameLUT[i].devType;
             *index = FileNameLUT[i].channel;
+            file->translateAxiBase = FileNameLUT[i].translateBase;
             return;
         }
     }
@@ -178,6 +182,18 @@ VOID EvtDeviceFileCreate(IN WDFDEVICE device, IN WDFREQUEST Request, IN WDFFILEO
         if ((engine->type == EngineType_ST) && (dir == C2H)) {
             EngineRingSetup(engine);
         }
+
+        // DIAG 2026-10-03 (BRAM bypass): для узлов h2c_bram_0/c2h_bram_0
+        // отключаем добавку XDMA_DDR3_AXI_BASE (translateAxiBase=FALSE), чтобы
+        // хост мог адресовать локальный BRAM 0x0..0x1FFF напрямую.
+        // NOTE: флаг живёт на движке (общий для канала 0 с h2c_0/c2h_0).
+        // Для диагностического режима предполагается изолированный прогон
+        // (открываются ТОЛЬКО *_bram узлы). При одновременном открытии h2c_0 и
+        // h2c_bram_0 последний переопределит трансляцию для всех транзакций канала.
+        engine->translateAxiBase = devNode->translateAxiBase;
+        DbgPrint("XDMA_DMA open %s ch%u translateAxiBase=%u",
+                 dir == H2C ? "h2c" : "c2h", (UINT)index,
+                 (UINT)engine->translateAxiBase);
 
         devNode->u.engine = engine;
         devNode->queue = ctx->engineQueue[dir][index];

@@ -114,6 +114,11 @@ typedef struct XDMA_ENGINE_T {
     WDFSPINLOCK engineLock;
     BOOLEAN isReqPending;
 
+    // DIAG 2026-10-03 (BRAM bypass): TRUE (default) -> ProgramDma adds
+    // XDMA_DDR3_AXI_BASE to every desc; FALSE for h2c_bram_0/c2h_bram_0 so
+    // host can address local BRAM 0x0 directly. Set in EvtDeviceFileCreate.
+    BOOLEAN translateAxiBase;
+
 } XDMA_ENGINE;
 
 #pragma pack(1)

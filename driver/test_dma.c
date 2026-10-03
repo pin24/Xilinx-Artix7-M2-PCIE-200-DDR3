@@ -27,9 +27,19 @@
 /* ========================================================================== */
 /*  Device paths — the NEW DMA driver only                                      */
 /* ========================================================================== */
-#define DEV_CONTROL L"\\\\.\\XDMA0dma\\control"
+/* AXI-Lite peripherals (GPIO/DFX/TDOT/ICAP 0x4002xxxx) live in BAR0, exposed
+ * via \\.\XDMA0dma\user (large AXI-Lite BAR, 128MB). The \control node maps to
+ * the 64KB XDMA config/register BAR and does NOT reach the AXI-Lite window
+ * (TDOT offset 0x23000 > 64KB). So all register/PIO access MUST go through
+ * \user; only the DMA channels h2c_0/c2h_0 target DDR3. (Diagnosed 02.10.2026.)
+ */
+#define DEV_CONTROL L"\\\\.\\XDMA0dma\\user"
 #define DEV_H2C     L"\\\\.\\XDMA0dma\\h2c_0"
 #define DEV_C2H     L"\\\\.\\XDMA0dma\\c2h_0"
+/* DIAG 2026-10-03 (BRAM bypass): узлы БЕЗ трансляции базы 0x80000000 — хост
+   передаёт полный картовый адрес: 0x0..0x1FFF = локальный BRAM, 0x80000000+ = DDR3. */
+#define DEV_H2C_BRAM L"\\\\.\\XDMA0dma\\h2c_bram_0"
+#define DEV_C2H_BRAM L"\\\\.\\XDMA0dma\\c2h_bram_0"
 
 /* ========================================================================== */
 /*  Address map — AXI-Lite (BAR0), full AXI addresses                          */
@@ -242,29 +252,26 @@ static int ModeRegs(HANDLE ctl)
 static int ModeFirmware(HANDLE ctl)
 {
     ULONG v;
-    /* MAGIC offsets: TDOT[0x68]='TDOT', ICAP[0x0C]='ICAP'.
+    /* MAGIC offsets: TDOT[0x68]='TDOT'.
      * XADC[0x0C] is NOT read here: its BAR-offset (~0x06000000) is beyond the
-     * actually-mapped BAR0 on the current bitstream -> reading it BSODs 0x50.
-     * FIX-AUDIT 13d (2026-09-30): skip XADC until the real BAR0 size is
-     * confirmed; TDOT/ICAP sit at low offsets and are safe.                */
+     * actually-mapped BAR0 on low-bar0 bitstreams -> reading it BSODs 0x50.
+     * ICAP[0x0C] is NOT read here either: this is the FLAT (no-DFX) build, the
+     * icap_ctrl is removed and 0x40024000 is an unmapped hole in the AXI-Lite
+     * map (SmartConnect would not answer -> possible host timeout/hang).
+     * FIX-FLAT-AUDIT-2 (2026-10-01): skip both XADC and ICAP in self-detect. */
     const ULONG TDOT_MAGIC = TDOT_BASE + 0x68;
-    const ULONG ICAP_MAGIC = ICAP_BASE + 0x0C;
     const ULONG CORE_PARAMS = TDOT_BASE + 0x64; /* [7:0]NUM_MAC,[15:8]ADDERS */
 
-    printf("--- firmware self-detect (CORE_PARAMS/MAGIC, XADC skipped) ---\n");
+    printf("--- firmware self-detect (CORE_PARAMS/MAGIC, XADC+ICAP skipped) ---\n");
     if (CtlRead32(ctl, TDOT_MAGIC, &v)) {
         printf("  TDOT[0x68] MAGIC  = 0x%08lX (%s)\n",
                v, v == 0x54444F54UL ? "TDOT OK" : "MISMATCH");
-    }
-    if (CtlRead32(ctl, ICAP_MAGIC, &v)) {
-        printf("  ICAP[0x0C] MAGIC  = 0x%08lX (%s)\n",
-               v, v == 0x49434150UL ? "ICAP OK" : "MISMATCH");
     }
     if (CtlRead32(ctl, CORE_PARAMS, &v)) {
         printf("  TDOT[0x64] CORE_PARAMS = 0x%08lX -> NUM_MAC=%lu ADDERS=%lu\n",
                v, v & 0xFF, (v >> 8) & 0xFF);
     }
-    printf("  firmware check done (XADC not probed; BAR0 size unknown)\n");
+    printf("  firmware check done (XADC+ICAP not probed; BAR0 size unknown)\n");
     return 0;
 }
 
@@ -486,6 +493,76 @@ static int ModeDot(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
 }
 
 /* ========================================================================== */
+/*  Mode: dot_bram — BRAM-обход TDOT без DDR3 (DIAG 2026-10-03).              */
+/* ========================================================================== */
+/*  Использует узлы \\.\XDMA0dma\h2c_bram_0 / c2h_bram_0 (translateAxiBase=   */
+/*  FALSE): хост передаёт ПОЛНЫЙ картовый адрес. Локальный BRAM (8 КБ) лежит   */
+/*  по 0x00000000..0x00001FFF и подключён к xdma_axi_smc.M01 (обход MIG/DDR3). */
+/*  Карта BRAM для этого теста:                                               */
+/*    DATA    0x0000  (data[0..n-1], 8 Б/элемент)                             */
+/*    WEIGHTS 0x0800  (weights[0..n-1])                                       */
+/*    RESULT  0x1000  (результат TDOT, 8 Б)                                   */
+/* ========================================================================== */
+static int ModeDotBram(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
+{
+    UINT64 buf[32];
+    UINT64 result = 0;
+    int i;
+    const UINT64 DATA_OFF_B    = 0x0000ULL;   /* полный картовый адрес: BRAM 0x0 */
+    const UINT64 WEIGHTS_OFF_B = 0x0800ULL;   /* BRAM + 2 КБ */
+    const UINT64 RESULT_OFF_B  = 0x1000ULL;   /* BRAM + 4 КБ */
+    UINT64 full_data = DATA_OFF_B;            /* без +0x80000000! */
+    UINT64 full_wgt  = WEIGHTS_OFF_B;
+    UINT64 full_res  = RESULT_OFF_B;
+
+    if (n < 1 || n > 32) n = 8;
+
+    printf("--- dot_bram: %d pairs of 1.0 via BRAM (no DDR3) + TDOT regs ---\n", n);
+    for (i = 0; i < n; i++)
+        buf[i] = TF48_ONE;
+
+    /* запись в BRAM через BRAM-узлы (без трансляции базы) */
+    if (!DmaWrite(h2c, DATA_OFF_B,    buf, (size_t)n * 8)) return 1;
+    if (!DmaWrite(h2c, WEIGHTS_OFF_B, buf, (size_t)n * 8)) return 1;
+
+    /* программируем TDOT: полные адреса БЕЗ 0x80000000 (BRAM) */
+    if (!CtlWrite32(ctl, TDOT_N_IN, (ULONG)n)) return 1;
+    if (!CtlWrite32(ctl, TDOT_DATA_ADDR_LO,    (ULONG)(full_data & 0xFFFFFFFF))) return 1;
+    if (!CtlWrite32(ctl, TDOT_DATA_ADDR_HI,    (ULONG)(full_data >> 32)))        return 1;
+    if (!CtlWrite32(ctl, TDOT_WEIGHTS_ADDR_LO, (ULONG)(full_wgt & 0xFFFFFFFF)))  return 1;
+    if (!CtlWrite32(ctl, TDOT_WEIGHTS_ADDR_HI, (ULONG)(full_wgt >> 32)))         return 1;
+    if (!CtlWrite32(ctl, TDOT_RESULT_ADDR_LO,  (ULONG)(full_res & 0xFFFFFFFF)))  return 1;
+    if (!CtlWrite32(ctl, TDOT_RESULT_ADDR_HI,  (ULONG)(full_res >> 32)))         return 1;
+
+    /* GO */
+    if (!CtlWrite32(ctl, TDOT_CTRL, 0x01)) return 1;
+
+    /* poll DONE */
+    {
+        ULONG st = 0;
+        int waited = 0;
+        while (waited < POLL_TIMEOUT_MS) {
+            if (!CtlRead32(ctl, TDOT_STATUS, &st)) return 1;
+            if (st & 0x02) break;               /* bit1 = DONE */
+            Sleep(POLL_INTERVAL_MS);
+            waited += POLL_INTERVAL_MS;
+        }
+        if (!(st & 0x02)) {
+            printf("  FAIL: TDOT DONE timeout (STATUS=0x%08lX)\n", st);
+            return 1;
+        }
+        printf("  DONE after ~%d ms, STATUS=0x%08lX\n", waited, st);
+    }
+
+    if (!DmaRead(c2h, RESULT_OFF_B, &result, 8)) return 1;
+    result &= 0xFFFFFFFFFFFFULL;
+    printf("  result (48-bit) = 0x%012llX\n", (unsigned long long)result);
+    printf("  (expected numeric: %d pairs of 1.0*1.0 -> %d.0)\n", n, n);
+    printf("  dot_bram: PASS (BRAM + DMA-nodes w/o base + TDOT DONE)\n");
+    return 0;
+}
+
+/* ========================================================================== */
 /*  main                                                                       */
 /* ========================================================================== */
 static void PrintUsage(void)
@@ -498,8 +575,9 @@ static void PrintUsage(void)
     printf("  ioctl                PERF_START/GET/STOP + ADDRMODE on c2h_0\n");
     printf("  align                deliberately misaligned size/offset\n");
     printf("  dot [n]              canonical TDOT path via DMA + control (n pairs, 1..32)\n");
+    printf("  dot_bram [n]         BRAM bypass: TDOT via h2c_bram_0/c2h_bram_0 (no DDR3)\n");
     printf("No args: prints this help and runs the safe `regs` check.\n");
-    printf("Uses ONLY \\\\.\\XDMA0dma (control/h2c_0/c2h_0). Never touches \\\\.\\XDMA0.\n");
+    printf("Uses ONLY \\\\.\\XDMA0dma (control/h2c_0/c2h_0 [+ bram nodes]). Never touches \\\\.\\XDMA0.\n");
 }
 
 int main(int argc, char** argv)
@@ -541,6 +619,29 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    /* DIAG 2026-10-03 (BRAM bypass): узлы без трансляции базы (полный адрес).
+       Открываем лениво ТОЛЬКО для режима dot_bram, чтобы не плодить открытия
+       в обычных тестах. */
+    HANDLE h2c_bram = INVALID_HANDLE_VALUE;
+    HANDLE c2h_bram = INVALID_HANDLE_VALUE;
+    if (_stricmp(mode, "dot_bram") == 0) {
+        h2c_bram = CreateFileW(DEV_H2C_BRAM, GENERIC_READ | GENERIC_WRITE, open_share,
+                               NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+        if (h2c_bram == INVALID_HANDLE_VALUE) {
+            printf("ERROR: cannot open %ws (GLE=%lu). Driver with *_bram nodes needed.\n",
+                   DEV_H2C_BRAM, GetLastError());
+            CloseHandle(ctl); CloseHandle(h2c); CloseHandle(c2h);
+            return 1;
+        }
+        c2h_bram = CreateFileW(DEV_C2H_BRAM, GENERIC_READ | GENERIC_WRITE, open_share,
+                               NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+        if (c2h_bram == INVALID_HANDLE_VALUE) {
+            printf("ERROR: cannot open %ws (GLE=%lu)\n", DEV_C2H_BRAM, GetLastError());
+            CloseHandle(ctl); CloseHandle(h2c); CloseHandle(c2h); CloseHandle(h2c_bram);
+            return 1;
+        }
+    }
+
     g_ov_control = CreateEvent(NULL, TRUE, FALSE, NULL);
     g_ov_h2c     = CreateEvent(NULL, TRUE, FALSE, NULL);
     g_ov_c2h     = CreateEvent(NULL, TRUE, FALSE, NULL);
@@ -565,6 +666,9 @@ int main(int argc, char** argv)
     } else if (_stricmp(mode, "dot") == 0) {
         int n = (argc >= 3) ? atoi(argv[2]) : 8;
         rc = ModeDot(h2c, c2h, ctl, n);
+    } else if (_stricmp(mode, "dot_bram") == 0) {
+        int n = (argc >= 3) ? atoi(argv[2]) : 8;
+        rc = ModeDotBram(h2c_bram, c2h_bram, ctl, n);
     } else {
         PrintUsage();
         printf("\nUnknown mode: %s\n", mode);
@@ -575,5 +679,7 @@ int main(int argc, char** argv)
     CloseHandle(ctl);
     CloseHandle(h2c);
     CloseHandle(c2h);
+    if (h2c_bram != INVALID_HANDLE_VALUE) CloseHandle(h2c_bram);
+    if (c2h_bram != INVALID_HANDLE_VALUE) CloseHandle(c2h_bram);
     return rc;
 }
