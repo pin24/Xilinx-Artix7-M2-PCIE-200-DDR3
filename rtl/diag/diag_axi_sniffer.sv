@@ -84,36 +84,36 @@ module diag_axi_sniffer #(
     logic [31:0] marker_expect, marker_got;
 
     // ==================== AXI-Lite slave (простая защёлка w/ b) ====================
-    logic                    wr_pending, rd_pending;
-    logic                    wr_aw, wr_w;   // FIX-AUDIT 03.10: защёлки AW и W независимо
+    logic                    rd_pending;
+    logic                    wr_aw, wr_w;   // независимые защёлки AW и W (write chan)
     logic [C_S_AXI_ADDR_WIDTH-1:0] awaddr_q, araddr_q;
     logic [C_S_AXI_DATA_WIDTH-1:0] wdata_q;
     logic                    bvalid_q, rvalid_q;
 
-    assign s_axi_awready = !wr_pending;
-    assign s_axi_wready  = !wr_pending;
+    assign s_axi_awready = !wr_aw;   // независимая приёмная готовность по AW
+    assign s_axi_wready  = !wr_w;    // независимая приёмная готовность по W
     assign s_axi_bvalid  = bvalid_q;
     assign s_axi_arready = !rd_pending;
     assign s_axi_rvalid  = rvalid_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            wr_pending <= 0; rd_pending <= 0; bvalid_q <= 0; rvalid_q <= 0;
+            rd_pending <= 0; bvalid_q <= 0; rvalid_q <= 0;
+            wr_aw <= 0; wr_w <= 0;
             awaddr_q <= 0; wdata_q <= 0; araddr_q <= 0;
             expect_word <= 0; got_word <= 0; cmp_en <= 0;
             marker_expect <= 0; marker_got <= 0;
         end else begin
-            // ---- write channel (AXI-Lite, FIX-AUDIT 03.10) ----
-            // Защёлкиваем AW-адрес и W-данные независимо (каждый по своему
-            // handshake); commit происходит, когда ОБА защёлкнуты (wr_pending),
-            // по защёлнутым значениям, БЕЗ повторного предъявления valid'ов.
-            // Это устраняет deadlock: раньше commit требовал awvalid&&wvalid и
-            // после первого handshake мастер их снимает -> вечый wr_pending=1.
-            if (s_axi_awvalid && !wr_pending) begin awaddr_q <= s_axi_awaddr; wr_aw <= 1; end
-            if (s_axi_wvalid  && !wr_pending) begin wdata_q  <= s_axi_wdata;  wr_w  <= 1; end
-            wr_pending <= wr_aw || wr_w;
+            // ---- write channel (AXI-Lite, FIX-AUDIT 03.10 rev2) ----
+            // НЕЗАВИСИМЫЕ защёлки AW и W со своими готовностями (rev1 имел
+            // дедлок: wr_pending блокировал второй канал, если мастер подаёт
+            // AW и W в РАЗНЫЕ такты). Теперь: awready=!wr_aw, wready=!wr_w,
+            // каждый канал принимается своим valid независимо; commit когда
+            // оба защёлк νаны (wr_aw && wr_w) и B свободен.
+            if (s_axi_awvalid && !wr_aw) begin awaddr_q <= s_axi_awaddr; wr_aw <= 1; end
+            if (s_axi_wvalid  && !wr_w ) begin wdata_q  <= s_axi_wdata;  wr_w  <= 1; end
             if (wr_aw && wr_w && !bvalid_q) begin
-                // commit: оба защёлкνаны, B свободен
+                // commit: оба канала защёлкнуты, B свободен
                 case (awaddr_q[C_S_AXI_ADDR_WIDTH-1:2])
                     6'd0:  expect_word  <= wdata_q;
                     6'd1:  got_word     <= wdata_q;
