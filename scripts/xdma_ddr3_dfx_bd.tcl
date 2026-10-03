@@ -1,4 +1,4 @@
-﻿################################################################
+###############################################################
 # xdma_ddr3_dfx_bd.tcl РІР‚вЂќ DFX Block Design for XDMA + DDR3
 # Vivado 2025.2 compatible version of block_design_top.tcl
 #
@@ -699,6 +699,11 @@ proc create_root_design { parentCell } {
     CONFIG.xdma_wnum_chnl {2} \
     CONFIG.pf0_bar0_scale {Megabytes} \
     CONFIG.pf0_bar0_size {128} \
+    CONFIG.axilite_master_size {128} \
+    CONFIG.mode_selection {Advanced} \
+    CONFIG.Shared_Logic_Both_7xG2 {true} \
+    CONFIG.Shared_Logic_Clk_7xG2 {false} \
+    CONFIG.Shared_Logic_Gtc_7xG2 {false} \
   ] $xdma_0
 
   set clk200_clk_wiz [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk200_clk_wiz ]
