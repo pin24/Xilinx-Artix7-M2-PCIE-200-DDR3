@@ -763,38 +763,39 @@ set_property -dict [list \
   # доступный и TDOT-мастеру, и XDMA-мастеру по адресу 0x00000000 (в обход DDR3).
   # Позволяет проверить ядро и DMA-путь БЕЗ доступа к неинициализированному MIG.
   # ============================================================================
-  # blk_mem_gen 1024x64 (8 КБ) + AXI BRAM Controller (AXI4 -> native BRAM).
-  set diag_bram [ create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:8.3 diag_bram ]
-  set_property -dict [list \
-    CONFIG.Memory_Type {True_Dual_Port_RAM} \
-    CONFIG.Use_RSTB_Pin {true} \
-    CONFIG.Prim_Data_Width {64} \
-    CONFIG.Write_Width_A {64} \
-    CONFIG.Write_Width_B {64} \
-    CONFIG.Read_Width_A {64} \
-    CONFIG.Read_Width_B {64} \
-    CONFIG.Enable_B {Use_ENB_Pin} \
-  ] $diag_bram
-
+  # DIAG BRAM (BRAM-обход для TDOT + DMA): ОДИН порт S_AXI (INTERNAL).
+  #
+  # РАЗБОР ПРЕДЫДУЩЕЙ ОШИБКИ сборки (vivado.log, BD 5-216):
+  #   "VLNV <xilinx.com:ip:blk_mem_gen:8.3> is not supported for the current
+  #    part. The latest supported version for this part is: <8.4>"
+  # Ручной blk_mem_gen 8.3 не поддерживается на xc7a200t в Vivado 2025.2.
+  # Решение: НЕ создаём blk_mem_gen вручную. axi_bram_ctrl в режиме
+  # BRAM_INST_MODE=INTERNAL(по умолч.) САМ генерирует внутренний blk_mem_gen
+  # корректной версии, а наружу выдаёт только AXI-порт S_AXI — и отдельного
+  # внешнего BRAM не требуется, и ошибки 8.3/8.4 не возникает.
+  #
+  # Важно про порт B: axi_bram_ctrl v4.1 не поддерживает РАЗНЫЕ протоколы на
+  # S_AXI и S_AXI_B (оба одним C_S_AXI_PROTOCOL=AXI4). Хост (AXI-Lite M02 из
+  # xdma_axi_lite_smc) к AXI4-порту B подключить нельзя. Поэтому используем
+  # ОДИН порт S_AXI (AXI4): и XDMA M_AXI, и TDOT-мастер идут через
+  # xdma_axi_smc → M01 → S_AXI. Хост пишет/читает BRAM через S00 (XDMA M_AXI)
+  # обычным DMA хост->0x00000000 (BRAM) — это и есть обходной тест без DDR3.
+  # ============================================================================
   set diag_bram_ctrl [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 diag_bram_ctrl ]
   set_property -dict [list \
     CONFIG.DATA_WIDTH {64} \
-    CONFIG.SINGLE_PORT {false} \
     CONFIG.PROTOCOL {AXI4} \
+    CONFIG.SINGLE_PORT {true} \
   ] $diag_bram_ctrl
-
-  # Подключаем BRAM controller к AXI BRAM (порт A) native-интерфейсом.
-  connect_bd_intf_net [get_bd_intf_pins diag_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins diag_bram/BRAM_PORTA]
-  # NB: BRAM_PORTA ENABLE от axi_bram_ctrl: при width 64 axi_bram_ctrl подаёт addr
-  # + en; управление руками не требуется — синтез сам свяжет.
 
   # --- (Шаг A1) xdma_axi_smc: добавить M01 -> diag_bram_ctrl/S_AXI ---
   set_property -dict [list CONFIG.NUM_MI {2}] $xdma_axi_smc
   connect_bd_intf_net -intf_net xdma_axi_smc_M01_AXI [get_bd_intf_pins xdma_axi_smc/M01_AXI] [get_bd_intf_pins diag_bram_ctrl/S_AXI]
 
-  # --- (Шаг B) AXI-Lite доступ хоста к BRAM: M02 -> diag_bram_ctrl S_AXI_B ---
-  # xdma_axi_lite_smc имеет 7 MI; M02 (0x40006000) свободен (M00..M01,M03-M06 заняты).
-  connect_bd_intf_net -intf_net xdma_axi_lite_smc_M02_AXI [get_bd_intf_pins xdma_axi_lite_smc/M02_AXI] [get_bd_intf_pins diag_bram_ctrl/S_AXI_B]
+  # --- (Шаг B) доступ хоста к BRAM ---
+  # Хост пишет/читает BRAM через S00 (XDMA M_AXI → xdma_axi_smc → M01 → S_AXI),
+  # обычным DMA на адрес 0x00000000 (8 КБ). AXI-Lite порт B не используется
+  # (axi_bram_ctrl v4.1 не даёт разных протоколов A/B; SINGLE_PORT=true).
 
   connect_bd_net -net clk200_clk_wiz_clk_out1 [get_bd_pins clk200_clk_wiz/clk_out1] \
   [get_bd_pins mig_7series_0/clk_ref_i] \
@@ -883,10 +884,8 @@ set_property -dict [list \
   assign_bd_address -offset 0x00000000 -range 0x00002000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI] \
     [get_bd_addr_segs diag_bram_ctrl/S_AXI/Reg] -force
-  # (B) хост пишет/читает BRAM через AXI-Lite M02 (0x4000_6000, 8 КБ) — НЕ через DMA
-  assign_bd_address -offset 0x40006000 -range 0x00002000 \
-    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] \
-    [get_bd_addr_segs diag_bram_ctrl/S_AXI_B/Reg] -force
+  # (B) Хост пишет/читает BRAM через XDMA M_AXI (S00) по 0x00000000 (8 КБ) — DMA.
+  # AXI-Lite порт не нужен (SINGLE_PORT); адрес 0x40006000 не используется.
 
   current_bd_instance $oldCurInst
 

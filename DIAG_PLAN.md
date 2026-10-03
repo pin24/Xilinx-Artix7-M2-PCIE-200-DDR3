@@ -33,17 +33,22 @@ TDOT и доступность DDR3, плюс получить инструме�
 
 ## Что осталось (необходимо для полной диагностики) — правки в BD
 **РЕАЛИЗОВАНО (2026-10-03, xdma_ddr3_dfx_bd.tcl):**
-- Шаг A (BRAM-обход): добавлены `diag_bram` (blk_mem_gen 8.3, 1024x64 TrueDualPort)
-  + `diag_bram_ctrl` (axi_bram_ctrl 4.1, duplex 64-bit); xdma_axi_smc NUM_MI 1→2,
-  M01→diag_bram_ctrl/S_AXI; сегменты BRAM `0x00000000` (8 КБ) для TDOT-мастера
-  и XDMA M_AXI (в дополнение к DDR3 0x80000000).
-- Шаг B (доступ хоста): xdma_axi_lite_smc M02 (свободен) → diag_bram_ctrl/S_AXI_B;
-  адрес `0x40006000` (8 КБ) через обычный AXI-Lite (без DMA). Хост пишет данные
-  в BRAM CtlWrite32, запускает TDOT на BRAM-адресах, ядро считает dot и пишет
-  результат в BRAM — если DONE, ядро и путь tdot→smc→BRAM исправны.
+- Шаг A (BRAM-обход): `diag_bram_ctrl` (axi_bram_ctrl 4.1, **SINGLE_PORT=true,
+  INTERNAL** — сам генерит blk_mem_gen корректной версии); xdma_axi_smc
+  NUM_MI 1→2, M01→diag_bram_ctrl/S_AXI; сегменты BRAM `0x00000000` (8 КБ) для
+  TDOT-мастера и XDMA M_AXI (в дополнение к DDR3 0x80000000).
+- Шаг B (доступ хоста к BRAM): через **XDMA M_AXI (S00)→smc→M01→S_AXI** обычным
+  DMA на адрес 0x00000000. AXI-Lite порт B НЕ используется (axi_bram_ctrl v4.1
+  не даёт разных протоколов A/B; SINGLE_PORT=true). Адрес 0x40006000 не занят.
 - Шаг C (сниффер на M00→MIG): в RTL-top уже watch-only на tdot-мастер (m_axi_* =
   тот же путь к MIG). Для различения DMA-каналов отдельный сниффер на M00
   требует module-ref в BD — отложено, не критично для проверки основной гипотезы.
+
+### Ошибка сборки, которую УЖЕ устранили (03.10, повторный запуск)
+- `ERROR: VLNV <xilinx.com:ip:blk_mem_gen:8.3> is not supported for the current
+  part. The latest supported version is <8.4>` — ручной blk_mem_gen 8.3 не
+  поддерживается на xc7a200t в Vivado 2025.2. РЕШЕНО: ручной blk_mem_gen убран;
+  axi_bram_ctrl в INTERNAL сам создаёт BRAM. (закоммичено отдельным коммитом)
 
 ### Для доступа хоста к diag_axi_sniffer регистрам (чить счётчики)
 - Пока s_axi_* сниффера в top не подключены (watch-only). Чтобы хост читал
