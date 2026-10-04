@@ -222,3 +222,15 @@
 | **Решение** | NUM_MAC 32→16 default; diag_axi_sniffer (счётчики AXI + сравнение); BRAM-обход 8 КБ (0x00000000) для TDOT/XDMA + хост AXI-Lite 0x40006000 (см. DIAG_PLAN.md) |
 | **Файлы** | `rtl/diag/diag_axi_sniffer.sv`, `xdma_ddr3_dfx_bd.tcl`, top/ядер RTL, build_*.tcl |
 | **Статус** | 🟡 Внесено (commit 36b6926); пересинтез Vivado обязателен. После него CORE_PARAMS → 0x810 (16/8) |
+
+## E-19 — Многопакетная WDF-транзакция (лимит 512): запись >512 Б виснет (04.10.2026)
+
+| Поле | Значение |
+|---|---|
+| **Симптом** | DMA loopback: 256/512 Б — PASS; 1024/2048 Б — TIMEOUT за запись h2c (чтение c2h работает, MIG откалиброван). Порог — ровно 512 Б. |
+| **Перво/причина** | `WdfDmaTransactionSetMaximumLength(dmaTransaction, 512)` в `EvtIoWriteDma`/`EvtIoReadDma` (`file_io.c:692/754`). Это лимит РАЗМЕРА пакета WDF, не «дескриптора». Запрос >512 Б режется на ≥2 пакета; пакет 1 поллится синхронно (`XDMA_EngineWaitCompletion`), а пакет 2+ WDF программирует реентерабельно из `WdfDmaTransactionDmaCompleted`(FALSE) и завершает через канальное прерывание MSI-X, которое на плате не доходит → хост-IRP не завершается. |
+| **Диагностика (стенд)** | Чтение config-BAR движка H2C0 (`completedDescCount`@0x48, `status`@0x40) вокруг 1024 Б записи: BEFORE=0/0; AFTER=1/0x06 (desc_stopped\|desc_completed, BUSY=0). Движок корректно исполнил 1 дескриптор (пакет 1) и остановился; пакет 2 не запущен хостом. → проблема в драйвере, не в железе. |
+| **Исправление** | РЕШЕНО v1.1.27: единый WDF-пакет на запрос — `WdfDmaTransactionSetMaximumLength` увеличен с 512 до `XDMA_MAX_TRANSFER_SIZE` (8MB) в EvtIoWriteDma/Read. Корневая причина (ди14): движок XDMA на плате НЕ перезапускается между WDF-пакетами (пакет2 программируется — progDmaCalls=2 — но движок его не исполняет, остаётся в DESC_STOPPED\|COMPLETED, completedDescCount не растёт), host-IRP виснет. Единый пакет = единая дескрипторная цепочка, которую движок исправно исполняет (эквивалент вечного PASS-512). |
+| **Файлы** | `xdma_driver_win_src_2017/sys/file_io.c`, `libxdma/dma_engine.c/.h` (ди14: progDmaCalls, IOCTL_XDMA_DIAG_GET, ResetIdle в ProgramDma) |
+| **Проверка** | Стенд v1.1.27 (oem14): loopback 512/1024/2048/1MiB — ВСЕ PASS; WHEA/AER/ROF событий нет за время тестов. |
+| **Статус** | ✅ Исправлено v1.1.27. ⚠️ Лимит 512 (защита от ROF/0x124) снят — на 1MB фоновый ROF не проявился, но при нагрузочных режимах риск остаётся, мониторить |

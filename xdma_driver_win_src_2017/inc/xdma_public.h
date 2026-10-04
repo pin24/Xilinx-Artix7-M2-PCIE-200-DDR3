@@ -68,6 +68,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_XDMA,
 #define IOCTL_XDMA_PERF_GET     XDMA_IOCTL(0x3)
 #define IOCTL_XDMA_ADDRMODE_GET XDMA_IOCTL(0x4)
 #define IOCTL_XDMA_ADDRMODE_SET XDMA_IOCTL(0x5)
+#define IOCTL_XDMA_DIAG_GET     XDMA_IOCTL(0x6)
 
 // structure for IOCTL_XDMA_PERF_GET
 typedef struct {
@@ -75,6 +76,14 @@ typedef struct {
     UINT64 dataCycleCount;
     UINT64 pendingCount;
 }XDMA_PERF_DATA;
+
+// DIAG 2026-10-04 (E-19 / BUG-053): diagnostics for multi-packet WDF transaction.
+typedef struct {
+    ULONG progDmaCalls;          // how many times EvtProgramDma was invoked for the
+                                 // current (last) DMA request (1 = single packet only)
+    ULONG reserved;
+    UINT64 bytesTransferred;     // WdfDmaTransactionGetBytesTransferred
+} XDMA_DIAG_DATA;
 
 #endif/*__XDMA_WINDOWS_H__*/
 

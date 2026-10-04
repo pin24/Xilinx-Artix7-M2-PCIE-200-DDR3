@@ -40,6 +40,14 @@
    передаёт полный картовый адрес: 0x0..0x1FFF = локальный BRAM, 0x80000000+ = DDR3. */
 #define DEV_H2C_BRAM L"\\\\.\\XDMA0dma\\h2c_bram_0"
 #define DEV_C2H_BRAM L"\\\\.\\XDMA0dma\\c2h_bram_0"
+/* DIAG 2026-10-04 (multi-packet): config-BAR node \\.\XDMA0dma\control просвечивает
+   configBarIdx, где лежат реестры SGDMA-движков (H2C ch0 block @ 0x0, C2H @ 0x1000).
+   Смещения внутри XDMA_ENGINE_REGS: status=0x40, statusRC=0x44, completedDescCount=0x48. */
+#define DEV_CONFIG_CONTROL L"\\\\.\\XDMA0dma\\control"
+#define H2C0_STATUS_OFF     0x40UL
+#define H2C0_STATUSRC_OFF   0x44UL
+#define H2C0_COMPLETED_OFF  0x48UL
+#define C2H0_COMPLETED_OFF  0x1048UL
 
 /* ========================================================================== */
 /*  Address map — AXI-Lite (BAR0), full AXI addresses                          */
@@ -111,12 +119,14 @@ typedef struct {
 static HANDLE g_ov_control = NULL;
 static HANDLE g_ov_h2c     = NULL;
 static HANDLE g_ov_c2h     = NULL;
+static HANDLE g_ov_cfg     = NULL;  /* DIAG 2026-10-04: event для config-BAR (\control) */
 
 static void CleanupDma(void)
 {
     if (g_ov_control) { CloseHandle(g_ov_control); g_ov_control = NULL; }
     if (g_ov_h2c)     { CloseHandle(g_ov_h2c);     g_ov_h2c     = NULL; }
     if (g_ov_c2h)     { CloseHandle(g_ov_c2h);     g_ov_c2h     = NULL; }
+    if (g_ov_cfg)     { CloseHandle(g_ov_cfg);     g_ov_cfg     = NULL; }
 }
 
 /* ========================================================================== */
@@ -566,6 +576,88 @@ static int ModeDotBram(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
 }
 
 /* ========================================================================== */
+/*  Mode: diag_pkt [bytes] — диагностика multi-packet (лимит 512).            */
+/* ========================================================================== */
+/*  DIAG 2026-10-04 (MULTIPACKET): снимаем состояние движка H2C0 вокруг       */
+/*  записи >512 Б. Гипотеза: WDF режет запрос на пакеты ≤512 Б; первый пакет   */
+/*  драйвер поллит синхронно (XDMA_EngineWaitCompletion), а последующие пакеты *)
+/*  достраиваются ТОЛЬКО через прерывание (реентерабельный EvtProgramDma из    */
+/*  WdfDmaTransactionDmaCompleted при FALSE). Прерывание на плате не доходит — */
+/*  хост-IRP для пакета 2 не завершается.                                     */
+/*  ТУТ: запись bytes (по умолчанию 1024) заведомо зависает, затем читаем      */
+/*  config-BAR: completedDescCount (0x48), status (0x40), statusRC (0x44).      */
+/* ========================================================================== */
+static int ModeDiagPkt(HANDLE h2c, int bytes)
+{
+    HANDLE cfg = INVALID_HANDLE_VALUE;
+    BYTE* buf = NULL;
+    ULONG v0 = 0, v1 = 0, v2 = 0;
+    int rc = 1;
+
+    if (bytes < 1) bytes = 1024;
+
+    cfg = CreateFileW(DEV_CONFIG_CONTROL, GENERIC_READ | GENERIC_WRITE, 0,
+                      NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+    if (cfg == INVALID_HANDLE_VALUE) {
+        printf("ERROR: cannot open %ws (GLE=%lu)\n", DEV_CONFIG_CONTROL, GetLastError());
+        return 1;
+    }
+    g_ov_cfg = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!g_ov_cfg) { CloseHandle(cfg); return 1; }
+
+    printf("--- diag_pkt: %d-byte H2C write (cap 512 => expect multi-packet) ---\n", bytes);
+
+    /* baseline ДО записи: не трогаем statusRC, чтобы не сбрасывать BUSY */
+    if (!RawXfer(cfg, g_ov_cfg, FALSE, H2C0_COMPLETED_OFF, &v0, sizeof(v0), POLL_TIMEOUT_MS))
+        goto out;
+    if (!RawXfer(cfg, g_ov_cfg, FALSE, H2C0_STATUS_OFF, &v1, sizeof(v1), POLL_TIMEOUT_MS))
+        goto out;
+    printf("  BEFORE: H2C0 completedDescCount=0x%08lX (%lu)  status=0x%08lX (BUSY=%lu)\n",
+           v0, v0, v1, (v1 >> 0) & 1);
+
+    /* сама зависающая запись: RawXfer таймаутится через POLL_TIMEOUT_MS и CancelIo */
+    buf = (BYTE*)_aligned_malloc((size_t)bytes, 256);
+    if (!buf) { printf("  ERROR: malloc\n"); goto out; }
+    FillLcg(buf, (size_t)bytes, (unsigned)bytes);
+    if (DmaWrite(h2c, LOOPBACK_OFF, buf, (size_t)bytes)) {
+        printf("  NOTE: %d-byte write returned OK (unexpected if >512)\n", bytes);
+    } else {
+        printf("  NOTE: %d-byte write TIMED OUT as expected (host IRP hung)\n", bytes);
+    }
+    Sleep(50);
+
+    /* состояние ПОСЛЕ: completed (RO), status (RO), statusRC (read-clear) — последним */
+    v0 = v1 = v2 = 0;
+    if (!RawXfer(cfg, g_ov_cfg, FALSE, H2C0_COMPLETED_OFF, &v0, sizeof(v0), POLL_TIMEOUT_MS))
+        goto out;
+    if (!RawXfer(cfg, g_ov_cfg, FALSE, H2C0_STATUS_OFF, &v1, sizeof(v1), POLL_TIMEOUT_MS))
+        goto out;
+    if (!RawXfer(cfg, g_ov_cfg, FALSE, H2C0_STATUSRC_OFF, &v2, sizeof(v2), POLL_TIMEOUT_MS))
+        goto out;
+
+    printf("  AFTER : H2C0 completedDescCount=0x%08lX (%lu)  status=0x%08lX (BUSY=%lu)  statusRC=0x%08lX\n",
+           v0, v0, v1, (v1 >> 0) & 1, v2);
+
+    {
+        ULONG c2h = 0;
+        if (RawXfer(cfg, g_ov_cfg, FALSE, C2H0_COMPLETED_OFF, &c2h, sizeof(c2h), POLL_TIMEOUT_MS))
+            printf("  C2H0  completedDescCount=0x%08lX (%lu)\n", c2h, c2h);
+    }
+
+    /* Интерпретация:
+       - completedDescCount >= Count(пакет1) и BUSTY=0 -> пакет1 завершён, пакет2 не поллится (ISR-гипотеза)
+       - completedDescCount < Count(пакет1)        -> движок не стартует/не завершает цепочку вообще
+       Значение Count(пакет1) надо знать заранее: для 1024B=2 пакета, в 1-м пакете 1..N SG-фрагментов.
+       Если буфер странично-непрерывен и выровнен — пакет1 = 1 дескриптор => порог для проверки = 1.  */
+    printf("  diag_pkt: КЛЮЧЕВОЕ: стоит ли completedDescCount на 1 (пакет1 завершён) или >=2 (движок ушёл дальше)\n");
+    rc = 0;
+out:
+    if (buf) _aligned_free(buf);
+    if (cfg != INVALID_HANDLE_VALUE) CloseHandle(cfg);
+    return rc;
+}
+
+/* ========================================================================== */
 /*  main                                                                       */
 /* ========================================================================== */
 static void PrintUsage(void)
@@ -579,6 +671,7 @@ static void PrintUsage(void)
     printf("  align                deliberately misaligned size/offset\n");
     printf("  dot [n]              canonical TDOT path via DMA + control (n pairs, 1..32)\n");
     printf("  dot_bram [n]         BRAM bypass: TDOT via h2c_bram_0/c2h_bram_0 (no DDR3)\n");
+    printf("  diag_pkt [bytes]     write <=512-safe / >512-hang + read H2C0 engine regs (multi-packet diag)\n");
     printf("No args: prints this help and runs the safe `regs` check.\n");
     printf("Uses ONLY \\\\.\\XDMA0dma (control/h2c_0/c2h_0 [+ bram nodes]). Never touches \\\\.\\XDMA0.\n");
 }
@@ -672,6 +765,9 @@ int main(int argc, char** argv)
     } else if (_stricmp(mode, "dot_bram") == 0) {
         int n = (argc >= 3) ? atoi(argv[2]) : 8;
         rc = ModeDotBram(h2c_bram, c2h_bram, ctl, n);
+    } else if (_stricmp(mode, "diag_pkt") == 0) {
+        int bytes = (argc >= 3) ? atoi(argv[2]) : 1024;
+        rc = ModeDiagPkt(h2c, bytes);
     } else {
         PrintUsage();
         printf("\nUnknown mode: %s\n", mode);

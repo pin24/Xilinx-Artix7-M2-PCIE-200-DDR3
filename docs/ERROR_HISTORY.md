@@ -678,3 +678,17 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 | **Причина** | Маршрут xdma_axi_smc→MIG в BD корректен (0x80000000), но DDR3-контроллер/плата не отвечает (не калиброван/неисправен) |
 | **Решение (прошивка)** | NUM_MAC 32→16 default; diag_axi_sniffer; BRAM-обход 8 КБ (0x00000000) для TDOT/XDMA + хост AXI-Lite 0x40006000 (см. DIAG_PLAN.md, commit 36b6926) |
 | **Статус** | 🟡 Внесено в diff/RTL/BD; пересинтез Vivado обязателен |
+
+## 2026-10-04 — Многопакетная WDF-транзакция: запись DMA >512 Б виснет
+
+### [BUG-053] `WdfDmaTransactionSetMaximumLength(512)` → запись >512 Б не завершается хостом
+
+| Поле | Значение |
+|------|----------|
+| **Где** | `xdma_driver_win_src_2017/sys/file_io.c:692/754` (`EvtIoWriteDma`/`EvtIoReadDma`) |
+| **Симптом** | DMA loopback: 256/512 Б PASS; 1024/2048 Б TIMEOUT за запись h2c. Порог ровно 512 Б. |
+| **Причина** | Лимит 512 = размер ПАКЕТА WDF, не «дескриптора». Запрос >512 Б режется на ≥2 пакета. Пакет 1 поллится синхронно, пакет 2+ программируется реентерабельно из `WdfDmaTransactionDmaCompleted`(FALSE) и завершается только по канальному прерыванию MSI-X, которое на плате не доходит → хост-IRP висит. |
+| **Диагностика (стенд)** | Чтение `\\.\XDMA0dma\control` (config-BAR) движка H2C0 вокруг 1024 Б записи: BEFORE completedDescCount=0/status=0; AFTER =1/0x06 (desc_stopped\|desc_completed, BUSY=0). Движок выполнил ровно пакет 1 и остановился; пакет 2 не запущен хостом → дефект в драйвере, не в железе. |
+| **Исправление** | РЕШЕНО v1.1.27 (вариант B): единый WDF-пакет на запрос — `WdfDmaTransactionSetMaximumLength` увеличен до `XDMA_MAX_TRANSFER_SIZE` (8MB). Корневая причина (ди14 IOCTL_XDMA_DIAG_GET): движок XDMA на плате НЕ исполняет WDF-пакет 2 (программируется, progDmaCalls=2, но остаётся DESC_STOPPED\|COMPLETED), единая дескрипторная цепочка — единственный рабочий режим. |
+| **Журнал** | `docs/DIAG_MULTIPACKET_2026-10-04.md`, `driver/ERROR-FIX-LOG.md` E-19, `driver/error-fix-log.csv` E-19 |
+| **Статус** | ✅ Исправлено v1.1.27 (oem14): loopback 512/1024/2048/1MiB PASS, WHEA/AER/ROF нет. ⚠️ Лимит 512 снят — фоновый ROF на 1MB не проявился, риск при нагрузке мониторить |

@@ -1,6 +1,34 @@
 # Worklog
 
 ---
+Task ID: 2026-10-04-multipacket-fix
+Agent: MultiTool
+Task: Фикс зависания DMA-записи >512Б (итог) — вариант B v1.1.27
+Work Log:
+- Ди14 IOCTL_XDMA_DIAG_GET (progDmaCalls) на v1.1.25: WDF ВЫЗЫВАЕТ EvtProgramDma 2 раза для 1024Б (пакеты 1 и 2 программируются); bytesTransferred=0.
+- Регистры движка H2C0 после записи: completedDescCount не растёт, status=0x06 DESC_STOPPED|COMPLETED, BUSY=0 → движок НЕ исполняет пакет 2 (не перезапускается между пакетами), host-IRP виснет.
+- Попытка B2 (ResetIdle между пакетами) v1.1.26 — НЕ помогла (движок всё равно не исполняет пакет2).
+- ФИНАЛЬНО: вариант B v1.1.27 — единый WDF-пакет на запрос (SetMaximumLength = XDMA_MAX_TRANSFER_SIZE=8MB). Стенд: loopback 512/1024/2048/1MiB ВСЕ PASS; WHEA/AER/ROF нет.
+Stage Summary:
+- Причина корневая: движок XDMA не поддерживает перезапуск между WDF-пакетами; единственный рабочий режим — единая дескрипторная цепочка.
+- Лимит 512 (ROF-защита) снят — остаточный ROF-риск при нагрузке, мониторить.
+- Драйвер v1.1.27 (oem14) активен. Журналы: DIAG_MULTIPACKET §7, BUG-053, E-19.
+
+---
+Task ID: 2026-10-04-multipacket
+Agent: MultiTool
+Task: Диагностика и фиксация зависания DMA-записи >512 Б (многопакетная WDF-транзакция, лимит 512)
+Work Log:
+- Повторено: loopback 256/512 Б PASS, 1024/2048 Б TIMEOUT за запись h2c (порог ровно 512 Б).
+- Разобрана механика: `WdfDmaTransactionSetMaximumLength(512)` (file_io.c:692/754) — лимит ПАКЕТА, не дескриптора; >512 Б → ≥2 пакета; завершение пакетов 2+ опирается на прерывание.
+- Добавлен диаг. режим `diag_pkt` в driver/test_dma.c (чтение движковых регистров H2C0 через \control); НЕ собран (build_test_dma.cmd на машине фризит — среда, см. E-11). Для диагностики использована PowerShell-читалка C:\Temp\gigatool\diag_h2c.ps1.
+- Диагностика на стенде (read-only чтение config-BAR движка H2C0): AFTER 1024 Б записи completedDescCount=1, status=0x06 (desc_stopped|desc_completed), BUSY=0 → пакет 1 исполнен, пакет 2 хостом не запущен. Дефект в драйвере, не в железе.
+- Зафиксировано: docs/DIAG_MULTIPACKET_2026-10-04.md, docs/ERROR_HISTORY.md BUG-053, driver/ERROR-FIX-LOG.md E-19, driver/error-fix-log.csv E-19.
+Stage Summary:
+- Диагноз подтверждён чтением регистров: проблема в хост-драйвере (завершение многопакетной транзакции), а не в FPGA/MIG.
+- Следующий шаг (по подтверждению): фикс в file_io.c/dma_engine.c — bounded-poll ЦИКЛОМ по всем пакетам + пересборка драйвера.
+
+---
 Task ID: 2-a
 Agent: Explore-TCL
 Task: Анализ TCL/BD скриптов (XDMA + DDR3 + DFX, ветка XDMA_DDR3_TMUL)

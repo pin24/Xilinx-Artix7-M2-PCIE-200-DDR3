@@ -485,6 +485,11 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     DMA_DESCRIPTOR *descriptor = (DMA_DESCRIPTOR*)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
     PHYSICAL_ADDRESS descBufferLA = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
 
+    // DIAG 2026-10-04 (E-19 / BUG-053): count every EvtProgramDma invocation so
+    // we can see from user mode whether WDF programs packet 2+ of a multi-packet
+    // (>512B) transaction (read via IOCTL_XDMA_DIAG_GET).
+    engine->progDmaCalls++;
+
     // offset into the transaction (if it is split)
     deviceOffset += WdfDmaTransactionGetBytesTransferred(Transaction);
 
@@ -569,14 +574,15 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
         engine->numDescriptors = SgList->NumberOfElements;
     }
 
-    // FIX-AUDIT-C2H 2026-09-30 (rev2): re-arm firstDesc unconditionally before
-    // start. XDMA_EngineResetIdle also re-arms it, but doing it here guarantees
-    // correctness regardless of call order / whether reset ran.
-    {
-        PHYSICAL_ADDRESS db = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
-        engine->sgdma->firstDescLo = db.LowPart;
-        engine->sgdma->firstDescHi = db.HighPart;
-    }
+    // FIX 2026-10-04 (E-19 / BUG-053, option B2): reset the engine to idle BEFORE
+    // EVERY packet start (stop RUN, read-and-clear status/BUSY, re-arm firstDesc).
+    // The XDMA engine on this board does not continue to WDF packet 2..N on its
+    // own: after packet 1 it lands in DESC_STOPPED|DESC_COMPLETED and a plain
+    // EngineStart(same firstDesc) is ignored, so the host IRP hangs. ResetIdle
+    // gives the engine a clean idle state so each packet starts from scratch.
+    // Data is not affected (only engine status + descriptor pointer; descriptors
+    // for this packet were already written above). See docs/DIAG_MULTIPACKET §6.
+    XDMA_EngineResetIdle(engine);
 
     MemoryBarrier();
 

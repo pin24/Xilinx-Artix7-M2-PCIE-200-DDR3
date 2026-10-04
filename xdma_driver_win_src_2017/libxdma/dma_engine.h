@@ -119,6 +119,12 @@ typedef struct XDMA_ENGINE_T {
     // host can address local BRAM 0x0 directly. Set in EvtDeviceFileCreate.
     BOOLEAN translateAxiBase;
 
+    // DIAG 2026-10-04 (E-19 / BUG-053): number of EvtProgramDma invocations for
+    // the current DMA request. Reset to 0 in EvtIoWriteDma/EvtIoReadDma before
+    // WdfDmaTransactionExecute. Read via IOCTL_XDMA_DIAG_GET from user mode to
+    // see whether WDF programs packet 2+ of a >512B multi-packet transaction.
+    ULONG progDmaCalls;
+
 } XDMA_ENGINE;
 
 #pragma pack(1)

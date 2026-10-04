@@ -650,6 +650,25 @@ VOID EvtIoDeviceControl(IN WDFQUEUE Queue, IN WDFREQUEST request, IN size_t Outp
             WdfRequestComplete(request, STATUS_SUCCESS);
         }
         break;
+    // DIAG 2026-10-04 (E-19 / BUG-053): return engine diagnostics (how many
+    // times EvtProgramDma was invoked + bytes transferred) for multi-packet debug.
+    case IOCTL_XDMA_DIAG_GET:
+    {
+        TraceInfo(DBG_IO, "%s_%u IOCTL_XDMA_DIAG_GET",
+                  queue->engine->dir == H2C ? "H2C" : "C2H", queue->engine->channel);
+        XDMA_DIAG_DATA* diag = NULL;
+        size_t bufLen = 0;
+        status = WdfRequestRetrieveOutputBuffer(request, sizeof(XDMA_DIAG_DATA),
+                                                (PVOID*)&diag, &bufLen);
+        if (NT_SUCCESS(status) && diag != NULL) {
+            diag->progDmaCalls = queue->engine->progDmaCalls;
+            diag->reserved = 0;
+            diag->bytesTransferred =
+                WdfDmaTransactionGetBytesTransferred(queue->engine->dmaTransaction);
+            WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, sizeof(XDMA_DIAG_DATA));
+        }
+        break;
+    }
     default:
         TraceError(DBG_IO, "Unknown IOCTL code!");
         status = STATUS_NOT_SUPPORTED;
@@ -685,11 +704,16 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
         TraceError(DBG_IO, "WdfDmaTransactionInitializeUsingRequest failed: %!STATUS!", status);
         goto ErrExit;
     }
-    // FIX-AUDIT-ROF 2026-09-30: cap each SGDMA descriptor to 512B so the XDMA
-    // receiver is never flooded with one huge transaction (RATIO 6X option 2).
-    // WDF then splits the transfer into many small descriptors instead of a
-    // single large one -> engine never overruns its RX FIFO (no ROF/0x124).
-    WdfDmaTransactionSetMaximumLength(queue->engine->dmaTransaction, 512);
+    // FIX 2026-10-04 (E-19 / BUG-053, option B): use ONE WDF packet per request
+    // (maximum = XDMA_MAX_TRANSFER_SIZE, 8 MB) instead of the previous 512-byte
+    // cap. The XDMA engine on this board does not restart between WDF packets
+    // (packet 2..N is programmed by WDF but the engine never executes it -> host
+    // IRP hangs; verified by DIAG_MULTIPACKET). A single descriptor chain is the
+    // only mode the engine actually runs (like the always-passing 512B case).
+    // NOTE: reverting to large transactions may bring back the ROF/0x124 risk
+    // (that is why 512 was introduced); measure on the bench (see DIAG §6).
+    WdfDmaTransactionSetMaximumLength(queue->engine->dmaTransaction, XDMA_MAX_TRANSFER_SIZE);
+    queue->engine->progDmaCalls = 0; // DIAG 2026-10-04 (E-19): reset ProgramDma call counter
     status = WdfRequestMarkCancelableEx(Request, EvtCancelDma);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_IO, "WdfRequestMarkCancelableEx failed: %!STATUS!", status);
@@ -750,8 +774,9 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
                    status);
         goto ErrExit;
     }
-    // FIX-AUDIT-ROF 2026-09-30: cap each SGDMA descriptor to 512B (see write path).
-    WdfDmaTransactionSetMaximumLength(queue->engine->dmaTransaction, 512);
+    // FIX 2026-10-04 (E-19 / BUG-053, option B): single packet per request (see write path).
+    WdfDmaTransactionSetMaximumLength(queue->engine->dmaTransaction, XDMA_MAX_TRANSFER_SIZE);
+    queue->engine->progDmaCalls = 0; // DIAG 2026-10-04 (E-19): reset ProgramDma call counter
     status = WdfRequestMarkCancelableEx(Request, EvtCancelDma);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_IO, "WdfRequestMarkCancelableEx failed: %!STATUS!", status);
