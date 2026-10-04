@@ -286,9 +286,12 @@ static int ModeFirmware(HANDLE ctl)
 }
 
 /* ========================================================================== */
-/*  Mode: loopback <bytes> — LCG write via h2c, read via c2h, byte compare     */
+/*  Mode: loopback <bytes> [offset] [seed] — LCG write via h2c, read, compare.
+/*  offset: raw DDR3 offset (default LOOPBACK_OFF), seed: LCG seed per thread
+/*  (default = bytes). Allows multi-thread tests with distinct buffers/patterns. */
 /* ========================================================================== */
-static int ModeLoopback(HANDLE h2c, HANDLE c2h, size_t bytes)
+static int ModeLoopback(HANDLE h2c, HANDLE c2h, size_t bytes,
+                        UINT64 offset, unsigned seed)
 {
     BYTE* w = NULL;
     BYTE* r = NULL;
@@ -316,15 +319,15 @@ static int ModeLoopback(HANDLE h2c, HANDLE c2h, size_t bytes)
     r = (BYTE*)_aligned_malloc(bytes ? bytes : 256, 256);
     if (!w || !r) { printf("  ERROR: malloc (aligned)\n"); goto out; }
 
-    FillLcg(w, bytes, (unsigned)bytes);
-    printf("--- loopback %zu bytes: h2c write @0x%08X, c2h read, compare ---\n",
-           bytes, LOOPBACK_OFF);
-    if (!DmaWrite(h2c, LOOPBACK_OFF, w, bytes)) goto out;
+    FillLcg(w, bytes, seed);
+    printf("--- loopback %zu bytes: h2c write @0x%08X (seed=%u), c2h read, compare ---\n",
+           bytes, (unsigned)offset, seed);
+    if (!DmaWrite(h2c, offset, w, bytes)) goto out;
     // FIX-MBAR 2026-09-28: give the H2C data time to be visible to the pull
     // C2H read (engine-side ordering on this build is not guaranteed by
     // WaitCompletion alone). Short barrier before starting the read.
     Sleep(5);
-    if (!DmaRead(c2h, LOOPBACK_OFF, r, bytes)) goto out;
+    if (!DmaRead(c2h, offset, r, bytes)) goto out;
 
     for (i = 0; i < bytes; i++) {
         if (w[i] != r[i]) {
@@ -665,7 +668,7 @@ static void PrintUsage(void)
     printf("Usage: test_dma.exe <mode> [args]\n");
     printf("  regs                 readback TDOT_STATUS / GPIO over \\control\n");
     printf("  firmware             read CORE_PARAMS + MAGIC id regs (self-detect)\n");
-    printf("  loopback <bytes>     LCG write h2c + read c2h + byte compare\n");
+    printf("  loopback <bytes> [offset] [seed]  LCG write h2c + read c2h + compare\n");
     printf("                       (suggest: 4 1024 1048576 8388608; one per run)\n");
     printf("  ioctl                PERF_START/GET/STOP + ADDRMODE on c2h_0\n");
     printf("  align                deliberately misaligned size/offset\n");
@@ -754,7 +757,10 @@ int main(int argc, char** argv)
         rc = ModeFirmware(ctl);
     } else if (_stricmp(mode, "loopback") == 0) {
         sbytes = (argc >= 3) ? argv[2] : "1024";
-        rc = ModeLoopback(h2c, c2h, (size_t)strtoull(sbytes, NULL, 0));
+        size_t lbBytes = (size_t)strtoull(sbytes, NULL, 0);
+        UINT64 lbOff   = (argc >= 4) ? (UINT64)strtoull(argv[3], NULL, 0) : LOOPBACK_OFF;
+        unsigned lbSeed= (argc >= 5) ? (unsigned)strtoul(argv[4], NULL, 0) : (unsigned)lbBytes;
+        rc = ModeLoopback(h2c, c2h, lbBytes, lbOff, lbSeed);
     } else if (_stricmp(mode, "ioctl") == 0) {
         rc = ModeIoctl(c2h, h2c);
     } else if (_stricmp(mode, "align") == 0) {
