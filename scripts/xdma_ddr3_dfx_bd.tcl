@@ -792,7 +792,7 @@ set_property -dict [list \
     CONFIG.Write_Width_A {64} \
     CONFIG.Write_Depth_A {1024} \
     CONFIG.Read_Width_A {64} \
-    CONFIG.use_bram_block {BRAM_Controller} \
+    CONFIG.use_bram_block {Stand_Alone} \
   ] $diag_bram
 
   set diag_bram_ctrl [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 diag_bram_ctrl ]
@@ -802,9 +802,21 @@ set_property -dict [list \
     CONFIG.SINGLE_PORT_BRAM {1} \
   ] $diag_bram_ctrl
 
-  # AXI BRAM Controller РІ EXTERNAL (Р·Р°С€РёС‚Рѕ РЅР°РјРµСЂС‚РІРѕ, read-only) С‚СЂРµР±СѓРµС‚ Р’РќР•РЁРќРР™
+  # AXI BRAM Controller РІ EXTERNAL С‚СЂРµР±СѓРµС‚ Р’РќР•РЁРќРР™
   # blk_mem_gen РЅР° BRAM_PORTA (РѕРґРёРЅ РїРѕСЂС‚ S_AXI). РџРѕРґРєР»СЋС‡Р°РµРј.
   connect_bd_intf_net [get_bd_intf_pins diag_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins diag_bram/BRAM_PORTA]
+
+  # FIX-MT 2026-10-04: blk_mem_gen Stand_Alone exposes rsta_busy (BRAM reset-busy) which
+  # was previously left dangling in BRAM_Controller/EXTERNAL mode. Tie it to an exported
+  # top-level port so it is not "in the air" (no unconnected-pin DRC) and the diag BRAM
+  # actually implements memory.
+  if {[get_bd_pins -quiet diag_bram/rsta_busy] ne ""} {
+      if {[get_bd_ports -quiet diag_rst_busy] eq ""} {
+          create_bd_port -dir O -from 0 -to 0 diag_rst_busy
+      }
+      connect_bd_net [get_bd_pins diag_bram/rsta_busy] [get_bd_ports diag_rst_busy]
+      puts " diag_bram: rsta_busy -> diag_rst_busy (tied, not dangling)"
+  }
 
   # --- (РЁР°Рі A1) xdma_axi_smc: РґРѕР±Р°РІРёС‚СЊ M01 -> diag_bram_ctrl/S_AXI ---
   set_property -dict [list CONFIG.NUM_MI {2}] $xdma_axi_smc
