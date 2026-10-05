@@ -30,6 +30,12 @@
 #define XDMA_RING_NUM_BLOCKS    (258U)
 #define XDMA_RING_BLOCK_SIZE    (PAGE_SIZE)
 #define XDMA_MAX_TRANSFER_SIZE  (8UL * 1024UL * 1024UL)
+// FIX-ROF 2026-10-05: cap every SGDMA descriptor at 512 B so the XDMA receiver
+// never gets one huge transaction (prevents PCIe Receiver-Overflow / WHEA 0x124,
+// see CHANGE_LOG_2026-09-27 §6N and DIAG_MULTIPACKET). ProgramDma slices each
+// SG element into <=512-B descriptors in a single engine run.
+#define XDMA_DESC_MAX_BYTES     (512UL)
+#define XDMA_MAX_DESC_COUNT     (XDMA_MAX_TRANSFER_SIZE / XDMA_DESC_MAX_BYTES)
 
 // ========================= forward declarations =================================================
 

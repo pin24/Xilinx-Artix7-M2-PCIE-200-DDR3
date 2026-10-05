@@ -62,8 +62,10 @@ static NTSTATUS EngineCreatePollWriteBackBuffer(IN OUT XDMA_ENGINE *engine);
 // ======================== common engine functions ===============================================
 
 static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine) {
-    // allocate host-side buffer for descriptors
-    SIZE_T bufferSize = (XDMA_MAX_TRANSFER_SIZE / PAGE_SIZE + 2) * sizeof(DMA_DESCRIPTOR);
+    // allocate host-side buffer for descriptors.
+    // FIX-ROF 2026-10-05: sized for slicing every transfer into <=512-B descriptors
+    // (XDMA_MAX_DESC_COUNT), not one descriptor per 4K-page. ~512 KB for 8 MB cap.
+    SIZE_T bufferSize = (SIZE_T)XDMA_MAX_DESC_COUNT * sizeof(DMA_DESCRIPTOR) + sizeof(DMA_DESCRIPTOR);
 
     NTSTATUS status = WdfCommonBufferCreate(engine->parentDevice->dmaEnabler, bufferSize,
                                             WDF_NO_OBJECT_ATTRIBUTES, &engine->descBuffer);
@@ -483,7 +485,6 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     // get virtual and physical pointers to descriptor buffer
     XDMA_ENGINE * engine = (XDMA_ENGINE*)context;
     DMA_DESCRIPTOR *descriptor = (DMA_DESCRIPTOR*)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
-    PHYSICAL_ADDRESS descBufferLA = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
 
     // DIAG 2026-10-04 (E-19 / BUG-053): count every EvtProgramDma invocation so
     // we can see from user mode whether WDF programs packet 2+ of a multi-packet
@@ -519,59 +520,96 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     TraceVerbose(DBG_DMA, "device addr=%lld, num descriptors=%d",
                  deviceOffset, SgList->NumberOfElements);
 
-    for (ULONG i = 0; i < SgList->NumberOfElements; i++) {
-        descriptor[i].control = XDMA_DESC_MAGIC;
-        descriptor[i].numBytes = SgList->Elements[i].Length;
-        ULONG hostAddrLo = SgList->Elements[i].Address.LowPart;
-        LONG hostAddrHi = SgList->Elements[i].Address.HighPart;
-        if (Direction == WdfDmaDirectionWriteToDevice) {
-            // source is host memory
-            descriptor[i].srcAddrLo = hostAddrLo;
-            descriptor[i].srcAddrHi = hostAddrHi;
-            descriptor[i].dstAddrLo = LIMIT_TO_32(deviceOffset);
-            descriptor[i].dstAddrHi = LIMIT_TO_32(deviceOffset >> 32);
-        } else {
-            // destination is host memory
-            descriptor[i].srcAddrLo = LIMIT_TO_32(deviceOffset);
-            descriptor[i].srcAddrHi = LIMIT_TO_32(deviceOffset >> 32);
-            descriptor[i].dstAddrLo = hostAddrLo;
-            descriptor[i].dstAddrHi = hostAddrHi;
-        }
+    // ============================================================================
+    // FIX-ROF 2026-10-05: build ONE descriptor chain of <=512-B slices so the XDMA
+    // receiver is never flooded (prevents PCIe Receiver-Overflow / WHEA 0x124, see
+    // CHANGE_LOG_2026-09-27 §6N). This is a single engine run (one WDF packet per
+    // request), so it does NOT reload the engine between packets (no >512B hang).
+    // ============================================================================
+    const ULONG ne = SgList->NumberOfElements;
+    ULONG total = 0;
+    ULONG i;
+    for (i = 0; i < ne; i++) {
+        total += (ULONG)((SgList->Elements[i].Length + XDMA_DESC_MAX_BYTES - 1) / XDMA_DESC_MAX_BYTES);
+    }
 
-        // next descriptor bus address 
-        descBufferLA.QuadPart += sizeof(DMA_DESCRIPTOR);
+    // safety clamp: never write past the allocated double-freeze bank
+    SIZE_T descBankLens = WdfCommonBufferGetLength(engine->descBuffer) / sizeof(DMA_DESCRIPTOR);
+    if ((ULONG)descBankLens < XDMA_MAX_DESC_COUNT) { /* buffer is at least that big */ }
+    if (total > (ULONG)descBankLens) {
+        TraceError(DBG_DMA, "FIX-ROF: %llu bytes need %u descs, buffer holds %Iu - clamping", 
+                   (ULONGLONG)WdfDmaTransactionGetBytesTransferred(Transaction),
+                   total, descBankLens);
+        total = (ULONG)descBankLens;
+    }
 
-        // non-last descriptor(s)? 
-        if ((i + 1) < SgList->NumberOfElements) {
-            descriptor[i].nextLo = descBufferLA.LowPart;
-            descriptor[i].nextHi = descBufferLA.HighPart;
-        } else { // last descriptor
-            descriptor[i].nextLo = 0;
-            descriptor[i].nextHi = 0;
-            // stop engine and request an interrupt from the engine
-            descriptor[i].control |= (XDMA_DESC_STOP_BIT | XDMA_DESC_COMPLETED_BIT);
-            if (engine->type == EngineType_ST) {
-                descriptor[i].control |= XDMA_DESC_EOP_BIT;
-                TraceVerbose(DBG_DMA, "descriptor[i].control=0x%08x", descriptor[i].control);
+    PHYSICAL_ADDRESS descBase = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
+    ULONG di = 0;                       // current descriptor index
+    UINT64 devAddr = deviceOffset;      // running card address (AXI base already added)
+
+    for (i = 0; i < ne && di < total; i++) {
+        ULONG len = SgList->Elements[i].Length;
+        PHYSICAL_ADDRESS ha = SgList->Elements[i].Address;
+        UINT64 hostBase = ((UINT64)(ULONG)ha.HighPart << 32) | (UINT64)ha.LowPart;
+        UINT64 off = 0;
+
+        while (off < len && di < total) {
+            ULONG cur = (len - off > XDMA_DESC_MAX_BYTES)
+                        ? (ULONG)XDMA_DESC_MAX_BYTES
+                        : (ULONG)(len - off);
+            UINT64 hostCur = hostBase + off;
+            descriptor[di].control = XDMA_DESC_MAGIC;
+            descriptor[di].numBytes = cur;
+            if (Direction == WdfDmaDirectionWriteToDevice) {
+                descriptor[di].srcAddrLo = LIMIT_TO_32(hostCur);
+                descriptor[di].srcAddrHi = (LONG)(hostCur >> 32);
+                descriptor[di].dstAddrLo = LIMIT_TO_32(devAddr);
+                descriptor[di].dstAddrHi = LIMIT_TO_32(devAddr >> 32);
+            } else {
+                descriptor[di].srcAddrLo = LIMIT_TO_32(devAddr);
+                descriptor[di].srcAddrHi = LIMIT_TO_32(devAddr >> 32);
+                descriptor[di].dstAddrLo = LIMIT_TO_32(hostCur);
+                descriptor[di].dstAddrHi = (LONG)(hostCur >> 32);
             }
-        }
-        if (engine->addressMode == AddressMode_Contiguous) { // incremental address mode
-            deviceOffset += SgList->Elements[i].Length;
-        }
 
-        if (FALSE == DescriptorIsAligned(engine, &(descriptor[i]))) {
-            TraceWarning(DBG_DMA, "Error: Dma Transfer is not aligned");
+            // next descriptor bus address (physical slot di+1)
+            if (di + 1 < total) {
+                PHYSICAL_ADDRESS next = descBase;
+                next.QuadPart += (di + 1) * sizeof(DMA_DESCRIPTOR);
+                descriptor[di].nextLo = next.LowPart;
+                descriptor[di].nextHi = next.HighPart;
+            } else { // last descriptor
+                descriptor[di].nextLo = 0;
+                descriptor[di].nextHi = 0;
+                descriptor[di].control |= (XDMA_DESC_STOP_BIT | XDMA_DESC_COMPLETED_BIT);
+                if (engine->type == EngineType_ST) {
+                    descriptor[di].control |= XDMA_DESC_EOP_BIT;
+                }
+            }
+
+            if (engine->addressMode == AddressMode_Contiguous) {
+                devAddr += cur;
+            }
+
+            if (FALSE == DescriptorIsAligned(engine, &(descriptor[di]))) {
+                TraceWarning(DBG_DMA, "Error: Dma Transfer is not aligned");
+            }
+            off += cur;
+            di++;
         }
     }
 
-    OptimizeDescriptors(engine, descriptor, SgList->NumberOfElements);
+    TraceVerbose(DBG_DMA, "progDma: %u SG -> %u desc descriptors (max %u B each)",
+                 ne, di, (unsigned)XDMA_DESC_MAX_BYTES);
 
-    for (ULONG i = 0; i < SgList->NumberOfElements; i++) {
-        DumpDescriptor(&(descriptor[i]));
+    OptimizeDescriptors(engine, descriptor, di);
+
+    for (ULONG k = 0; k < di; k++) {
+        DumpDescriptor(&(descriptor[k]));
     }
 
     if (engine->poll) {
-        engine->numDescriptors = SgList->NumberOfElements;
+        engine->numDescriptors = di;
     }
 
     // FIX 2026-10-04 (E-19 / BUG-053, option B2): reset the engine to idle BEFORE

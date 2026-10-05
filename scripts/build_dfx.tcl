@@ -262,6 +262,11 @@ assign_bd_address -offset 0x40020000 -range 0x1000 \
     [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
 
 # DFX Socket control: 0x40022000 — тоже есть
+# FIX-MT 2026-10-05: primary BD names the segment SEG_axi_gpio_0_Reg_2
+# (legacy remnant) while this step tried to delete SEG_decouple_shutdown_ctrl_Reg.
+# Delete BOTH names before reassign, otherwise assign -force creates a duplicate
+# 0x40022000 segment (agent audit) -> validate_bd_design may fail.
+delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_axi_gpio_0_Reg_2}]
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_decouple_shutdown_ctrl_Reg}]
 assign_bd_address -offset 0x40022000 -range 0x1000 \
     -target_address_space $as_lite \
@@ -272,18 +277,6 @@ delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_TDOT
 assign_bd_address -offset 0x40023000 -range 0x1000 \
     -target_address_space $as_lite \
     [get_bd_addr_segs S_AXI_TDOT_REGS/Reg] -force
-
-# ICAP: 0x40024000 (via post_bd_dfx)
-delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_ICAP_REGS_Reg}]
-assign_bd_address -offset 0x40024000 -range 0x1000 \
-    -target_address_space $as_lite \
-    [get_bd_addr_segs S_AXI_ICAP_REGS/Reg] -force
-
-# SPI-over-PCIe: 0x40025000 (M06)
-delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_SPI_REGS_Reg}]
-assign_bd_address -offset 0x40025000 -range 0x1000 \
-    -target_address_space $as_lite \
-    [get_bd_addr_segs S_AXI_SPI_REGS/Reg] -force
 
 # XADC: 0x46000000 (via post_bd_dfx)
 delete_bd_objs -quiet [get_bd_addr_segs -quiet {xdma_0/M_AXI_LITE/SEG_S_AXI_XADC_REGS_Reg}]

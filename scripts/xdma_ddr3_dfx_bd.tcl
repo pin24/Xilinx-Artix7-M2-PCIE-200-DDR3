@@ -903,8 +903,8 @@ connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
   assign_bd_address -offset 0x80000000 -range 0x10000000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI] [get_bd_addr_segs mig_7series_0/memmap/memaddr] -force
   assign_bd_address -offset 0x40010000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_partition/axi_datamover_mm2s_c_0/s_axi/reg0] -force
   assign_bd_address -offset 0x40018000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_partition/axi_datamover_s2mm_c_0/s_axi/reg0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
-  assign_bd_address -offset 0x40002000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
+assign_bd_address -offset 0x40020000 -range 0x00001000 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
+assign_bd_address -offset 0x40022000 -range 0x00001000 -with_name SEG_axi_gpio_0_Reg_2 -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs dfx_socket/decouple_shutdown_ctrl/S_AXI/Reg] -force
 
   # ---- DIAG (2026-10-03): Р°РґСЂРµСЃРЅС‹Рµ РєР°СЂС‚С‹ BRAM-РѕР±С…РѕРґР° ----
   # (A) XDMA-РјР°СЃС‚РµСЂ РїРѕР»СѓС‡Р°РµС‚ СЃРµРіРјРµРЅС‚ BRAM 0x00000000 (8 РљР‘) Р’ Р”РћР‘РђР’Р›Р•РќРР• Рє
@@ -942,16 +942,11 @@ connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
   set_property -dict [list \
     CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $tdot_port
   connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M03_AXI] $tdot_port
-  assign_bd_address -offset 0x40003000 -range 0x1000 \
+  assign_bd_address -offset 0x40023000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $tdot_port/Reg] -force
 
-  # S_AXI_ICAP_REGS
-  set icap_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_ICAP_REGS]
-  set_property -dict [list \
-    CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $icap_port
-  connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M04_AXI] $icap_port
-  assign_bd_address -offset 0x40004000 -range 0x1000 \
-    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $icap_port/Reg] -force
+  # (ICAP/SPI порты убраны 2026-10-05: RTL-top не инстанцирует icap_ctrl/spi_over_pcie;
+  #  адреса 0x40024000/0x40025000 больше не выделяются и не входят в ADDRESS_MAP §2.)
 
   # S_AXI_XADC_REGS
   set xadc_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_XADC_REGS]
@@ -961,13 +956,7 @@ connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
   assign_bd_address -offset 0x46000000 -range 0x1000 \
     -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $xadc_port/Reg] -force
 
-  # S_AXI_SPI_REGS (SPI-over-PCIe, R-14)
-  set spi_port [create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI_SPI_REGS]
-  set_property -dict [list \
-    CONFIG.PROTOCOL AXI4LITE CONFIG.DATA_WIDTH 32 CONFIG.ADDR_WIDTH 8 CONFIG.FREQ_HZ 125000000] $spi_port
-  connect_bd_intf_net [get_bd_intf_pins xdma_axi_lite_smc/M06_AXI] $spi_port
-  assign_bd_address -offset 0x40005000 -range 0x1000 \
-    -target_address_space [get_bd_addr_spaces xdma_0/M_AXI_LITE] [get_bd_addr_segs $spi_port/Reg] -force
+  # (SPI-порт убран 2026-10-05 — RTL не инстанцирует spi_over_pcie, см. ICAP выше.)
 
   # ---- BUG-035: Р С—РЎР‚Р С‘Р Р†РЎРЏР В·Р С”Р В° Р Р†Р Р…Р ВµРЎв‚¬Р Р…Р С‘РЎвЂ¦ Р С—Р С•РЎР‚РЎвЂљР С•Р Р† Р С” fabric-Р Т‘Р С•Р СР ВµР Р…РЎС“ 125 Р СљР вЂњРЎвЂ  ----
   # Vivado Р Р…Р Вµ Р В°Р Р†РЎвЂљР С•-Р Р†РЎвЂ№Р Р†Р С•Р Т‘Р С‘РЎвЂљ Р Т‘Р С•Р СР ВµР Р… Р Т‘Р В»РЎРЏ Р Р†Р Р…Р ВµРЎв‚¬Р Р…Р С‘РЎвЂ¦ AXI-Р С—Р С•РЎР‚РЎвЂљР С•Р Р† РІР‚вЂќ Р С•Р Р…Р С‘ РЎРѓР В°Р Т‘РЎРЏРЎвЂљРЎРѓРЎРЏ Р Р…Р В°
@@ -995,7 +984,7 @@ connect_bd_net -net xdma_0_axi_aresetn [get_bd_pins xdma_0/axi_aresetn] \
           connect_bd_net -net $_cnet [get_bd_ports clk_core_out]
       }
   }
-  set_property CONFIG.ASSOCIATED_BUSIF {M_AXI_TDOT:S_AXI_TDOT_REGS:S_AXI_ICAP_REGS:S_AXI_XADC_REGS:S_AXI_SPI_REGS} [get_bd_ports clk_core_out]
+  set_property CONFIG.ASSOCIATED_BUSIF {M_AXI_TDOT:S_AXI_TDOT_REGS:S_AXI_XADC_REGS} [get_bd_ports clk_core_out]
 
   validate_bd_design
   save_bd_design
