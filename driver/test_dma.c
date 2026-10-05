@@ -121,6 +121,12 @@ static HANDLE g_ov_h2c     = NULL;
 static HANDLE g_ov_c2h     = NULL;
 static HANDLE g_ov_cfg     = NULL;  /* DIAG 2026-10-04: event для config-BAR (\control) */
 
+/* ROF-диагностика 2026-10-05: ограничение интенсивности c2h-чтения (пауза/чанк).
+   0 => по умолчанию (DMA_CHUNK, без паузы). Уменьшение чанка и/или пауза после
+   каждого чанка снижают нагрузку на Root Port (против WHEA 0x124 ROF). */
+static size_t g_c2hChunk   = 0;
+static DWORD  g_c2hPauseMs = 0;
+
 static void CleanupDma(void)
 {
     if (g_ov_control) { CloseHandle(g_ov_control); g_ov_control = NULL; }
@@ -211,12 +217,16 @@ static BOOL DmaRead(HANDLE hDev, UINT64 ddr_off, void* data, size_t len)
 {
     char* p = (char*)data;
     size_t done = 0;
+    size_t chunk = g_c2hChunk ? g_c2hChunk : DMA_CHUNK;
     while (done < len) {
-        size_t n = (len - done > DMA_CHUNK) ? DMA_CHUNK : (len - done);
+        size_t n = (len - done > chunk) ? chunk : (len - done);
         if (!RawXfer(hDev, g_ov_c2h, FALSE, ddr_off + done,
                      (void*)(p + done), (DWORD)n, POLL_TIMEOUT_MS))
             return FALSE;
         done += n;
+        if (g_c2hPauseMs) {
+            Sleep(g_c2hPauseMs);   /* ROF: даём Root Port время освободить приёмный буфер */
+        }
     }
     return TRUE;
 }
@@ -668,7 +678,8 @@ static void PrintUsage(void)
     printf("Usage: test_dma.exe <mode> [args]\n");
     printf("  regs                 readback TDOT_STATUS / GPIO over \\control\n");
     printf("  firmware             read CORE_PARAMS + MAGIC id regs (self-detect)\n");
-    printf("  loopback <bytes> [offset] [seed]  LCG write h2c + read c2h + compare\n");
+    printf("  loopback <bytes> [offset] [seed] [chunk] [pause_ms]  LCG write h2c + read c2h + compare\n");
+    printf("                       [chunk]=c2h read chunk (0=1MB), [pause_ms]=sleep after each chunk\n");
     printf("                       (suggest: 4 1024 1048576 8388608; one per run)\n");
     printf("  ioctl                PERF_START/GET/STOP + ADDRMODE on c2h_0\n");
     printf("  align                deliberately misaligned size/offset\n");
@@ -760,6 +771,8 @@ int main(int argc, char** argv)
         size_t lbBytes = (size_t)strtoull(sbytes, NULL, 0);
         UINT64 lbOff   = (argc >= 4) ? (UINT64)strtoull(argv[3], NULL, 0) : LOOPBACK_OFF;
         unsigned lbSeed= (argc >= 5) ? (unsigned)strtoul(argv[4], NULL, 0) : (unsigned)lbBytes;
+        g_c2hChunk   = (argc >= 6) ? (size_t)strtoull(argv[5], NULL, 0) : 0;
+        g_c2hPauseMs = (argc >= 7) ? (DWORD)atoi(argv[6]) : 0;
         rc = ModeLoopback(h2c, c2h, lbBytes, lbOff, lbSeed);
     } else if (_stricmp(mode, "ioctl") == 0) {
         rc = ModeIoctl(c2h, h2c);

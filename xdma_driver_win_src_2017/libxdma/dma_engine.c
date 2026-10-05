@@ -506,6 +506,21 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
         deviceOffset += XDMA_DDR3_AXI_BASE;
     }
 
+    // FIX-ROF2 2026-10-05 (audit 3): reject card addresses that leave the DDR3 aperture
+    // (0x80000000 + 256 MB). Otherwise XDMA issues a read/write to unmapped space, gets
+    // AXI DECERR -> Completer-Abort/UR -> WHEA 0x124/ROF on the Root Port (8086:7f3c).
+    if (engine->translateAxiBase && SgList != NULL) {
+        ULONGLONG endOff = (ULONGLONG)deviceOffset;
+        for (ULONG bi = 0; bi < SgList->NumberOfElements; bi++) {
+            endOff += SgList->Elements[bi].Length;
+        }
+        if (endOff > XDMA_DDR3_AXI_BASE + 0x10000000ULL) {
+            TraceError(DBG_DMA, "ROF-guard: card range [0x%llx..0x%llx] beyond DDR3 aperture; reject",
+                       (ULONGLONG)deviceOffset, endOff);
+            return FALSE;
+        }
+    }
+
     // DBG-SRCADDR 2026-09-28: always visible in DebugView (plain DbgPrint,
     // independent of WPP). Reports the exact card-side address and SG count
     // programmed for each H2C/C2H descriptor so the C2H-reads-wrong-region
@@ -604,12 +619,20 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
 
     OptimizeDescriptors(engine, descriptor, di);
 
-    for (ULONG k = 0; k < di; k++) {
-        DumpDescriptor(&(descriptor[k]));
+    // FIX-ROF2 2026-10-05 (audit 3): (1) always set numDescriptors so the completion
+    // poll in interrupt mode actually WAITS for the transfer (it was only set under
+    // engine->poll == 0 before -> expected=0 -> XDMA_EngineWaitCompletion returned
+    // SUCCESS immediately, leaving completion to a (unreliable) MSI-X -> C2H-BUSY/ROF).
+    // (2) disable multi-descriptor prefetch (nextAdj=0) to smooth posted-write bursts
+    // to the Root Port (reduces ROF on 8086:7f3c).
+    engine->numDescriptors = di;
+    engine->sgdma->firstDescAdj = 0;
+    for (ULONG k2 = 0; k2 < di; k2++) {
+        descriptor[k2].control &= (UINT32)~(0xFFu << 8); /* clear nextAdj[15:8] */
     }
 
-    if (engine->poll) {
-        engine->numDescriptors = di;
+    for (ULONG k = 0; k < di; k++) {
+        DumpDescriptor(&(descriptor[k]));
     }
 
     // FIX 2026-10-04 (E-19 / BUG-053, option B2): reset the engine to idle BEFORE

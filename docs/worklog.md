@@ -608,3 +608,4 @@ Work Log:
 Stage Summary:
 - Готово к пересборке прошивки (BD-скрипт и драйвер согласованы). Остаточные: ICAP/SPI висячие (не блокер loopback/dot). Установка/тесты отложены до включения устройства.
 - [build] DFX прошивка пересобрана (21:06): артефакты в build/artifacts_dfx, полный SW_CRC=c8fb4bfa, partial eeaedcd6, WNS 8.69ns MET, адреса 0x4002xxxx без ICAP/SPI. Готово к заливке (QSPI/JTAG).
+- [tests 06.10] Прошивка 0e5cb12 + драйвер v1.1.29: loopback 512/1024/2048/1MiB PASS, progDmaCalls=1, WHEA/0x124 за тесты нет. dot/dot_bram: TDOT DONE timeout (ядро не завершает) - отдельная задача ядра.

@@ -182,8 +182,7 @@ EvtDriverDeviceAdd(
 }
 
 // ========================= EvtDevicePrepareHardware ==============================================
-
-NTSTATUS
+static NTSTATUS
 EvtDevicePrepareHardware(
     _In_ WDFDEVICE      Device,
     _In_ WDFCMRESLIST   ResourcesRaw,
