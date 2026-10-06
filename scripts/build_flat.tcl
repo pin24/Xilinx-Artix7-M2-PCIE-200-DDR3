@@ -39,7 +39,7 @@ set TOP_NAME   "xdma_ddr3_core_top"
 set ARTIFACTS_DIR "${ROOT}/build/artifacts_flat"
 
 set NUM_MAC     16
-set ADDERS      8
+set ADDERS      4
 set JOBS        8
 set SKIP_SYNTH  0
 
