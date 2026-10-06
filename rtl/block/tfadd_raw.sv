@@ -198,6 +198,7 @@ module tfadd_raw (
     // Каждая секция ~14 тритов = ~14 LUT6 = ~7ns — укладывается в 8ns.
     // Перенос между секциями — через регистр carry_mid0_q/carry_mid1_q.
     logic signed [2:0] carry_mid0, carry_mid1;
+    logic signed [2:0] carry_mid0_q, carry_mid1_q;  // (decl moved up for xvlog legality)
     logic [27:0] add_mant_sec0, add_mant_sec1, add_mant_sec2;  // 14 тритов каждая
 
     always_comb begin
@@ -402,8 +403,7 @@ module tfadd_raw (
     localparam int PH_NORM2 = 7;
     localparam int PH_DONE = 8;
 
-    logic [2:0] phase;
-    logic signed [2:0] carry_mid0_q, carry_mid1_q;
+    logic [3:0] phase;   // >=9 состояний (PH_DONE=8) -> needs 4 bits (was [2:0] -> PH_DONE truncated to IDLE, fixed)
     // ---- PH_NORM1 -> PH_NORM2: промежуточные регистры нормализации (BUG-045) ----
     logic [83:0] sum_abs_q;   // модуль суммы (для ÷-барреля в NORM2)
     logic [83:0] fq_dec_q;    // результат floor-деления (без инверсии знака)

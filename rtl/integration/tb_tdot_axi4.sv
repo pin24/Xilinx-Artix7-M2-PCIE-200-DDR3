@@ -292,6 +292,10 @@ module tb_tdot_axi4;
                     k = k + 1;
                     if (k > 20000) begin
                         $display("TIMEOUT waiting DONE, last STATUS=%08h", st);
+                        $display("DBG cstate=%0d rstate=%0d rd_recv=%0d rd_iss=%0d rd_done=%0d u_phase=%0d t_lvl=%0d t_cnt=%0d collected=%0d tree_can_issue=%0d rnd_issue=%0d ad_vout0=%0d ad_busy0=%0d add_phase0=%0d",
+                                 dut.cstate, dut.rstate, dut.rd_recv, dut.rd_issued, dut.rd_done,
+                                 dut.u_core.phase, dut.u_core.t_lvl, dut.u_core.t_cnt, dut.u_core.collected, dut.u_core.tree_can_issue,
+                                 dut.u_core.rnd_issue, dut.u_core.ad_valid_out[0], dut.u_core.ad_busy_q[0], dut.u_core.gen_ad[0].u_add.phase);
                         $finish;
                     end
                 end while (!(st & 2));
