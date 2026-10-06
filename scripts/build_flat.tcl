@@ -218,6 +218,14 @@ set_property PROCESSING_ORDER EARLY  [get_files ${early_xdc}]
 set_property PROCESSING_ORDER NORMAL [get_files ${pins_xdc}]
 # pblock.xdc is NOT added: it exists only for DFX partial-reconfiguration
 # (RP partitioning). Flat build has no RP. (File left in tree, unused.)
+#
+# pblock_flat_tdot.xdc — компактный placement-регион для ядра tdot (см. файл):
+# сжимает размещение u_tdot/u_core (gen_ad + gen_mac) в один общий регион для
+# сокращения маршрута критических путей. Загружается LATE (после синтеза),
+# чтобы клетки u_tdot/u_core уже существовали для add_cells_to_pblock.
+set pblock_flat_xdc ${ROOT}/constraints/pblock_flat_tdot.xdc
+add_files -fileset constrs_1 ${pblock_flat_xdc}
+set_property PROCESSING_ORDER LATE [get_files ${pblock_flat_xdc}]
 update_compile_order -fileset constrs_1
 
 # Vivado 2025.2 DRC REQP-123 benign trigger for clk200_clk_wiz
@@ -302,7 +310,7 @@ if {[catch {open_run impl_1} gate_open_err]} {
 }
 
 set gate_fail 0
-set all_viol [get_timing_paths -quiet -delay_type max -max_paths 0 -nworst 1 -slack_lesser_than 0]
+set all_viol [get_timing_paths -quiet -delay_type max -max_paths 1 -nworst 1 -slack_lesser_than 0]
 if {[llength ${all_viol}] > 0} {
     set ws [get_property SLACK [lindex ${all_viol} 0]]
     set n_viol [llength ${all_viol}]
