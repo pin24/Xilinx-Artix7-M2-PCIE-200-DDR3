@@ -373,6 +373,8 @@ module tfmul_raw (
     logic [7:0] a_er, b_er;
     logic [15:0] partial_q;
     logic [3:0] s_q;               // сдвиг partial в единицах 4 трита (бывш. shift_q[6:0])
+    logic [7:0] am_r, bm_r;        // зарегистрированный выход 5:1 mux (правка A)
+    logic [3:0] s_q1, s_q2;        // доп. стадии согласования сдвига (2 extra такта)
 
     logic [7:0] am_b[0:4], bm_b[0:4];
     always_comb begin
@@ -413,7 +415,11 @@ module tfmul_raw (
     logic [2:0] mul_i, mul_j;
     logic [3:0] mul_s;
     logic [15:0] partial;
-    tbyte_mul u_mul(.a(am_b[mul_i]), .b(bm_b[mul_j]), .prod(partial));
+    // Правка A: выход 5:1 mux регистрируется (am_r/bm_r), u_mul питается от РЕГИСТРОВ,
+    //   carry-цепь tbyte_mul — двухкаскадный конвейер (PIPE=1) => partial доступен
+    //   на 2 такта позже исходного (совпадает со сдвинутой на 2 такта s_q).
+    tbyte_mul #(.PIPE(1)) u_mul(
+        .a(am_r), .b(bm_r), .clk(clk), .rst_n(rst_n), .en(phase == PH_MUL), .prod(partial));
     logic [9:0] cnt_d;
     assign cnt_d = cnt_dec(cnt);
     assign {mul_s, mul_i, mul_j} = cnt_d;
@@ -482,7 +488,8 @@ module tfmul_raw (
             fin_carry <= 0; last_trit <= 0;
             partial_q <= 0; e_r <= 0;
             a_mr <= 0; b_mr <= 0; a_er <= 0; b_er <= 0;
-            valid_q <= 0; prod_q <= 0; e_q <= 0; neg_q <= 0; s_q <= 0;
+            am_r <= 0; bm_r <= 0; s_q <= 0; s_q1 <= 0; s_q2 <= 0;
+            valid_q <= 0; prod_q <= 0; e_q <= 0; neg_q <= 0;
         end else begin
             valid_q <= 0;
             case (phase)
@@ -494,13 +501,20 @@ module tfmul_raw (
                 PH_INIT: begin
                     cnt <= 0; fcnt <= 0; sum_r <= 0; carry_r <= 0; fin_r <= 0;
                     fin_carry <= 0; last_trit <= 0;
+                    // сброс конвейерных стадий: драйн-такты 0..2 накапливают ровно 0
+                    partial_q <= 0; am_r <= 0; bm_r <= 0;
+                    s_q <= 0; s_q1 <= 0; s_q2 <= 0;
                     e_r <= exp_val(a_er) + exp_val(b_er) - 8'sd18;
                     phase <= PH_MUL;
                 end
                 PH_MUL: begin
                     sum_r <= sum_n; carry_r <= carry_n;
-                    partial_q <= partial; s_q <= mul_s;
-                    if (cnt == 25) begin
+                    // Правка A: регистрируем выход 5:1 mux
+                    am_r <= am_b[mul_i]; bm_r <= bm_b[mul_j];
+                    // согласование сдвига с partial_q (partial доступен на 2 такта позже)
+                    s_q1 <= mul_s; s_q2 <= s_q1; s_q <= s_q2;
+                    partial_q <= partial;
+                    if (cnt == 27) begin
                         phase <= PH_FIN;
                         fcnt <= 0; fin_carry <= 0; last_trit <= 0;
                     end else cnt <= cnt + 1;

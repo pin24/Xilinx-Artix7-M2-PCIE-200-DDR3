@@ -67,7 +67,7 @@
 // ============================================================================
 module tdot_axi4 #(
     parameter int NUM_MAC = 32,
-    parameter int ADDERS  = 8,        // barrel-аддеров в дереве compute_dot_par_raw (1 = последовательный)
+    parameter int ADDERS  = 4,        // barrel-аддеров в дереве compute_dot_par_raw (1 = последовательный)
     parameter int C_S_AXI_DATA_WIDTH = 32,
     parameter int C_S_AXI_ADDR_WIDTH = 8,
     parameter int C_M_AXI_ID_WIDTH   = 1,

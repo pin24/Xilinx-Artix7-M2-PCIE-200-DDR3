@@ -6,10 +6,23 @@
 //   coeff[k] = sum_{i+j=k} prod[i][j]  (k=0..7, до 4 членов);
 //   balanced-сборка: трит[k] = (coeff[k]+перенос) mod 3, перенос наружу.
 // Компактный конус (без большого умножителя/разложения).
+//
+// PIPE=0 (по умолчанию): чисто комбинаторный LUT-путь (поведение не изменилось;
+//   клк/сброс/ен не используются). Инстансы без #(.PIPE(1)) работают как раньше.
+// PIPE=1: двухкаскадный конвейер — каскад k=0..3 комбинаторно -> граничный
+//   регистр (carry[4], coeff[4..7], prod_lo) -> каскад k=4..7 -> prod. Срезает
+//   последовательную 8-этапную carry-цепь пополам (~19 -> ~9 уровней логики),
+//   a,b->prod = 1 такт. Регистр обнуляется при en=0. Математика PIPE=0
+//   (ptv/asm_tab/coeff) НЕ тронута — идентичен по результату с PIPE=1-путём.
 // ============================================================================
-module tbyte_mul (
+module tbyte_mul #(
+    parameter int PIPE = 0
+)(
     input  logic [7:0] a,
     input  logic [7:0] b,
+    input  logic        clk   = 1'b0,
+    input  logic        rst_n = 1'b1,
+    input  logic        en    = 1'b1,
     output logic [15:0] prod    // 8 тритов результата (младший первым)
 );
     localparam logic [1:0] P1 = 2'b01;
@@ -115,18 +128,74 @@ module tbyte_mul (
                 coeff[i+j] = coeff[i+j] + pt[i][j];
     end
 
-    // balanced-сборка: Pure-LUT asm_tab (0 CARRY4); перенос цепочкой case-таблиц
-    logic signed [2:0] carry [0:8];
-    logic [6:0] akey;
-    logic [4:0] ares;
+    // ---- первый каскад: k=0..3 (общий для PIPE 0 и 1) ----
+    // Глубина: 2 LUT (ptv->pt) + суммирование coeff + 4 asm_tab = ~9 уровней.
+    logic signed [2:0] carry [0:4];
+    logic [6:0] akey0;
+    logic [4:0] ares0;
+    logic [7:0] prod_lo;           // триты k=0..3 (до регистра границы)
     always_comb begin
         carry[0] = 3'sd0;
-        for (int k = 0; k < 8; k++) begin
-            akey = {coeff[k], carry[k]};
-            ares = asm_tab(akey);
-            prod[2*k +: 2] = ares[4:3];
-            carry[k+1] = $signed(ares[2:0]);
+        for (int k = 0; k < 4; k++) begin
+            akey0 = {coeff[k], carry[k]};
+            ares0 = asm_tab(akey0);
+            prod_lo[2*k +: 2] = ares0[4:3];
+            carry[k+1] = $signed(ares0[2:0]);
         end
     end
+
+    generate
+        if (PIPE == 1) begin : g_pipe
+            // ---- двухкаскадный конвейер (LUT): граничный регистр ----
+            // Каскад k=0..3 (выше) комбинаторно даёт prod_lo/carry[4]/coeff[4..7],
+            // которые фиксируются в граничный регистр; второй каскад k=4..7 читает
+            // их из регистра => последовательная 8-этапная carry-цепь разрезана
+            // пополам (~19 -> ~9 уровней). Регистр обнуляется при en=0.
+            logic signed [2:0] carry4_q;
+            logic [15:0] coeff_hi_q;   // coeff[4..7] по 4 бита (для второго каскада)
+            logic [7:0] prod_lo_q;
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin carry4_q <= 3'sd0; coeff_hi_q <= 16'h0; prod_lo_q <= 8'h0; end
+                else if (en) begin
+                    carry4_q   <= carry[4];
+                    coeff_hi_q <= {coeff[7], coeff[6], coeff[5], coeff[4]};
+                    prod_lo_q  <= prod_lo;
+                end else begin
+                    carry4_q   <= 3'sd0; coeff_hi_q <= 16'h0; prod_lo_q <= 8'h0;
+                end
+            end
+            // второй каскад (k=4..7) от зарегистрированных значений
+            logic signed [2:0] carry2 [4:8];
+            logic [6:0] akey2;
+            logic [4:0] ares2;
+            logic [7:0] prod_hi;
+            always_comb begin
+                carry2[4] = carry4_q;
+                for (int k = 4; k < 8; k++) begin
+                    akey2 = {coeff_hi_q[4*(k-4) +: 4], carry2[k]};
+                    ares2 = asm_tab(akey2);
+                    prod_hi[2*(k-4) +: 2] = ares2[4:3];
+                    carry2[k+1] = $signed(ares2[2:0]);
+                end
+            end
+            assign prod = {prod_hi, prod_lo_q};
+        end else begin : g_cmb
+            // второй каскад (комбинаторный): k=4..7 от carry[4] (как завсегда)
+            logic signed [2:0] carry2 [4:8];
+            logic [6:0] akey2;
+            logic [4:0] ares2;
+            logic [7:0] prod_hi2;         // триты k=4..7
+            always_comb begin
+                carry2[4] = carry[4];
+                for (int k = 4; k < 8; k++) begin
+                    akey2 = {coeff[k], carry2[k]};
+                    ares2 = asm_tab(akey2);
+                    prod_hi2[2*(k-4) +: 2] = ares2[4:3];
+                    carry2[k+1] = $signed(ares2[2:0]);
+                end
+            end
+            assign prod = {prod_hi2, prod_lo};
+        end
+    endgenerate
 
 endmodule

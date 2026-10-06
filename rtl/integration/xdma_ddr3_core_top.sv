@@ -1,7 +1,8 @@
 // FIX-DIAG 2026-10-03: NUM_MAC default lowered 32 -> 16 to free DSP48/LUT/BRAM
 // for the diagnostic modules (BRAM bypass, AXI sniffers, compare regfile).
-// ADDERS kept at 8 (tree at 16 inputs still benefits; <= NUM_MAC/2 not required).
-module xdma_ddr3_core_top #(parameter int NUM_MAC = 16, parameter int ADDERS = 8)
+// ADDERS=4 (было 8): вдвое меньше barrel-аддеров -> меньше LUT/плотность и короче
+// маршрут деревьев накопления (WNS-fix 06.10). NUM_MAC=16 сохранён.
+module xdma_ddr3_core_top #(parameter int NUM_MAC = 16, parameter int ADDERS = 4)
    (DDR3_0_addr,
      DDR3_0_ba,
      DDR3_0_cas_n,
