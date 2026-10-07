@@ -43,6 +43,17 @@
 //   FSM/латентность НЕ менялись (14 тактов). Семантика бит-в-бит:
 //   A/B tb_tdot_axi4 24/24 байта.
 //
+// BUG-052 (микро-разрез последнего тонкого пути PH_NORM1A): регистр k_nrm_q
+//   УДАЛЁН — вычитание -18 (было k_nrm_q <= k_nrm_c, k_nrm_c = P_can - 18)
+//   ушло из конуса rest_n1_q/p_top_q (WNS-путь со slack +0.011ns) в PH_NORM1B:
+//   все потребители k_nrm (стадия 2 ÷-барреля, corr_n1, sat_k, e_sum_next)
+//   считают k_nrm = p_can_q - 18 комбинаторно от РЕГИСТРА p_can_q (захват
+//   PH_NORM1A). Математика та же: k_nrm_q был = k_nrm_c = P_can-18, а
+//   p_can_q == P_can того же такта. Стадия 1 ÷-барреля (fq_mid_q) по-прежнему
+//   читает комбинаторный k_nrm_c[2:0] от P_can (не менялось). FSM/латентность
+//   НЕ менялись (15 состояний/14 тактов). Семантика бит-в-бит:
+//   A/B tb_tdot_axi4 24/24 байта.
+//
 // Семантика НЕ изменилась (бит-в-бит). Доказательство: proof_tfadd_barrel.py
 // (ALL PROOFS PASSED, 280k+ векторов) + A/B на xsim: tb_tfadd_equiv.sv.
 //   * ALGN: rhu_next serial (+1/-1 танцы, round-to-nearest по модулю) ==
@@ -218,7 +229,12 @@ module tfadd_raw (
     logic [83:0] sum_q;       // копия sum (для |sum| и ×-барреля в NORM2)
     logic        sum_neg_q;   // знак исходной sum (для инверсии fq_dec и |sum|)
     logic [5:0]  p_can_q;     // каноническая позиция P = floor(log3|sum|)
-    logic [5:0]  k_nrm_q;     // P - 18 (1..23), индекс ÷-барреля в PH_NORM1B
+    // BUG-052: регистр k_nrm_q УДАЛЁН (был P-18, индекс ÷-барреля). P_can
+    //   захватывается в PH_NORM1A (p_can_q), и ВСЕ потребители k_nrm в
+    //   PH_NORM1B считают k_nrm = p_can_q - 18 комбинаторно ОТ РЕГИСТРА —
+    //   вычитание константы (2-3 LUT) уходит с критического пути
+    //   rest_n1_q -> k_nrm_q (WNS +0.011). Значение barreля/коррекции то же
+    //   (k_nrm_q был = k_nrm_c = P_can - 18, а p_can_q == P_can такта PH_NORM1A).
 
     // ---- BUG-048: «сырые» скан-флаги sum (захват в PH_NORM0A) ----
     // Приоритетные сканы (p_found/p_top/sum_neg/rest_n1) зарегистрированы
@@ -413,8 +429,8 @@ module tfadd_raw (
 
     logic        up_big;      // P >= 19  -> floor/3^(P-18)
     logic        dn_small;    // P <= 17  -> x3^(18-P)
-    logic [5:0]  k_nrm_c;     // сырое P - 18 (только для регистра k_nrm_q, BUG-047)
-    logic [5:0]  k_nrm;       // индекс ÷-барреля = k_nrm_q (1..23), BUG-047
+    logic [5:0]  k_nrm_c;     // сырое P - 18 (комбинаторно, стадия 1 ÷-барреля, BUG-047)
+    logic [5:0]  k_nrm;       // P - 18 = p_can_q - 18 (1..23); BUG-052: от регистра p_can_q
     logic        sat_entry, sat_k, sat_norm;
     logic [83:0] fq;          // ÷-баррель (сдвиг |sum|)
     // ---- BUG-051: ÷-баррель fq разрезан на ДВЕ регистровые стадии ----
@@ -436,7 +452,10 @@ module tfadd_raw (
     assign up_big   = !zero_q && (p_can_q >= 6'd19);
     assign dn_small = !zero_q && (p_can_q <= 6'd17);
     assign k_nrm_c  = P_can - 6'd18;
-    assign k_nrm    = k_nrm_q;
+    // BUG-052: k_nrm считается от ЗАРЕГИСТРИРОВАННОЙ p_can_q (захват PH_NORM1A)
+    // вместо удалённого регистра k_nrm_q — путь rest_n1_q -> k_nrm_q разорван;
+    // математика та же: k_nrm_q был = k_nrm_c = P_can-18, p_can_q == P_can.
+    assign k_nrm    = p_can_q - 6'd18;
     assign sat_entry = (e_sum > 8'sd40);
     assign sat_k     = up_big &&
         (($signed({e_sum[7], e_sum}) + $signed({2'b00, k_nrm})) > 9'sd40);
@@ -457,7 +476,7 @@ module tfadd_raw (
     // две регистровые ступени: (t + 8·k_hi) + k_lo == t + k_nrm).
     always_comb begin
         logic [5:0] k_hi8;
-        k_hi8 = {k_nrm_q[5:3], 3'b000};
+        k_hi8 = {k_nrm[5:3], 3'b000};
         for (int t = 0; t < W; t++)
             fq[2*t +: 2] = (t + k_hi8 <= W-1)
                          ? fq_mid_q[2*(t + k_hi8) +: 2] : 2'b00;
@@ -585,7 +604,7 @@ module tfadd_raw (
             carry_mid0_q <= 0; carry_mid1_q <= 0;
             carry0a_q <= 0; carry1a_q <= 0; carry2a_q <= 0;
             fq_q <= 0; corr_n1_q <= 0;
-            sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0; k_nrm_q <= 0;
+            sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0;
             p_found_q <= 0; p_top_q <= 0; rest_n1_q <= 0;
             fq_mid_q <= 0; corr_nz_q <= 0; corr_i1_q <= 0;
         end else begin
@@ -671,14 +690,14 @@ module tfadd_raw (
                     phase <= PH_NORM1A;
                 end
                 PH_NORM1A: begin
-                    // разрез 1 (BUG-046) + BUG-047 + BUG-048: дешифровка P_can и
-                    // k_nrm_c из ЗАРЕГИСТРИРОВАННЫХ флагов (p_found_q/p_top_q/
-                    // rest_n1_q из PH_NORM0A) — конус от sum_reg до p_can_q/
-                    // k_nrm_q/zero_q состоит только из дешифровки (2-3 LUT).
+                    // разрез 1 (BUG-046) + BUG-047 + BUG-048: дешифровка P_can из
+                    // ЗАРЕГИСТРИРОВАННЫХ флагов (p_found_q/p_top_q/rest_n1_q из
+                    // PH_NORM0A) — конус от sum_reg до p_can_q/zero_q является
+                    // ТОЛЬКО дешифровкой (2-3 LUT). BUG-052: k_nrm_q удалён,
+                    // вычитание -18 ушло в PH_NORM1B от регистра p_can_q.
                     zero_q    <= !p_found_q;
                     sum_q     <= sum;
                     p_can_q   <= P_can;
-                    k_nrm_q   <= k_nrm_c;
                     // BUG-049 + BUG-051: |sum| (sum_abs_n1) и per-trit флаги
                     // коррекции считаются и РЕГИСТРИРУЮТСЯ здесь (от комбинаторного
                     // sum + sum_neg_q) — corr_n1_q в PH_NORM1B выбирается только
