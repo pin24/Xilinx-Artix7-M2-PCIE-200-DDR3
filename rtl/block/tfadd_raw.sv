@@ -2,9 +2,22 @@
 // tfadd_raw.sv — сумматор НЕНОРМАЛИЗОВАННЫХ продуктов TFloat48, BARREL-версия
 // ============================================================================
 // Шаг 1 плана пайплайнинга дерева (разрешено пользователем, 2026-09-06).
-// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 10 тактов (11 состояний; было 9 тактов/10
-//   состояний после BUG-046, 8 тактов/9 до): IDLE -> INIT -> ALGN(баррель) ->
-//   ADD0..ADD2 -> NORM1A -> NORM1B -> NORM1C(pipe fq_dec) -> NORM2 -> DONE.
+// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 14 тактов (15 состояний; было 10 тактов/11
+//   состояний после BUG-047, 9 тактов/10 после BUG-046, 8 тактов/9 до):
+//   IDLE -> INIT -> ALGN(баррель) -> ADD0..ADD5 (6 половинных секций) ->
+//   NORM0A(сырые сканы) -> NORM1A -> NORM1B -> NORM1C(pipe fq_dec) ->
+//   NORM2 -> DONE.
+//
+// BUG-048 (тайминг-цикл, gen_ad[u_add]): два разреза остаточных путей.
+//   (a) ADD-фазы: каждая 14-тритная секция сумматора разрезана пополам
+//       (7 тритов + регистр промежуточного переноса carry0a_q/carry1a_q/
+//       carry2a_q) — конус carry_mid1_q -> sum_reg[78] (11+ тритов серийной
+//       переносной цепочки) сокращён до 7 тритов на фазу.
+//   (b) NORM-сканы: приоритетные сканы sum (p_found/p_top/sum_neg/rest_n1)
+//       зарегистрированы в новой фазе PH_NORM0A, дешифровка P_can и
+//       k_nrm_c = P_can - 18 выполняется в PH_NORM1A из ЗАРЕГИСТРИРОВАННЫХ
+//       флагов — конус sum_reg -> k_nrm_q теряет слой дешифровки.
+//   Семантика/математика бит-в-бит та же: A/B tb_tdot_axi4 24/24 байта.
 //
 // Семантика НЕ изменилась (бит-в-бит). Доказательство: proof_tfadd_barrel.py
 // (ALL PROOFS PASSED, 280k+ векторов) + A/B на xsim: tb_tfadd_equiv.sv.
@@ -178,10 +191,19 @@ module tfadd_raw (
     // Разрез конуса sum -> fq_q/corr_n1_q/e_sum_next_q: PH_NORM1A хранит
     // результат сканов и дешифровки (sum_q/sum_neg_q/zero_q/p_can_q/k_nrm_q),
     // PH_NORM1B считает |sum|, баррель, коррекцию и флаги из ЭТИХ регистров.
-    logic [83:0] sum_q;       // копия sum (для |sum| и ×-барреля mul_y)
+    logic [83:0] sum_q;       // копия sum (для |sum| и ×-барреля в NORM2)
     logic        sum_neg_q;   // знак исходной sum (для инверсии fq_dec и |sum|)
     logic [5:0]  p_can_q;     // каноническая позиция P = floor(log3|sum|)
     logic [5:0]  k_nrm_q;     // P - 18 (1..23), индекс ÷-барреля в PH_NORM1B
+
+    // ---- BUG-048: «сырые» скан-флаги sum (захват в PH_NORM0A) ----
+    // Приоритетные сканы (p_found/p_top/sum_neg/rest_n1) зарегистрированы
+    // СРАЗУ после сканирования (PH_NORM0A); дешифровка P_can и k_nrm_c =
+    // P_can - 18 выполняется в PH_NORM1A из ЭТИХ регистров. Конус
+    // sum_reg -> p_can_q/k_nrm_q/zero_q теряет слой дешифровки-вычитания.
+    logic        p_found_q;   // sum != 0 (захват в PH_NORM0A, BUG-048)
+    logic [5:0]  p_top_q;     // позиция старшего ненулевого трита (PH_NORM0A)
+    logic        rest_n1_q;   // старший ненулевой ниже p_top == N1 (PH_NORM0A)
 
     // ---- Δe (9 бит, BUG-040 fix) и k_algn = min(|Δe|, 22) ----
     logic signed [8:0] de_s;
@@ -204,22 +226,41 @@ module tfadd_raw (
                              ? m_small[2*(t + k_algn) +: 2] : 2'b00;
     end
 
-    // ---- ADD: 42-тритная сумма, разбита на 3 секции по 14 тритов (BUG-043) ----
-    // Каждая секция ~14 тритов = ~14 LUT6 = ~7ns — укладывается в 8ns.
-    // Перенос между секциями — через регистр carry_mid0_q/carry_mid1_q.
-    logic signed [2:0] carry_mid0, carry_mid1;
+    // ---- ADD: 42-тритная сумма, разбита на 6 половинных секций по 7 тритов ----
+    // BUG-043: секции 14 тритов (~7ns) — по таймингу; BUG-048: каждая секция
+    // разрезана пополам (7 тритов, ~3.5ns), переносы между половинами идут через
+    // регистры carry0a_q/carry1a_q/carry2a_q. Это убирает серийную переносную
+    // цепочку carry_mid1_q -> sum_reg (11+ тритов) из одного такта.
+    logic signed [2:0] carry_mid0, carry_mid1;      // переносы на стыках секций
     logic signed [2:0] carry_mid0_q, carry_mid1_q;  // (decl moved up for xvlog legality)
-    logic [27:0] add_mant_sec0, add_mant_sec1, add_mant_sec2;  // 14 тритов каждая
+    logic signed [2:0] carry0a, carry1a, carry2a, carry2b;
+    logic signed [2:0] carry0a_q, carry1a_q, carry2a_q;  // BUG-048: переносы половин
+    logic [13:0] add_mant_sec0a, add_mant_sec0b;    // 7 тритов каждая
+    logic [13:0] add_mant_sec1a, add_mant_sec1b;
+    logic [13:0] add_mant_sec2a, add_mant_sec2b;
 
     always_comb begin
         logic signed [2:0] c;
         c = 3'sd0;
-        for (int t = 0; t < 14; t++) begin
+        for (int t = 0; t < 7; t++) begin
             logic signed [2:0] sv;
             sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec0[2*t +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec0[2*t +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec0[2*t +: 2] = int2trit2(sv); end
+            if (sv > 1) begin c = 3'sd1; add_mant_sec0a[2*t +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec0a[2*t +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec0a[2*t +: 2] = int2trit2(sv); end
+        end
+        carry0a = c;
+    end
+
+    always_comb begin
+        logic signed [2:0] c;
+        c = carry0a_q;
+        for (int t = 7; t < 14; t++) begin
+            logic signed [2:0] sv;
+            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
+            if (sv > 1) begin c = 3'sd1; add_mant_sec0b[2*(t-7) +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec0b[2*(t-7) +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec0b[2*(t-7) +: 2] = int2trit2(sv); end
         end
         carry_mid0 = c;
     end
@@ -227,12 +268,25 @@ module tfadd_raw (
     always_comb begin
         logic signed [2:0] c;
         c = carry_mid0_q;
-        for (int t = 14; t < 28; t++) begin
+        for (int t = 14; t < 21; t++) begin
             logic signed [2:0] sv;
             sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec1[2*(t-14) +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec1[2*(t-14) +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec1[2*(t-14) +: 2] = int2trit2(sv); end
+            if (sv > 1) begin c = 3'sd1; add_mant_sec1a[2*(t-14) +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec1a[2*(t-14) +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec1a[2*(t-14) +: 2] = int2trit2(sv); end
+        end
+        carry1a = c;
+    end
+
+    always_comb begin
+        logic signed [2:0] c;
+        c = carry1a_q;
+        for (int t = 21; t < 28; t++) begin
+            logic signed [2:0] sv;
+            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
+            if (sv > 1) begin c = 3'sd1; add_mant_sec1b[2*(t-21) +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec1b[2*(t-21) +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec1b[2*(t-21) +: 2] = int2trit2(sv); end
         end
         carry_mid1 = c;
     end
@@ -240,13 +294,27 @@ module tfadd_raw (
     always_comb begin
         logic signed [2:0] c;
         c = carry_mid1_q;
-        for (int t = 28; t < W; t++) begin
+        for (int t = 28; t < 35; t++) begin
             logic signed [2:0] sv;
             sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec2[2*(t-28) +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec2[2*(t-28) +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec2[2*(t-28) +: 2] = int2trit2(sv); end
+            if (sv > 1) begin c = 3'sd1; add_mant_sec2a[2*(t-28) +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec2a[2*(t-28) +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec2a[2*(t-28) +: 2] = int2trit2(sv); end
         end
+        carry2a = c;
+    end
+
+    always_comb begin
+        logic signed [2:0] c;
+        c = carry2a_q;
+        for (int t = 35; t < W; t++) begin
+            logic signed [2:0] sv;
+            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
+            if (sv > 1) begin c = 3'sd1; add_mant_sec2b[2*(t-35) +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; add_mant_sec2b[2*(t-35) +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; add_mant_sec2b[2*(t-35) +: 2] = int2trit2(sv); end
+        end
+        carry2b = c;   // перенос из старшего трита суммы — теряется (как и раньше)
     end
 
     // ---- NORM: знак, p (старший сбаланс.), P (каноническая), барьеры ----
@@ -279,10 +347,14 @@ module tfadd_raw (
         end
     end
 
+    // BUG-048: дешифровка P_can — из ЗАРЕГИСТРИРОВАННЫХ сканов (сырые флаги
+    // p_found_q/p_top_q/rest_n1_q захвачены в PH_NORM0A). Конус sum -> p_can_q/
+    // k_nrm_q теряет слой дешифровки + вычитания, приоритетный скан
+    // заканчивается на сырых регистрах.
     always_comb begin
-        if (!p_found)          P_can = 6'd0;
-        else if (p_top == 0)   P_can = 6'd0;                  // |sum| == 1
-        else                   P_can = rest_n1 ? (p_top - 6'd1) : p_top;
+        if (!p_found_q)         P_can = 6'd0;
+        else if (p_top_q == 0)  P_can = 6'd0;                  // |sum| == 1
+        else                    P_can = rest_n1_q ? (p_top_q - 6'd1) : p_top_q;
     end
 
     // BUG-047: |sum| считается во ВТОРОЙ половине стадии 1 (PH_NORM1B) от
@@ -304,7 +376,6 @@ module tfadd_raw (
     logic [83:0] fq;          // ÷-баррель (сдвиг |sum|)
     logic        corr_n1;     // коррекция floor: старший отброшенный == N1
     logic [5:0]  k_dn;        // min(18-P, e_sum+40), 0..18
-    logic [83:0] mul_y;       // ×-баррель (сдвиг sum влево)
     logic signed [7:0] e_sum_next;
 
     // BUG-047: эти сигналы живут во второй половине стадии 1 (PH_NORM1B) и
@@ -360,7 +431,9 @@ module tfadd_raw (
         end
     endfunction
 
-    // ×-баррель: mul_y[t] = sum[t - k_dn] (знак сохраняется, точно)
+    // k_dn: мин(18-P, e_sum+40) для ×-барреля NORM2; сам ×-баррель
+    // (dn_small) считается ИНЛАЙН в PH_NORM2 от sum_q/k_dn_q —
+    // комбинаторный блок mul_y удалён как мёртвый (BUG-048).
     logic signed [8:0] room_dn;    // e_sum + 40
     logic [5:0]  need_dn;          // 18 - P (1..18 при P<=17)
     logic signed [8:0] k_dn_s;
@@ -377,12 +450,6 @@ module tfadd_raw (
     assign k_dn = k_dn_s[5:0];
 
     always_comb begin
-        for (int t = 0; t < W; t++)
-            mul_y[2*t +: 2] = (32'(t) >= 32'(k_dn))
-                            ? sum[2*(t - k_dn) +: 2] : 2'b00;
-    end
-
-    always_comb begin
         logic signed [8:0] es9;
         if (up_big)
             es9 = $signed({e_sum[7], e_sum}) + $signed({2'b00, k_nrm});
@@ -393,12 +460,18 @@ module tfadd_raw (
         e_sum_next = es9[7:0];
     end
 
-    // ---- FSM: фиксированные 11 тактов (BUG-045: PH_NORM разбит на 2 под-фазы;
+    // ---- FSM: фиксированные 14 тактов (BUG-045: PH_NORM разбит на 2 под-фазы;
     // BUG-046: PH_NORM1 разрезан на PH_NORM1A/PH_NORM1B — регистр
     // fq_q/corr_n1_q делил конус sum -> fq_dec_q на две стадии;
-    // BUG-047: стадия 1 разрезана ещё раз, 10 -> 11 состояний) ----
-    // PH_NORM1A: сканы sum (p_found/p_top/sum_neg/rest_n1), P_can, k_nrm_c ->
-    //   регистры zero_q/sum_q/sum_neg_q/p_can_q/k_nrm_q (первая половина стадии 1)
+    // BUG-047: стадия 1 разрезана ещё раз, 10 -> 11 состояний;
+    // BUG-048: ADD 3 секции -> 6 половин (+3 состояния) и сырые скан-флаги
+    //   в PH_NORM0A (+1 состояние), 11 -> 15 состояний) ----
+    // PH_ADD0..PH_ADD5: 6 половинных секций по 7 тритов; переносы между
+    //   половинами через carry0a_q/carry1a_q/carry2a_q (BUG-048, разрез (a)).
+    // PH_NORM0A: сырые сканы sum (p_found/p_top/sum_neg/rest_n1) ->
+    //   регистры p_found_q/p_top_q/sum_neg_q/rest_n1_q (BUG-048, разрез (b)).
+    // PH_NORM1A: дешифровка P_can (из ЗАРЕГИСТРИРОВАННЫХ флагов), k_nrm_c ->
+    //   регистры zero_q/sum_q/p_can_q/k_nrm_q
     // PH_NORM1B: от ЗАРЕГИСТРИРОВАННЫХ входов: |sum|, fq(÷-баррель), corr_n1,
     //   up_big/dn_small, k_dn, e_sum_next, sat_norm ->
     //   регистры fq_q/corr_n1_q/sum_abs_q/up_big_q/dn_small_q/k_dn_q/
@@ -411,13 +484,17 @@ module tfadd_raw (
     localparam int PH_ADD0 = 3;
     localparam int PH_ADD1 = 4;
     localparam int PH_ADD2 = 5;
-    localparam int PH_NORM1A = 6;
-    localparam int PH_NORM1B = 7;
-    localparam int PH_NORM1C = 8;
-    localparam int PH_NORM2 = 9;
-    localparam int PH_DONE = 10;
+    localparam int PH_ADD3 = 6;
+    localparam int PH_ADD4 = 7;
+    localparam int PH_ADD5 = 8;
+    localparam int PH_NORM0A = 9;
+    localparam int PH_NORM1A = 10;
+    localparam int PH_NORM1B = 11;
+    localparam int PH_NORM1C = 12;
+    localparam int PH_NORM2 = 13;
+    localparam int PH_DONE = 14;
 
-    logic [3:0] phase;   // >=11 состояний (PH_DONE=10) -> needs 4 bits (was [2:0] -> PH_DONE truncated to IDLE, fixed)
+    logic [3:0] phase;   // 15 состояний (PH_DONE=14) -> 4 бита достаточно
     // ---- PH_NORM1A -> PH_NORM2: промежуточные регистры нормализации (BUG-045) ----
     logic [83:0] sum_abs_q;   // модуль суммы |sum| (из PH_NORM1B, BUG-047)
     logic [83:0] fq_dec_q;    // результат floor-деления (без инверсии знака)
@@ -436,8 +513,10 @@ module tfadd_raw (
             e_sum <= 0; sum <= 0; result_q <= 0; valid_q <= 0;
             k_algn <= 0; zero_q <= 0; sat_q <= 0;
             carry_mid0_q <= 0; carry_mid1_q <= 0;
+            carry0a_q <= 0; carry1a_q <= 0; carry2a_q <= 0;
             fq_q <= 0; corr_n1_q <= 0;
             sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0; k_nrm_q <= 0;
+            p_found_q <= 0; p_top_q <= 0; rest_n1_q <= 0;
         end else begin
             valid_q <= 0;
             case (phase)
@@ -481,28 +560,52 @@ module tfadd_raw (
                     phase <= PH_ADD0;
                 end
                 PH_ADD0: begin
-                    sum[27:0]       <= add_mant_sec0[27:0];     // триты 0..13
-                    carry_mid0_q    <= carry_mid0;
+                    sum[13:0]       <= add_mant_sec0a[13:0];     // триты 0..6
+                    carry0a_q       <= carry0a;
                     phase <= PH_ADD1;
                 end
                 PH_ADD1: begin
-                    sum[55:28]      <= add_mant_sec1[27:0];     // триты 14..27
-                    carry_mid1_q    <= carry_mid1;
+                    sum[27:14]      <= add_mant_sec0b[13:0];     // триты 7..13
+                    carry_mid0_q    <= carry_mid0;
                     phase <= PH_ADD2;
                 end
                 PH_ADD2: begin
-                    sum[83:56]      <= add_mant_sec2[27:0];     // триты 28..41
+                    sum[41:28]      <= add_mant_sec1a[13:0];     // триты 14..20
+                    carry1a_q       <= carry1a;
+                    phase <= PH_ADD3;
+                end
+                PH_ADD3: begin
+                    sum[55:42]      <= add_mant_sec1b[13:0];     // триты 21..27
+                    carry_mid1_q    <= carry_mid1;
+                    phase <= PH_ADD4;
+                end
+                PH_ADD4: begin
+                    sum[69:56]      <= add_mant_sec2a[13:0];     // триты 28..34
+                    carry2a_q       <= carry2a;
+                    phase <= PH_ADD5;
+                end
+                PH_ADD5: begin
+                    sum[83:70]      <= add_mant_sec2b[13:0];     // триты 35..41
+                    phase <= PH_NORM0A;
+                end
+                PH_NORM0A: begin
+                    // разрез (b) BUG-048: СЫРЫЕ сканы sum регистрируются сразу
+                    // после приоритетного скана (перенос P_can/k_nrm_c уехал в
+                    // PH_NORM1A) — конус sum_reg -> p_found_q/p_top_q/rest_n1_q
+                    // заканчивается на скане без слоя дешифровки.
+                    p_found_q <= p_found;
+                    p_top_q   <= p_top;
+                    sum_neg_q <= sum_neg;
+                    rest_n1_q <= rest_n1;
                     phase <= PH_NORM1A;
                 end
                 PH_NORM1A: begin
-                    // разрез 1 (BUG-046) + BUG-047: ПЕРВАЯ половина стадии 1 —
-                    // только сканы sum (p_found/p_top/sum_neg/rest_n1) с
-                    // дешифровкой P_can и k_nrm_c. Конус от sum_reg до регистров
-                    // zero_q/sum_q/sum_neg_q/p_can_q/k_nrm_q вдвое короче прежнего
-                    // (баррель/коррекция/флаги уехали в PH_NORM1B).
-                    zero_q    <= !p_found;
+                    // разрез 1 (BUG-046) + BUG-047 + BUG-048: дешифровка P_can и
+                    // k_nrm_c из ЗАРЕГИСТРИРОВАННЫХ флагов (p_found_q/p_top_q/
+                    // rest_n1_q из PH_NORM0A) — конус от sum_reg до p_can_q/
+                    // k_nrm_q/zero_q состоит только из дешифровки (2-3 LUT).
+                    zero_q    <= !p_found_q;
                     sum_q     <= sum;
-                    sum_neg_q <= sum_neg;
                     p_can_q   <= P_can;
                     k_nrm_q   <= k_nrm_c;
                     phase <= PH_NORM1B;
