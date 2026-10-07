@@ -616,6 +616,11 @@ module tdot_axi4 #(
     logic [$clog2(2*NUM_MAC):0] load_idx;
     logic [$clog2(2*NUM_MAC):0] rd_idx;    // стадия 1 конвейера: слот, читаемый из BRAM сейчас
     logic load_active;
+    // BUG-050: zero-fill-маска слота rd_idx, посчитанная в стадии 1 и зарегистрированная.
+    // Стадия 2 пишет слот load_idx = rd_idx-1 (инвариант конвейера), поэтому маска
+    // на такте записи идентична (load_idx < n_in_eff) / ((load_idx-NUM_MAC) < n_in_eff).
+    // Срезает путь n_left_q -> chunk_n/n_in_eff -> сравнение -> D-пины банка core_*.
+    logic wr_mask_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -625,7 +630,7 @@ module tdot_axi4 #(
             rd_start <= 0; wr_start <= 0;
             rd_addr <= 0; rd_total <= 0;
             wr_addr <= 0; wr_data <= 0;
-            load_idx <= 0; rd_idx <= 0; load_active <= 0;
+            load_idx <= 0; rd_idx <= 0; load_active <= 0; wr_mask_q <= 0;
             core_data <= 0; core_weights <= 0;
             res0_reg <= 0; res1_reg <= 0;
             busy_q <= 0; done_q <= 0;
@@ -730,17 +735,24 @@ module tdot_axi4 #(
                 // load_idx = rd_idx-1 (прочитано в такте X-1).
                 CS_LOAD: begin
                     if (load_active) begin
-                        // стадия 1: pop + выдача чтения слова для слота rd_idx
-                        if (rd_idx < 2*NUM_MAC)
+                        // стадия 1: pop + выдача чтения слова для слота rd_idx;
+                        // предрасчёт zero-fill-маски слота rd_idx -> wr_mask_q
+                        // (стадия 2 в этом же такте потребляет wr_mask_q для слота
+                        // load_idx = rd_idx-1 — маска уже зарегистрирована)
+                        if (rd_idx < 2*NUM_MAC) begin
+                            wr_mask_q <= (rd_idx < NUM_MAC) ?
+                                         (rd_idx < n_in_eff) :
+                                         ((rd_idx - NUM_MAC) < n_in_eff);
                             rd_idx <= rd_idx + 1;
+                        end
                         // стадия 2: потребление fifo_q в слот load_idx
                         if (rd_idx > load_idx) begin
                             if (load_idx < NUM_MAC)
                                 core_data[48*load_idx +: 48] <=
-                                    (load_idx < n_in_eff) ? fifo_q : 48'h0;
+                                    wr_mask_q ? fifo_q : 48'h0;
                             else
                                 core_weights[48*(load_idx-NUM_MAC) +: 48] <=
-                                    ((load_idx-NUM_MAC) < n_in_eff) ? fifo_q : 48'h0;
+                                    wr_mask_q ? fifo_q : 48'h0;
                             load_idx <= load_idx + 1;
                         end else if ((rd_idx == 2*NUM_MAC) && (load_idx == 2*NUM_MAC)) begin
                             // всё выдано и всё потреблено
