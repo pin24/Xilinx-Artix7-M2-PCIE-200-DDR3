@@ -2,9 +2,9 @@
 // tfadd_raw.sv — сумматор НЕНОРМАЛИЗОВАННЫХ продуктов TFloat48, BARREL-версия
 // ============================================================================
 // Шаг 1 плана пайплайнинга дерева (разрешено пользователем, 2026-09-06).
-// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 9 тактов (10 состояний; было 8 тактов/9
-//   состояний до BUG-046): IDLE -> INIT -> ALGN(баррель) -> ADD0..ADD2 ->
-//   NORM1A -> NORM1B(pipe fq_dec) -> NORM2 -> DONE.
+// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 10 тактов (11 состояний; было 9 тактов/10
+//   состояний после BUG-046, 8 тактов/9 до): IDLE -> INIT -> ALGN(баррель) ->
+//   ADD0..ADD2 -> NORM1A -> NORM1B -> NORM1C(pipe fq_dec) -> NORM2 -> DONE.
 //
 // Семантика НЕ изменилась (бит-в-бит). Доказательство: proof_tfadd_barrel.py
 // (ALL PROOFS PASSED, 280k+ векторов) + A/B на xsim: tb_tfadd_equiv.sv.
@@ -174,6 +174,15 @@ module tfadd_raw (
     logic [4:0] k_algn;
     logic zero_q, sat_q;
 
+    // ---- BUG-047: «сырые» регистры стадии 1 (захват в PH_NORM1A) ----
+    // Разрез конуса sum -> fq_q/corr_n1_q/e_sum_next_q: PH_NORM1A хранит
+    // результат сканов и дешифровки (sum_q/sum_neg_q/zero_q/p_can_q/k_nrm_q),
+    // PH_NORM1B считает |sum|, баррель, коррекцию и флаги из ЭТИХ регистров.
+    logic [83:0] sum_q;       // копия sum (для |sum| и ×-барреля mul_y)
+    logic        sum_neg_q;   // знак исходной sum (для инверсии fq_dec и |sum|)
+    logic [5:0]  p_can_q;     // каноническая позиция P = floor(log3|sum|)
+    logic [5:0]  k_nrm_q;     // P - 18 (1..23), индекс ÷-барреля в PH_NORM1B
+
     // ---- Δe (9 бит, BUG-040 fix) и k_algn = min(|Δe|, 22) ----
     logic signed [8:0] de_s;
     logic [8:0] de_a;
@@ -276,17 +285,21 @@ module tfadd_raw (
         else                   P_can = rest_n1 ? (p_top - 6'd1) : p_top;
     end
 
+    // BUG-047: |sum| считается во ВТОРОЙ половине стадии 1 (PH_NORM1B) от
+    // зарегистрированных sum_q/sum_neg_q — конус sum -> fq_q разрезан
+    // регистрами PH_NORM1A пополам (первая половина: только сканы/дешифровка).
     always_comb begin
         for (int t = 0; t < W; t++)
-            sum_abs[2*t +: 2] = sum_neg
-                              ? ((sum[2*t +: 2] == P1) ? N1 :
-                                 (sum[2*t +: 2] == N1) ? P1 : 2'b00)
-                              : sum[2*t +: 2];
+            sum_abs[2*t +: 2] = sum_neg_q
+                              ? ((sum_q[2*t +: 2] == P1) ? N1 :
+                                 (sum_q[2*t +: 2] == N1) ? P1 : 2'b00)
+                              : sum_q[2*t +: 2];
     end
 
     logic        up_big;      // P >= 19  -> floor/3^(P-18)
     logic        dn_small;    // P <= 17  -> x3^(18-P)
-    logic [5:0]  k_nrm;       // P - 18 (1..23)
+    logic [5:0]  k_nrm_c;     // сырое P - 18 (только для регистра k_nrm_q, BUG-047)
+    logic [5:0]  k_nrm;       // индекс ÷-барреля = k_nrm_q (1..23), BUG-047
     logic        sat_entry, sat_k, sat_norm;
     logic [83:0] fq;          // ÷-баррель (сдвиг |sum|)
     logic        corr_n1;     // коррекция floor: старший отброшенный == N1
@@ -294,9 +307,13 @@ module tfadd_raw (
     logic [83:0] mul_y;       // ×-баррель (сдвиг sum влево)
     logic signed [7:0] e_sum_next;
 
-    assign up_big   = p_found && (P_can >= 6'd19);
-    assign dn_small = p_found && (P_can <= 6'd17);
-    assign k_nrm    = P_can - 6'd18;
+    // BUG-047: эти сигналы живут во второй половине стадии 1 (PH_NORM1B) и
+    // зависят ТОЛЬКО от зарегистрированных zero_q/p_can_q/k_nrm_q/e_sum —
+    // конус комбинаторики от sum_reg заканчивается на регистрах PH_NORM1A.
+    assign up_big   = !zero_q && (p_can_q >= 6'd19);
+    assign dn_small = !zero_q && (p_can_q <= 6'd17);
+    assign k_nrm_c  = P_can - 6'd18;
+    assign k_nrm    = k_nrm_q;
     assign sat_entry = (e_sum > 8'sd40);
     assign sat_k     = up_big &&
         (($signed({e_sum[7], e_sum}) + $signed({2'b00, k_nrm})) > 9'sd40);
@@ -320,7 +337,7 @@ module tfadd_raw (
         end
     end
     // тернарный декремент fq (borrow идёт по цепочке N1). Вынесен в ФУНКЦИЮ,
-    // чтобы бит-в-бит тот же результат считать в PH_NORM1B от
+    // чтобы бит-в-бит тот же результат считать в PH_NORM1C от
     // ЗАРЕГИСТРИРОВАННОГО входа (fq_q, corr_n1_q) — разрез конуса
     // sum -> fq_dec_q (BUG-046). Функция идентична прежнему always_comb.
     function automatic logic [83:0] fq_dec_f(input logic [83:0] fq_in,
@@ -348,7 +365,7 @@ module tfadd_raw (
     logic [5:0]  need_dn;          // 18 - P (1..18 при P<=17)
     logic signed [8:0] k_dn_s;
     assign room_dn = $signed({e_sum[7], e_sum}) + 9'sd40;
-    assign need_dn = 6'd18 - P_can;
+    assign need_dn = 6'd18 - p_can_q;   // BUG-047: от зарегистрированной P
     always_comb begin
         if (!dn_small)
             k_dn_s = 9'sd0;
@@ -376,11 +393,17 @@ module tfadd_raw (
         e_sum_next = es9[7:0];
     end
 
-    // ---- FSM: фиксированные 10 тактов (BUG-045: PH_NORM разбит на 2 под-фазы;
+    // ---- FSM: фиксированные 11 тактов (BUG-045: PH_NORM разбит на 2 под-фазы;
     // BUG-046: PH_NORM1 разрезан на PH_NORM1A/PH_NORM1B — регистр
-    // fq_q/corr_n1_q делит конус sum -> fq_dec_q на две стадии) ----
-    // PH_NORM1A: sum_abs, p_found, P_can, k_nrm, fq(÷-баррель), corr_n1, флаги
-    // PH_NORM1B: тернарный декремент fq_q (borrow-цепочка) -> fq_dec_q
+    // fq_q/corr_n1_q делил конус sum -> fq_dec_q на две стадии;
+    // BUG-047: стадия 1 разрезана ещё раз, 10 -> 11 состояний) ----
+    // PH_NORM1A: сканы sum (p_found/p_top/sum_neg/rest_n1), P_can, k_nrm_c ->
+    //   регистры zero_q/sum_q/sum_neg_q/p_can_q/k_nrm_q (первая половина стадии 1)
+    // PH_NORM1B: от ЗАРЕГИСТРИРОВАННЫХ входов: |sum|, fq(÷-баррель), corr_n1,
+    //   up_big/dn_small, k_dn, e_sum_next, sat_norm ->
+    //   регистры fq_q/corr_n1_q/sum_abs_q/up_big_q/dn_small_q/k_dn_q/
+    //   e_sum_next_q/sat_q (вторая половина стадии 1)
+    // PH_NORM1C: тернарный декремент fq_q (borrow-цепочка) -> fq_dec_q
     // PH_NORM2: инверсия знака (up_big) / ×-баррель (dn_small) + e_sum_next
     localparam int PH_IDLE = 0;
     localparam int PH_INIT = 1;
@@ -390,15 +413,14 @@ module tfadd_raw (
     localparam int PH_ADD2 = 5;
     localparam int PH_NORM1A = 6;
     localparam int PH_NORM1B = 7;
-    localparam int PH_NORM2 = 8;
-    localparam int PH_DONE = 9;
+    localparam int PH_NORM1C = 8;
+    localparam int PH_NORM2 = 9;
+    localparam int PH_DONE = 10;
 
-    logic [3:0] phase;   // >=10 состояний (PH_DONE=9) -> needs 4 bits (was [2:0] -> PH_DONE truncated to IDLE, fixed)
+    logic [3:0] phase;   // >=11 состояний (PH_DONE=10) -> needs 4 bits (was [2:0] -> PH_DONE truncated to IDLE, fixed)
     // ---- PH_NORM1A -> PH_NORM2: промежуточные регистры нормализации (BUG-045) ----
-    logic [83:0] sum_abs_q;   // модуль суммы (для ÷-барреля в NORM2)
+    logic [83:0] sum_abs_q;   // модуль суммы |sum| (из PH_NORM1B, BUG-047)
     logic [83:0] fq_dec_q;    // результат floor-деления (без инверсии знака)
-    logic [83:0] sum_q;       // копия sum (для ×-барреля mul_y и zero-случая)
-    logic        sum_neg_q;   // знак исходной sum (для инверсии fq_dec)
     logic        up_big_q;    // P >= 19
     logic        dn_small_q;  // P <= 17
     logic [5:0]  k_dn_q;      // сдвиг влево (×3^k)
@@ -415,6 +437,7 @@ module tfadd_raw (
             k_algn <= 0; zero_q <= 0; sat_q <= 0;
             carry_mid0_q <= 0; carry_mid1_q <= 0;
             fq_q <= 0; corr_n1_q <= 0;
+            sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0; k_nrm_q <= 0;
         end else begin
             valid_q <= 0;
             case (phase)
@@ -472,26 +495,40 @@ module tfadd_raw (
                     phase <= PH_NORM1A;
                 end
                 PH_NORM1A: begin
-                    // разрез 1 (BUG-046): сканы/баррель/corr_n1 -> регистры.
-                    // Всё, что не нужно PH_NORM1B, регистрируется здесь; конус
-                    // sum -> fq_dec_q фактически делится регистром fq_q/corr_n1_q.
-                    zero_q <= !p_found;
-                    sat_q  <= sat_norm;
+                    // разрез 1 (BUG-046) + BUG-047: ПЕРВАЯ половина стадии 1 —
+                    // только сканы sum (p_found/p_top/sum_neg/rest_n1) с
+                    // дешифровкой P_can и k_nrm_c. Конус от sum_reg до регистров
+                    // zero_q/sum_q/sum_neg_q/p_can_q/k_nrm_q вдвое короче прежнего
+                    // (баррель/коррекция/флаги уехали в PH_NORM1B).
+                    zero_q    <= !p_found;
+                    sum_q     <= sum;
+                    sum_neg_q <= sum_neg;
+                    p_can_q   <= P_can;
+                    k_nrm_q   <= k_nrm_c;
+                    phase <= PH_NORM1B;
+                end
+                PH_NORM1B: begin
+                    // разрез 2 (BUG-047): ВТОРАЯ половина стадии 1 — |sum|, ÷-баррель
+                    // (fq), коррекция floor (corr_n1), флаги, k_dn, e_sum_next и
+                    // sat_norm считаются ТОЛЬКО из зарегистрированных входов
+                    // (sum_q/sum_neg_q/p_can_q/k_nrm_q/e_sum): каждый endpoint
+                    // стадии 1 (fq_q/corr_n1_q/sum_abs_q/up_big_q/dn_small_q/
+                    // k_dn_q/e_sum_next_q/sat_q) получает вход сразу за регистром.
+                    sat_q <= sat_norm;
                     sum_abs_q   <= sum_abs;
-                    sum_q       <= sum;
-                    sum_neg_q   <= sum_neg;
                     up_big_q    <= up_big;
                     dn_small_q  <= dn_small;
                     k_dn_q      <= k_dn;
                     e_sum_next_q <= e_sum_next;
                     fq_q        <= fq;
                     corr_n1_q   <= corr_n1;
-                    phase <= PH_NORM1B;
+                    phase <= PH_NORM1C;
                 end
-                PH_NORM1B: begin
-                    // разрез 2 (BUG-046): тернарный декремент fq_q (borrow-цепочка
-                    // 42 тритов) — бит-в-бит то же значение fq_dec, что считал
-                    // прежний комбинаторный блок, но из зарегистрированного входа.
+                PH_NORM1C: begin
+                    // разрез 3 (BUG-046, перенесён сюда): тернарный декремент fq_q
+                    // (borrow-цепочка 42 тритов) — бит-в-бит то же значение fq_dec,
+                    // что считал прежний комбинаторный блок, из зарегистрированного
+                    // входа (fq_q/corr_n1_q из PH_NORM1B).
                     fq_dec_q <= fq_dec_f(fq_q, corr_n1_q);
                     phase <= PH_NORM2;
                 end
