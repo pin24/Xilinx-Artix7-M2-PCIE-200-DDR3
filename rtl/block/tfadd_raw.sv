@@ -30,6 +30,19 @@
 //   sum_abs_q (регистр). FSM/латентность НЕ менялись (14 тактов).
 //   Семантика бит-в-бит: A/B tb_tdot_axi4 24/24 байта.
 //
+// BUG-051 (тайминг-догоняние, последний FATAL gen_ad[2], WNS -0.026ns):
+//   ÷-баррель fq разрезан на ДВЕ регистровые стадии. Стадия 1 (коарс: сдвиг
+//   на k_nrm[2:0] тритов) считается в PH_NORM1A от КОМБИНАТОРНЫХ |sum|
+//   (sum_abs_n1) и k_nrm_c[2:0] и регистрируется в fq_mid_q; стадия 2 (финал:
+//   досдвиг на 8·k_nrm[5:3]) в PH_NORM1B читает fq_mid_q и k_nrm_q[5:3] ->
+//   fq_q. Путь k_nrm_q -> fq_q (42x1-баррель, 6-бит селект по sum_abs_q)
+//   сокращён до 8:1-мукса по 3 битам. Отдельный регистр sum_abs_q удалён:
+//   |sum| теперь регистрируется в составе стадии 1 (fq_mid_q). Итог
+//   fq[t] = |sum|[t + k_nrm] бит-в-бит прежний (8·k_hi + k_lo == k_nrm,
+//   границы сдвига (t+8·k_hi)+k_lo <= 41 эквивалентны t+k_nrm <= 41).
+//   FSM/латентность НЕ менялись (14 тактов). Семантика бит-в-бит:
+//   A/B tb_tdot_axi4 24/24 байта.
+//
 // Семантика НЕ изменилась (бит-в-бит). Доказательство: proof_tfadd_barrel.py
 // (ALL PROOFS PASSED, 280k+ векторов) + A/B на xsim: tb_tfadd_equiv.sv.
 //   * ALGN: rhu_next serial (+1/-1 танцы, round-to-nearest по модулю) ==
@@ -340,8 +353,8 @@ module tfadd_raw (
     // ---- PH_NORM1A -> PH_NORM1B: зарегистрированные флаги коррекции (BUG-049)
     // |sum| и per-trit флаги считаются в PH_NORM1A от sum/sum_neg_q и
     // регистрируются — corr_n1_q в NORM1B получается приоритетным сканом
-    // ОДИНОЧНЫХ бит, а не из sum_q.
-    logic [83:0] sum_abs_q;   // модуль суммы |sum| (захват в PH_NORM1A, BUG-049)
+    // ОДИНОЧНЫХ бит, а не из sum_q. |sum| (sum_abs_n1) дополнительно уходит в
+    // стадию 1 ÷-барреля (fq_mid_q), отдельный регистр sum_abs_q удалён (BUG-051).
     logic [W-1:0] corr_nz_q;  // |sum|[t] != 0 (захват в PH_NORM1A, BUG-049)
     logic [W-1:0] corr_i1_q;  // |sum|[t] == N1 (захват в PH_NORM1A, BUG-049)
 
@@ -377,13 +390,15 @@ module tfadd_raw (
         else                    P_can = rest_n1_q ? (p_top_q - 6'd1) : p_top_q;
     end
 
-    // BUG-049: |sum| и per-trit флаги коррекции floor считаются в PH_NORM1A от
+    // BUG-049: per-trit флаги коррекции floor считаются в PH_NORM1A от
     // комбинаторных sum/sum_neg (скан NORM0A) и РЕГИСТРИРУЮТСЯ
-    // (sum_abs_q/corr_nz_q/corr_i1_q) до PH_NORM1B. Единственный FATAL-путь
+    // (corr_nz_q/corr_i1_q) до PH_NORM1B. Единственный FATAL-путь
     // укорочен: sum_q_reg -> corr_n1_q (расчёт corr_n1, ~-0.57ns) теперь
     // начинается с ОДИНОЧНЫХ регистровых бит corr_nz_q/corr_i1_q/k_nrm_q, а не
     // с sum_q через слой |sum| (mux). PH_NORM1B делает только приоритетный
     // скан — структура идентична скан-фазам NORM0A (доказано в бюджете).
+    // BUG-051: |sum| (sum_abs_n1) дополнительно используется здесь же в стадии
+    // 1 ÷-барреля (см. fq_mid выше) — общей комбинаторной выработки |sum| нет.
     always_comb begin
         for (int t = 0; t < W; t++) begin
             sum_abs_n1[2*t +: 2] = sum_neg_q
@@ -402,6 +417,15 @@ module tfadd_raw (
     logic [5:0]  k_nrm;       // индекс ÷-барреля = k_nrm_q (1..23), BUG-047
     logic        sat_entry, sat_k, sat_norm;
     logic [83:0] fq;          // ÷-баррель (сдвиг |sum|)
+    // ---- BUG-051: ÷-баррель fq разрезан на ДВЕ регистровые стадии ----
+    // Стадия 1 (коарс: сдвиг на k_nrm[2:0] тритов) считается в PH_NORM1A от
+    // КОМБИНАТОРНЫХ |sum| (sum_abs_n1) и k_nrm_c[2:0], захватывается в
+    // fq_mid_q; стадия 2 (досдвиг на 8·k_nrm[5:3]) в PH_NORM1B читает fq_mid_q
+    // и k_nrm_q[5:3] -> fq_q. Путь k_nrm_q -> fq_q (WNS -0.026, 42x1-баррель с
+    // 6-бит селектом) сокращён до 8:1-мукса по 3 битам. Отдельный регистр
+    // sum_abs_q больше не нужен (|sum| уходит в стадию 1 без регистрации).
+    logic [83:0] fq_mid;      // стадия 1 ÷-барреля (комбинаторно, PH_NORM1A)
+    logic [83:0] fq_mid_q;    // захват стадии 1 (PH_NORM1A -> PH_NORM1B)
     logic        corr_n1;     // коррекция floor: старший отброшенный == N1
     logic [5:0]  k_dn;        // min(18-P, e_sum+40), 0..18
     logic signed [7:0] e_sum_next;
@@ -418,11 +442,25 @@ module tfadd_raw (
         (($signed({e_sum[7], e_sum}) + $signed({2'b00, k_nrm})) > 9'sd40);
     assign sat_norm  = sat_entry || sat_k;
 
-    // ÷-баррель: fq[t] = sum_abs[t + k_nrm]  (вход — регистр sum_abs_q, BUG-049)
+    // ÷-баррель, стадия 1 (коарс: сдвиг на k_nrm[2:0] тритов, 0..7):
+    // PH_NORM1A, от КОМБИНАТОРНЫХ |sum| (sum_abs_n1) и k_nrm_c[2:0] -> fq_mid_q.
+    // BUG-051: разрез конуса sum_abs_q -> fq_q (6-бит селект 42x1-барреля).
     always_comb begin
         for (int t = 0; t < W; t++)
-            fq[2*t +: 2] = (t + k_nrm <= W-1)
-                         ? sum_abs_q[2*(t + k_nrm) +: 2] : 2'b00;
+            fq_mid[2*t +: 2] = (t + k_nrm_c[2:0] <= W-1)
+                             ? sum_abs_n1[2*(t + k_nrm_c[2:0]) +: 2] : 2'b00;
+    end
+    // ÷-баррель, стадия 2 (финал: досдвиг на 8·k_nrm[5:3] тритов): PH_NORM1B,
+    // из ЗАРЕГИСТРИРОВАННЫХ fq_mid_q и k_nrm_q[5:3] -> fq_q. Конус k_nrm_q ->
+    // fq_q сокращён до 8:1-мукса по 3 битам (было ~7 LUT-уровней барреля).
+    // Итог: fq[t] = |sum|[t + k_nrm] — бит-в-бит прежний сдвиг (ретайминг на
+    // две регистровые ступени: (t + 8·k_hi) + k_lo == t + k_nrm).
+    always_comb begin
+        logic [5:0] k_hi8;
+        k_hi8 = {k_nrm_q[5:3], 3'b000};
+        for (int t = 0; t < W; t++)
+            fq[2*t +: 2] = (t + k_hi8 <= W-1)
+                         ? fq_mid_q[2*(t + k_hi8) +: 2] : 2'b00;
     end
     // коррекция floor: старший ненулевой из отброшенных (t < k_nrm) == N1.
     // BUG-049: сканируются ОДИНОЧНЫЕ регистровые биты corr_nz_q/corr_i1_q
@@ -500,12 +538,13 @@ module tfadd_raw (
     //   половинами через carry0a_q/carry1a_q/carry2a_q (BUG-048, разрез (a)).
     // PH_NORM0A: сырые сканы sum (p_found/p_top/sum_neg/rest_n1) ->
     //   регистры p_found_q/p_top_q/sum_neg_q/rest_n1_q (BUG-048, разрез (b)).
-    // PH_NORM1A: дешифровка P_can (из ЗАРЕГИСТРИРОВАННЫХ флагов), k_nrm_c, а
-    //   также |sum| и per-trit флаги коррекции коррекции (sum_abs_q/corr_nz_q/
-    //   corr_i1_q) -> регистры zero_q/sum_q/p_can_q/k_nrm_q/sum_abs_q/corr_*_q
-    // PH_NORM1B: от ЗАРЕГИСТРИРОВАННЫХ входов: fq(÷-баррель из sum_abs_q),
-    //   corr_n1 (скан одиночных бит corr_nz_q/corr_i1_q), up_big/dn_small,
-    //   k_dn, e_sum_next, sat_norm ->
+    // PH_NORM1A: дешифровка P_can (из ЗАРЕГИСТРИРОВАННЫХ флагов), k_nrm_c,
+    //   стадия 1 ÷-барреля (fq_mid из |sum| и k_nrm_c[2:0]), |sum| и per-trit
+    //   флаги коррекции -> регистры zero_q/sum_q/p_can_q/k_nrm_q/fq_mid_q/
+    //   corr_*_q (BUG-047..051)
+    // PH_NORM1B: от ЗАРЕГИСТРИРОВАННЫХ входов: финал ÷-барреля (fq из fq_mid_q
+    //   по k_nrm_q[5:3], BUG-051), corr_n1 (скан одиночных бит
+    //   corr_nz_q/corr_i1_q), up_big/dn_small, k_dn, e_sum_next, sat_norm ->
     //   регистры fq_q/corr_n1_q/up_big_q/dn_small_q/k_dn_q/e_sum_next_q/sat_q
     //   (вторая половина стадии 1; BUG-047, BUG-049)
     // PH_NORM1C: тернарный декремент fq_q (borrow-цепочка) -> fq_dec_q
@@ -548,7 +587,7 @@ module tfadd_raw (
             fq_q <= 0; corr_n1_q <= 0;
             sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0; k_nrm_q <= 0;
             p_found_q <= 0; p_top_q <= 0; rest_n1_q <= 0;
-            sum_abs_q <= 0; corr_nz_q <= 0; corr_i1_q <= 0;
+            fq_mid_q <= 0; corr_nz_q <= 0; corr_i1_q <= 0;
         end else begin
             valid_q <= 0;
             case (phase)
@@ -640,19 +679,22 @@ module tfadd_raw (
                     sum_q     <= sum;
                     p_can_q   <= P_can;
                     k_nrm_q   <= k_nrm_c;
-                    // BUG-049: |sum| и per-trit флаги коррекции считаются и
-                    // РЕГИСТРИРУЮТСЯ здесь (от комбинаторного sum + sum_neg_q) —
-                    // выборка corr_n1 в PH_NORM1B идёт только из этих регистров.
-                    sum_abs_q   <= sum_abs_n1;
+                    // BUG-049 + BUG-051: |sum| (sum_abs_n1) и per-trit флаги
+                    // коррекции считаются и РЕГИСТРИРУЮТСЯ здесь (от комбинаторного
+                    // sum + sum_neg_q) — corr_n1_q в PH_NORM1B выбирается только
+                    // из этих регистров; стадия 1 ÷-барреля (сдвиг на k[2:0])
+                    // регистрируется в fq_mid_q (вместо отдельного sum_abs_q).
                     corr_nz_q   <= corr_nz;
                     corr_i1_q   <= corr_i1;
+                    fq_mid_q    <= fq_mid;
                     phase <= PH_NORM1B;
                 end
                 PH_NORM1B: begin
-                    // разрез 2 (BUG-047): ВТОРАЯ половина стадии 1 — ÷-баррель
-                    // (fq), коррекция floor (corr_n1), флаги, k_dn, e_sum_next и
-                    // sat_norm считаются из зарегистрированных входов
-                    // (sum_abs_q/sum_q/corr_nz_q/corr_i1_q/k_nrm_q/e_sum):
+                    // разрез 2 (BUG-047) + BUG-051: ВТОРАЯ половина стадии 1 —
+                    // финал ÷-барреля (fq из fq_mid_q по k_nrm_q[5:3]), коррекция
+                    // floor (corr_n1), флаги, k_dn, e_sum_next и sat_norm считаются
+                    // из зарегистрированных входов (fq_mid_q/sum_q/corr_nz_q/
+                    // corr_i1_q/k_nrm_q/e_sum):
                     // corr_n1 — приоритетный скан ОДИНОЧНЫХ бит (BUG-049), а не
                     // от sum_q через слой |sum|; каждый endpoint стадии 1
                     // (fq_q/corr_n1_q/up_big_q/dn_small_q/k_dn_q/e_sum_next_q/
