@@ -457,24 +457,24 @@ module tfmul_raw (
         carry_n[1:0] = 2'b00;  // перенос в столбец 0 нет
     end
 
-    // ---- финальная сборка: 2 трита/такт, тот же csr3 (0 CARRY4) ----
-    logic [79:0] fin_n;
+    // ---- финальная сборка: 1 пара тритов/такт с ФИКСИРОВАННОЙ позиции (младшие
+    // 2 трита sum_r/carry_r), 2 csr3 в такте как раньше (0 CARRY4). fcnt больше
+    // НЕ участвует в конусе: sum_r/carry_r сдвигаются на 4 бита за такт, готовая
+    // пара тритов пишется в младшие биты fin_r (накопление LSB-first), реверс
+    // 4-битных пар делается проводной перестановкой в PH_DONE. fcnt остался
+    // только счётчиком (fcnt==19 -> PH_DONE), путь fcnt -> fin_r удалён. ----
+    logic [3:0]  fin_pair;
     logic signed [2:0] fin_carry_n;
     logic [1:0] last_n;
-    logic [3:0] fdec;
+    logic [3:0] fdec0, fdec1;
     always_comb begin
-        fin_n = fin_r;
-        fin_carry_n = fin_carry;
+        fdec0 = csr3({v2t(fin_carry), sum_r[1:0], carry_r[1:0]});
+        fdec1 = csr3({v2t(t2v(fdec0[3:2])), sum_r[3:2], carry_r[3:2]});
+        fin_pair    = {fdec1[1:0], fdec0[1:0]};
+        fin_carry_n = t2v(fdec1[3:2]);
         last_n = last_trit;
-        for (int k = 0; k < 2; k++) begin
-            int t = 2*fcnt + k;
-            if (t < 40) begin
-                fdec = csr3({v2t(fin_carry_n), sum_r[2*t+:2], carry_r[2*t+:2]});
-                fin_n[2*t+:2] = fdec[1:0];
-                fin_carry_n = t2v(fdec[3:2]);
-                if (fdec[1:0] != 2'b00) last_n = fdec[1:0];
-            end
-        end
+        if (fdec0[1:0] != 2'b00) last_n = fdec0[1:0];
+        if (fdec1[1:0] != 2'b00) last_n = fdec1[1:0];
     end
 
     logic valid_q, neg_q;
@@ -520,12 +520,21 @@ module tfmul_raw (
                     end else cnt <= cnt + 1;
                 end
                 PH_FIN: begin
-                    fin_r <= fin_n; fin_carry <= fin_carry_n; last_trit <= last_n;
+                    fin_r <= {fin_r[75:0], fin_pair};
+                    fin_carry <= fin_carry_n; last_trit <= last_n;
+                    sum_r <= {4'b0, sum_r[79:4]};
+                    carry_r <= {4'b0, carry_r[79:4]};
                     if (fcnt == 19) phase <= PH_DONE;
                     else fcnt <= fcnt + 1;
                 end
                 PH_DONE: begin
-                    neg_q <= (last_trit == N1); prod_q <= fin_r;
+                    neg_q <= (last_trit == N1);
+                    // реверс 4-битных пар (пары обрабатывались 0..19, LSB-first)
+                    prod_q <= {fin_r[3:0],   fin_r[7:4],   fin_r[11:8],  fin_r[15:12],
+                               fin_r[19:16], fin_r[23:20], fin_r[27:24], fin_r[31:28],
+                               fin_r[35:32], fin_r[39:36], fin_r[43:40], fin_r[47:44],
+                               fin_r[51:48], fin_r[55:52], fin_r[59:56], fin_r[63:60],
+                               fin_r[67:64], fin_r[71:68], fin_r[75:72], fin_r[79:76]};
                     e_q <= e_r; valid_q <= 1; phase <= PH_IDLE;
                 end
             endcase
