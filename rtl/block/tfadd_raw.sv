@@ -2,10 +2,11 @@
 // tfadd_raw.sv — сумматор НЕНОРМАЛИЗОВАННЫХ продуктов TFloat48, BARREL-версия
 // ============================================================================
 // Шаг 1 плана пайплайнинга дерева (разрешено пользователем, 2026-09-06).
-// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 15 тактов (16 состояний; было 14 тактов/15
-//   состояний до BUG-053, 10 тактов/11 после BUG-047, 9 тактов/10 после
-//   BUG-046, 8 тактов/9 до):
-//   IDLE -> INIT -> ALGN(баррель) -> ADD0..ADD5 (6 половинных секций) ->
+// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 21 такт (22 состояния; было 15 тактов/16
+//   состояний до BUG-056, 14 тактов/15 после BUG-053, 10 тактов/11 после
+//   BUG-047, 9 тактов/10 после BUG-046, 8 тактов/9 до):
+//   IDLE -> INIT -> ALGN(баррель) -> ADD0..ADD11 (6 секций x 2 под-фазы 3+4
+//   трита, BUG-048+BUG-056) ->
 //   NORM0A(групп. мини-сканы, ст.1 BUG-053) -> NORM0B(слияние групп, ст.2) ->
 //   NORM1A -> NORM1B -> NORM1C(pipe fq_dec) -> NORM2 -> DONE.
 //
@@ -48,6 +49,16 @@
 //   удалён (вычитание -18 ушло в PH_NORM1B от регистра p_can_q). При 32/16
 //   ЭТОТ путь стал FATAL (p_can_q -> fq_q, -1.976) — см. BUG-054, который
 //   возвращает захват k_nrm_q в PH_NORM1A (математика не меняется).
+//
+// BUG-056 (тайминг-догоняние 32/16, WNS -0.270): последний серийный конус
+//   ADD-цепочки. 7-тритные половины (BUG-048) при 32/16 снова глубоки:
+//   carry1a_q -> sum_reg[55] (трит 27, 7 тритов серийной переносной сборки в
+//   PH_ADD3). Каждая половина разрезана на 3+4 трита (PH_ADD0..PH_ADD11),
+//   внутри добавлены регистры промежуточного переноса b0a_q..b2b_q: путь
+//   carry->sum теперь <= 4 трита на такт. ФАЗ: 16 -> 22 состояния, латентность
+//   15 -> 21 такт (валид-агностично: контроллер ждёт valid_out, lockstep
+//   принимает сдвиг). Математика трит-в-трит та же (переносы ассоциативны).
+//   Семантика бит-в-бит: A/B tb_tdot_axi4 24/24 байта.
 //
 // BUG-053 (тайминг-догоняние, последний FATAL gen_ad[1], WNS -0.017ns):
 //   приоритетный скан sum (p_found/p_top/sum_neg/rest_n1) разрезан на ДВЕ
@@ -306,96 +317,65 @@ module tfadd_raw (
                              ? m_small[2*(t + k_algn) +: 2] : 2'b00;
     end
 
-    // ---- ADD: 42-тритная сумма, разбита на 6 половинных секций по 7 тритов ----
-    // BUG-043: секции 14 тритов (~7ns) — по таймингу; BUG-048: каждая секция
-    // разрезана пополам (7 тритов, ~3.5ns), переносы между половинами идут через
-    // регистры carry0a_q/carry1a_q/carry2a_q. Это убирает серийную переносную
-    // цепочку carry_mid1_q -> sum_reg (11+ тритов) из одного такта.
+    // ---- ADD: 42-тритная сумма, разбита на 6 секций (линии переноса) ----
+    // BUG-043: секции 14 тритов; BUG-048: каждая секция разрезана пополам
+    // (7 тритов), переносы между половинами секций (carry0a_q/carry_mid0_q/
+    // carry1a_q/carry_mid1_q/carry2a_q).
+    // BUG-056: каждую 7-тритную половину разрезаем ЕЩЁ раз на 3+4 трита
+    // (всего 12 под-фаз PH_ADD0..PH_ADD11), между под-фазами внутри половины
+    // вставлены НОВЫЕ регистры промежуточного переноса
+    // b0a_q/b0b_q/b1a_q/b1b_q/b2a_q/b2b_q. Теперь путь перенос куда-то -> sum
+    // серийно проходит не более 4 тритов за такт (было 7): WNS-путь 32/16
+    // carry1a_q -> sum[55] (трит 27, фаза PH_ADD3, конус 7 тритов) разрезан на
+    // carry1a_q -> b1b_q (триты 21..23, 3 трита) и b1b_q -> sum[55] (триты
+    // 24..27, 4 трита). Математика переносов ассоциативна — сумма трит-в-трит
+    // та же.
     logic signed [2:0] carry_mid0, carry_mid1;      // переносы на стыках секций
     logic signed [2:0] carry_mid0_q, carry_mid1_q;  // (decl moved up for xvlog legality)
     logic signed [2:0] carry0a, carry1a, carry2a, carry2b;
     logic signed [2:0] carry0a_q, carry1a_q, carry2a_q;  // BUG-048: переносы половин
-    logic [13:0] add_mant_sec0a, add_mant_sec0b;    // 7 тритов каждая
-    logic [13:0] add_mant_sec1a, add_mant_sec1b;
-    logic [13:0] add_mant_sec2a, add_mant_sec2b;
+    // BUG-056: промежуточные переносы 3+4-под-фаз внутри каждой половины.
+    logic signed [2:0] b0a, b0b, b1a, b1b, b2a, b2b;        // комбинаторные
+    logic signed [2:0] b0a_q, b0b_q, b1a_q, b1b_q, b2a_q, b2b_q; // регистры под-фаз
+    logic [7:0] add_r0a1, add_r0a2;    // триты 0..2 (3), 3..6 (4)     секция 0 (a)
+    logic [7:0] add_r0b1, add_r0b2;    // триты 7..9 (3), 10..13 (4)   секция 0 (b)
+    logic [7:0] add_r1a1, add_r1a2;    // триты 14..16, 17..20          секция 1 (a)
+    logic [7:0] add_r1b1, add_r1b2;    // триты 21..23, 24..27          секция 1 (b)
+    logic [7:0] add_r2a1, add_r2a2;    // триты 28..30, 31..34          секция 2 (a)
+    logic [7:0] add_r2b1, add_r2b2;    // триты 35..37, 38..41          секция 2 (b)
 
-    always_comb begin
+    // универсальный «прогон» под-фазы: триты [lo..hi] (<=4), стартовый перенос cin.
+    function automatic void srun(input logic [2*W-1:0] bm,
+                                 input logic [2*W-1:0] sm,
+                                 input int lo, input int hi,
+                                 input logic signed [2:0] cin,
+                                 output logic [7:0] out,
+                                 output logic signed [2:0] cout);
         logic signed [2:0] c;
-        c = 3'sd0;
-        for (int t = 0; t < 7; t++) begin
+        c = cin;
+        for (int t = lo; t <= hi; t++) begin
             logic signed [2:0] sv;
-            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec0a[2*t +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec0a[2*t +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec0a[2*t +: 2] = int2trit2(sv); end
+            sv = trit_val2(bm[2*t +: 2]) + trit_val2(sm[2*t +: 2]) + c;
+            if (sv > 1) begin c = 3'sd1; out[2*(t-lo) +: 2] = int2trit2(sv - 3); end
+            else if (sv < -1) begin c = -3'sd1; out[2*(t-lo) +: 2] = int2trit2(sv + 3); end
+            else begin c = 3'sd0; out[2*(t-lo) +: 2] = int2trit2(sv); end
         end
-        carry0a = c;
-    end
+        cout = c;
+    endfunction
 
-    always_comb begin
-        logic signed [2:0] c;
-        c = carry0a_q;
-        for (int t = 7; t < 14; t++) begin
-            logic signed [2:0] sv;
-            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec0b[2*(t-7) +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec0b[2*(t-7) +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec0b[2*(t-7) +: 2] = int2trit2(sv); end
-        end
-        carry_mid0 = c;
-    end
-
-    always_comb begin
-        logic signed [2:0] c;
-        c = carry_mid0_q;
-        for (int t = 14; t < 21; t++) begin
-            logic signed [2:0] sv;
-            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec1a[2*(t-14) +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec1a[2*(t-14) +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec1a[2*(t-14) +: 2] = int2trit2(sv); end
-        end
-        carry1a = c;
-    end
-
-    always_comb begin
-        logic signed [2:0] c;
-        c = carry1a_q;
-        for (int t = 21; t < 28; t++) begin
-            logic signed [2:0] sv;
-            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec1b[2*(t-21) +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec1b[2*(t-21) +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec1b[2*(t-21) +: 2] = int2trit2(sv); end
-        end
-        carry_mid1 = c;
-    end
-
-    always_comb begin
-        logic signed [2:0] c;
-        c = carry_mid1_q;
-        for (int t = 28; t < 35; t++) begin
-            logic signed [2:0] sv;
-            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec2a[2*(t-28) +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec2a[2*(t-28) +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec2a[2*(t-28) +: 2] = int2trit2(sv); end
-        end
-        carry2a = c;
-    end
-
-    always_comb begin
-        logic signed [2:0] c;
-        c = carry2a_q;
-        for (int t = 35; t < W; t++) begin
-            logic signed [2:0] sv;
-            sv = trit_val2(m_big[2*t +: 2]) + trit_val2(m_small[2*t +: 2]) + c;
-            if (sv > 1) begin c = 3'sd1; add_mant_sec2b[2*(t-35) +: 2] = int2trit2(sv - 3); end
-            else if (sv < -1) begin c = -3'sd1; add_mant_sec2b[2*(t-35) +: 2] = int2trit2(sv + 3); end
-            else begin c = 3'sd0; add_mant_sec2b[2*(t-35) +: 2] = int2trit2(sv); end
-        end
-        carry2b = c;   // перенос из старшего трита суммы — теряется (как и раньше)
-    end
+    always_comb srun(m_big, m_small,  0,  2,  3'sd0,     add_r0a1, b0a);
+    always_comb srun(m_big, m_small,  3,  6,  b0a_q,     add_r0a2, carry0a);
+    always_comb srun(m_big, m_small,  7,  9,  carry0a_q, add_r0b1, b0b);
+    always_comb srun(m_big, m_small, 10, 13,  b0b_q,     add_r0b2, carry_mid0);
+    always_comb srun(m_big, m_small, 14, 16,  carry_mid0_q, add_r1a1, b1a);
+    always_comb srun(m_big, m_small, 17, 20,  b1a_q,     add_r1a2, carry1a);
+    always_comb srun(m_big, m_small, 21, 23,  carry1a_q, add_r1b1, b1b);
+    always_comb srun(m_big, m_small, 24, 27,  b1b_q,     add_r1b2, carry_mid1);
+    always_comb srun(m_big, m_small, 28, 30,  carry_mid1_q, add_r2a1, b2a);
+    always_comb srun(m_big, m_small, 31, 34,  b2a_q,     add_r2a2, carry2a);
+    always_comb srun(m_big, m_small, 35, 37,  carry2a_q, add_r2b1, b2b);
+    always_comb srun(m_big, m_small, 38, 41,  b2b_q,     add_r2b2, carry2b);
+    // carry2b: перенос из старшего трита суммы — теряется (как и раньше)
 
     // ---- NORM: знак, p (старший сбаланс.), P (каноническая), барьеры ----
     logic        sum_neg;    // старший ненулевой трит sum == N1
@@ -633,8 +613,10 @@ module tfadd_raw (
     //   в PH_NORM0A (+1 состояние), 11 -> 15 состояний;
     // BUG-053: скан разрезан на 2 стадии (PH_NORM0A -> групповые признаки,
     //   + PH_NORM0B слияние), 15 -> 16 состояний) ----
-    // PH_ADD0..PH_ADD5: 6 половинных секций по 7 тритов; переносы между
-    //   половинами через carry0a_q/carry1a_q/carry2a_q (BUG-048, разрез (a)).
+    // PH_ADD0..PH_ADD11: 12 под-фаз по <=4 тритов (BUG-048: 6 половин по 7
+    //   тритов; BUG-056: ещё раз пополам 3+4, +6 состояний) - переносы между
+    //   половинами через carry0a_q/carry1a_q/carry2a_q, внутри половин через
+    //   b0a_q..b2b_q (см. ADD выше).
     // PH_NORM0A: сырые ГРУППОВЫЕ признаки sum (мини-сканы по G=14 тритов,
     //   стадия 1 группового префикса BUG-053) -> регистры g_*_q.
     // PH_NORM0B: слияние групп сверху вниз (стадия 2 BUG-053) ->
@@ -659,17 +641,23 @@ module tfadd_raw (
     localparam int PH_ADD3 = 6;
     localparam int PH_ADD4 = 7;
     localparam int PH_ADD5 = 8;
-    localparam int PH_NORM0A = 9;
-    localparam int PH_NORM1A = 10;
-    localparam int PH_NORM1B = 11;
-    localparam int PH_NORM1C = 12;
-    localparam int PH_NORM2 = 13;
-    localparam int PH_DONE = 14;
-    localparam int PH_NORM0B = 15;   // BUG-053: слияние групп скана (стадия 2)
-    // (индекс 15 — после PH_DONE — чтобы не перенумеровывать остальные фазы;
+    localparam int PH_ADD6 = 9;
+    localparam int PH_ADD7 = 10;
+    localparam int PH_ADD8 = 11;
+    localparam int PH_ADD9 = 12;
+    localparam int PH_ADD10 = 13;
+    localparam int PH_ADD11 = 14;
+    localparam int PH_NORM0A = 15;
+    localparam int PH_NORM1A = 16;
+    localparam int PH_NORM1B = 17;
+    localparam int PH_NORM1C = 18;
+    localparam int PH_NORM2 = 19;
+    localparam int PH_DONE = 20;
+    localparam int PH_NORM0B = 21;   // BUG-053: слияние групп скана (стадия 2)
+    // (индекс 21 — после PH_DONE — чтобы не перенумеровывать остальные фазы;
     //  case-порядок не зависит от значений, переходы явные по фазе)
 
-    logic [3:0] phase;   // 16 состояний (0..15) -> 4 бита достаточно
+    logic [4:0] phase;   // 22 состояния (0..21) -> 5 бит (было 16 -> 4 бита)
     // ---- PH_NORM1A -> PH_NORM2: промежуточные регистры нормализации (BUG-045) ----
     logic [83:0] fq_dec_q;    // результат floor-деления (без инверсии знака)
     logic        up_big_q;    // P >= 19
@@ -688,6 +676,7 @@ module tfadd_raw (
             k_algn <= 0; zero_q <= 0; sat_q <= 0;
             carry_mid0_q <= 0; carry_mid1_q <= 0;
             carry0a_q <= 0; carry1a_q <= 0; carry2a_q <= 0;
+            b0a_q <= 0; b0b_q <= 0; b1a_q <= 0; b1b_q <= 0; b2a_q <= 0; b2b_q <= 0;
             fq_q <= 0; corr_n1_q <= 0;
             sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0;
             k_nrm_q <= 0;
@@ -738,32 +727,62 @@ module tfadd_raw (
                     phase <= PH_ADD0;
                 end
                 PH_ADD0: begin
-                    sum[13:0]       <= add_mant_sec0a[13:0];     // триты 0..6
-                    carry0a_q       <= carry0a;
+                    sum[5:0]        <= add_r0a1[5:0];       // триты 0..2
+                    b0a_q           <= b0a;
                     phase <= PH_ADD1;
                 end
                 PH_ADD1: begin
-                    sum[27:14]      <= add_mant_sec0b[13:0];     // триты 7..13
-                    carry_mid0_q    <= carry_mid0;
+                    sum[13:6]       <= add_r0a2[7:0];       // триты 3..6
+                    carry0a_q       <= carry0a;
                     phase <= PH_ADD2;
                 end
                 PH_ADD2: begin
-                    sum[41:28]      <= add_mant_sec1a[13:0];     // триты 14..20
-                    carry1a_q       <= carry1a;
+                    sum[19:14]      <= add_r0b1[5:0];       // триты 7..9
+                    b0b_q           <= b0b;
                     phase <= PH_ADD3;
                 end
                 PH_ADD3: begin
-                    sum[55:42]      <= add_mant_sec1b[13:0];     // триты 21..27
-                    carry_mid1_q    <= carry_mid1;
+                    sum[27:20]      <= add_r0b2[7:0];       // триты 10..13
+                    carry_mid0_q    <= carry_mid0;
                     phase <= PH_ADD4;
                 end
                 PH_ADD4: begin
-                    sum[69:56]      <= add_mant_sec2a[13:0];     // триты 28..34
-                    carry2a_q       <= carry2a;
+                    sum[33:28]      <= add_r1a1[5:0];       // триты 14..16
+                    b1a_q           <= b1a;
                     phase <= PH_ADD5;
                 end
                 PH_ADD5: begin
-                    sum[83:70]      <= add_mant_sec2b[13:0];     // триты 35..41
+                    sum[41:34]      <= add_r1a2[7:0];       // триты 17..20
+                    carry1a_q       <= carry1a;
+                    phase <= PH_ADD6;
+                end
+                PH_ADD6: begin
+                    sum[47:42]      <= add_r1b1[5:0];       // триты 21..23
+                    b1b_q           <= b1b;
+                    phase <= PH_ADD7;
+                end
+                PH_ADD7: begin
+                    sum[55:48]      <= add_r1b2[7:0];       // триты 24..27
+                    carry_mid1_q    <= carry_mid1;
+                    phase <= PH_ADD8;
+                end
+                PH_ADD8: begin
+                    sum[61:56]      <= add_r2a1[5:0];       // триты 28..30
+                    b2a_q           <= b2a;
+                    phase <= PH_ADD9;
+                end
+                PH_ADD9: begin
+                    sum[69:62]      <= add_r2a2[7:0];       // триты 31..34
+                    carry2a_q       <= carry2a;
+                    phase <= PH_ADD10;
+                end
+                PH_ADD10: begin
+                    sum[75:70]      <= add_r2b1[5:0];       // триты 35..37
+                    b2b_q           <= b2b;
+                    phase <= PH_ADD11;
+                end
+                PH_ADD11: begin
+                    sum[83:76]      <= add_r2b2[7:0];       // триты 38..41
                     phase <= PH_NORM0A;
                 end
                 PH_NORM0A: begin
