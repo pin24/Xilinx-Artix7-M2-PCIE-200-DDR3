@@ -1,5 +1,5 @@
 # ============================================================================
-# build_flat.tcl — FULL FLAT (no-DFX) build of the project
+# build_flat.tcl РІР‚вЂќ FULL FLAT (no-DFX) build of the project
 #
 # Creates a project from scratch, builds the FLAT BD (xdma_ddr3_bd.tcl),
 # posts it (post_bd_flat.tcl), adds RTL + third_party HDL, constraints,
@@ -38,9 +38,10 @@ set PART       "xc7a200tfbg484-2"
 set TOP_NAME   "xdma_ddr3_core_top"
 set ARTIFACTS_DIR "${ROOT}/build/artifacts_flat"
 
-set NUM_MAC     16
-set ADDERS      4
+set NUM_MAC     32
+set ADDERS      16
 set JOBS        8
+set_param general.maxThreads 4
 set SKIP_SYNTH  0
 
 # ----------------------------------------------------------------------------
@@ -105,7 +106,7 @@ foreach dir_to_clean ${CLEANUP_DIRS} {
 if {$cleanup_failed} {
     puts ""
     puts "============================================================"
-    puts " CLEANUP FAILED — files locked by another process"
+    puts " CLEANUP FAILED РІР‚вЂќ files locked by another process"
     puts "------------------------------------------------------------"
     puts " 1. Close all Vivado: taskkill /f /im vivado.exe /im vivado.bat"
     puts " 2. rmdir /s /q ${PROJ_DIR}"
@@ -202,7 +203,7 @@ add_files -norecurse \
     ${ROOT}/rtl/integration/xadc_prim.sv \
     ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv \
     ${ROOT}/rtl/diag/diag_axi_sniffer.sv
-# NOTE: icap_ctrl.sv / spi_over_pcie.sv are intentionally NOT added — the flat
+# NOTE: icap_ctrl.sv / spi_over_pcie.sv are intentionally NOT added РІР‚вЂќ the flat
 # top RTL does not instantiate them. The files remain in the tree, unused.
 
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
@@ -219,10 +220,10 @@ set_property PROCESSING_ORDER NORMAL [get_files ${pins_xdc}]
 # pblock.xdc is NOT added: it exists only for DFX partial-reconfiguration
 # (RP partitioning). Flat build has no RP. (File left in tree, unused.)
 #
-# pblock_flat_tdot.xdc — компактный placement-регион для ядра tdot (см. файл):
-# сжимает размещение u_tdot/u_core (gen_ad + gen_mac) в один общий регион для
-# сокращения маршрута критических путей. Загружается LATE (после синтеза),
-# чтобы клетки u_tdot/u_core уже существовали для add_cells_to_pblock.
+# pblock_flat_tdot.xdc РІР‚вЂќ Р С”Р С•Р СР С—Р В°Р С”РЎвЂљР Р…РЎвЂ№Р в„– placement-РЎР‚Р ВµР С–Р С‘Р С•Р Р… Р Т‘Р В»РЎРЏ РЎРЏР Т‘РЎР‚Р В° tdot (РЎРѓР С. РЎвЂћР В°Р в„–Р В»):
+# РЎРѓР В¶Р С‘Р СР В°Р ВµРЎвЂљ РЎР‚Р В°Р В·Р СР ВµРЎвЂ°Р ВµР Р…Р С‘Р Вµ u_tdot/u_core (gen_ad + gen_mac) Р Р† Р С•Р Т‘Р С‘Р Р… Р С•Р В±РЎвЂ°Р С‘Р в„– РЎР‚Р ВµР С–Р С‘Р С•Р Р… Р Т‘Р В»РЎРЏ
+# РЎРѓР С•Р С”РЎР‚Р В°РЎвЂ°Р ВµР Р…Р С‘РЎРЏ Р СР В°РЎР‚РЎв‚¬РЎР‚РЎС“РЎвЂљР В° Р С”РЎР‚Р С‘РЎвЂљР С‘РЎвЂЎР ВµРЎРѓР С”Р С‘РЎвЂ¦ Р С—РЎС“РЎвЂљР ВµР в„–. Р вЂ”Р В°Р С–РЎР‚РЎС“Р В¶Р В°Р ВµРЎвЂљРЎРѓРЎРЏ LATE (Р С—Р С•РЎРѓР В»Р Вµ РЎРѓР С‘Р Р…РЎвЂљР ВµР В·Р В°),
+# РЎвЂЎРЎвЂљР С•Р В±РЎвЂ№ Р С”Р В»Р ВµРЎвЂљР С”Р С‘ u_tdot/u_core РЎС“Р В¶Р Вµ РЎРѓРЎС“РЎвЂ°Р ВµРЎРѓРЎвЂљР Р†Р С•Р Р†Р В°Р В»Р С‘ Р Т‘Р В»РЎРЏ add_cells_to_pblock.
 set pblock_flat_xdc ${ROOT}/constraints/pblock_flat_tdot.xdc
 add_files -fileset constrs_1 ${pblock_flat_xdc}
 set_property PROCESSING_ORDER LATE [get_files ${pblock_flat_xdc}]
@@ -249,7 +250,7 @@ if {$pcie_ip_xdc ne ""} {
 }
 
 if {${SKIP_SYNTH}} {
-    puts "=== SKIP_SYNTH=1 — exiting before synth ==="
+    puts "=== SKIP_SYNTH=1 РІР‚вЂќ exiting before synth ==="
     close_project
     exit 0
 }
@@ -297,7 +298,7 @@ if {[string first "complete" [string tolower $st2]] == -1} {
 }
 
 # ---------- 8.5 FATAL TIMING GATE (BUG-038) ----------
-# Flat design has no partial/RP implementations — gate only the top-level
+# Flat design has no partial/RP implementations РІР‚вЂќ gate only the top-level
 # routed design. WNS/WHS/WPWS < 0 => build is FATAL, artifacts not exported.
 puts "=== 8.5 FATAL TIMING GATE (BUG-038) ==="
 source ${ROOT}/scripts/tcl_timing_lib.tcl
@@ -314,7 +315,7 @@ set all_viol [get_timing_paths -quiet -delay_type max -max_paths 1 -nworst 1 -sl
 if {[llength ${all_viol}] > 0} {
     set ws [get_property SLACK [lindex ${all_viol} 0]]
     set n_viol [llength ${all_viol}]
-    puts "=== FATAL: ТАЙМИНГ НЕ ЗАКРЫТ по всему дизайну (WNS=${ws} ns, paths=${n_viol}) ==="
+    puts "=== FATAL: Р СћР С’Р в„ўР СљР ВР СњР вЂњ Р СњР вЂў Р вЂ”Р С’Р С™Р В Р В«Р Сћ Р С—Р С• Р Р†РЎРѓР ВµР СРЎС“ Р Т‘Р С‘Р В·Р В°Р в„–Р Р…РЎС“ (WNS=${ws} ns, paths=${n_viol}) ==="
     set gate_fail 1
     set dom_pairs {}
     set diag_paths [get_timing_paths -quiet -delay_type max -max_paths 400 -nworst 1 -slack_lesser_than 0]
@@ -334,10 +335,10 @@ if {[llength ${all_viol}] > 0} {
             lappend dom_unique ${p}
         }
     }
-    puts "=== Затронутые домены (START→END) ==="
+    puts "=== Р вЂ”Р В°РЎвЂљРЎР‚Р С•Р Р…РЎС“РЎвЂљРЎвЂ№Р Вµ Р Т‘Р С•Р СР ВµР Р…РЎвЂ№ (STARTРІвЂ вЂ™END) ==="
     foreach d ${dom_unique} { puts "    ${d}" }
 } else {
-    puts "=== FATAL GATE: ТАЙМИНГ MET по ВСЕМ доменам (0 violations) ==="
+    puts "=== FATAL GATE: Р СћР С’Р в„ўР СљР ВР СњР вЂњ MET Р С—Р С• Р вЂ™Р РЋР вЂўР Сљ Р Т‘Р С•Р СР ВµР Р…Р В°Р С (0 violations) ==="
 }
 
 if {${gate_fail}} {
@@ -352,7 +353,7 @@ if {${gate_fail}} {
             ${wi} [get_property SLACK ${wp}] ${wsp} ${wep}]
         incr wi
     }
-    puts "=== FATAL: тайминг не закрыт — артефакты НЕ экспортируются (timing_FATAL.rpt) ==="
+    puts "=== FATAL: РЎвЂљР В°Р в„–Р СР С‘Р Р…Р С– Р Р…Р Вµ Р В·Р В°Р С”РЎР‚РЎвЂ№РЎвЂљ РІР‚вЂќ Р В°РЎР‚РЎвЂљР ВµРЎвЂћР В°Р С”РЎвЂљРЎвЂ№ Р СњР вЂў РЎРЊР С”РЎРѓР С—Р С•РЎР‚РЎвЂљР С‘РЎР‚РЎС“РЎР‹РЎвЂљРЎРѓРЎРЏ (timing_FATAL.rpt) ==="
     close_project
     exit 1
 }
