@@ -430,16 +430,6 @@ module tfadd_raw (
     // стадию 1 ÷-барреля (fq_mid_q), отдельный регистр sum_abs_q удалён (BUG-051).
     logic [W-1:0] corr_nz_q;  // |sum|[t] != 0 (захват в PH_NORM1A, BUG-049)
     logic [W-1:0] corr_i1_q;  // |sum|[t] == N1 (захват в PH_NORM1A, BUG-049)
-    // ---- BUG-058: гейт-предикаты corr (разрез пути k_nrm_q -> corr_n1_q -> fq_q) ----
-    // Путь #1 (WNS +0.030, 32/16): k_nrm_q[5] -> fq_q[19] шёл через приоритетный
-    // скан corr_n1 (6 LUT: сравнения t<k_nrm_q) + fq-дешифровку (4 LUT),
-    // data 7.659ns (route 78%). Разрез: PH_NORM1B считает ОДИНОЧНЫЕ гейт-
-    // предикаты cg_c[t] = corr_nz_q[t] && (t < k_nrm_q) (параллельно, 1 LUT на
-    // трит) и регистрирует их; новая PH_NORM1B2 делает приоритетный скан по
-    // ОДНОБИТОВЫМ cg_q (структура как скан-фазы NORM0, ~2-3 LUT) -> corr_n1_q.
-    // Семантика та же: старший t с corr_nz_q[t] и t<k_nrm_q даёт corr_i1_q[t].
-    logic [W-1:0] cg_c;   // комбинаторно: corr_nz_q[t] && (t < k_nrm_q) (PH_NORM1B)
-    logic [W-1:0] cg_q;   // захват PH_NORM1B -> скан PH_NORM1B2
 
     // ---- BUG-053: двухстадийный групповой префикс приоритетного скана ----
     // мини-скан одной группы (семантика идентична старой паре проходов:
@@ -634,21 +624,11 @@ module tfadd_raw (
     // коррекция floor: старший ненулевой из отброшенных (t < k_nrm) == N1.
     // BUG-049: сканируются ОДИНОЧНЫЕ регистровые биты corr_nz_q/corr_i1_q
     // (захвачены в PH_NORM1A) — конус от sum_q до corr_n1_q отсутствует.
-    // BUG-058: скан разрезан на ДВА такта. PH_NORM1B считает ТОЛЬКО гейт-
-    // предикаты cg_c[t] = corr_nz_q[t] && (t < k_nrm_q) — сравнение t<k_nrm_q
-    // это 1 LUT на трит (константный компаратор), без каскадной приоритетной
-    // цепочки; скан по ОДНОБИТОВЫМ cg_q (структура как фазы NORM0A/NORM1B
-    // приоритетных сканов) переехал в новую PH_NORM1B2 -> corr_n1_q. Путь
-    // k_nrm_q -> corr_n1_q теряет 6-LUT каскад сравнений (WNS +0.030, 32/16).
-    always_comb begin
-        for (int t = 0; t < W; t++)
-            cg_c[t] = corr_nz_q[t] && (32'(t) < 32'(k_nrm_q));
-    end
     always_comb begin
         logic cf;
         cf = 1'b0; corr_n1 = 1'b0;
         for (int t = W-1; t >= 0; t--) begin
-            if (!cf && cg_q[t]) begin
+            if (!cf && 32'(t) < 32'(k_nrm_q) && corr_nz_q[t]) begin
                 cf = 1'b1;
                 corr_n1 = corr_i1_q[t];
             end
@@ -718,9 +698,7 @@ module tfadd_raw (
     // BUG-056: ADD 3+4-под-фазы, 16 -> 22 состояния;
     // BUG-057: скан разрезан ЕЩЁ раз — под-группы SG=7 (PH_NORM0A) /
     //   слияние под-групп (PH_NORM0B) / слияние групп (PH_NORM0C), 22 -> 23
-    //   состояния;
-    // BUG-058: скан corr_n1 разрезан на гейт-биты cg_q (PH_NORM1B) и скан
-    //   first-one (новая PH_NORM1B2), 23 -> 24 состояния, +1 такт) ----
+    //   состояния) ----
     // PH_ADD0..PH_ADD11: 12 под-фаз по <=4 тритов (BUG-048: 6 половин по 7
     //   тритов; BUG-056: ещё раз пополам 3+4, +6 состояний) - переносы между
     //   половинами через carry0a_q/carry1a_q/carry2a_q, внутри половин через
@@ -736,12 +714,10 @@ module tfadd_raw (
     //   флаги коррекции -> регистры zero_q/sum_q/p_can_q/k_nrm_q/fq_mid_q/
     //   corr_*_q (BUG-047..051)
     // PH_NORM1B: от ЗАРЕГИСТРИРОВАННЫХ входов: финал ÷-барреля (fq из fq_mid_q
-    //   по k_nrm_q[5:3], BUG-051), гейт-биты cg_c (BUG-058: corr_nz_q[t] &&
-    //   t<k_nrm_q), up_big/dn_small, k_dn, e_sum_next, sat_norm ->
-    //   регистры fq_q/cg_q/up_big_q/dn_small_q/k_dn_q/e_sum_next_q/sat_q
+    //   по k_nrm_q[5:3], BUG-051), corr_n1 (скан одиночных бит
+    //   corr_nz_q/corr_i1_q), up_big/dn_small, k_dn, e_sum_next, sat_norm ->
+    //   регистры fq_q/corr_n1_q/up_big_q/dn_small_q/k_dn_q/e_sum_next_q/sat_q
     //   (вторая половина стадии 1; BUG-047, BUG-049)
-    // PH_NORM1B2: скан first-one по ОДНОБИТОВЫМ cg_q -> corr_n1_q (BUG-058,
-    //   разрез пути k_nrm_q -> fq_q, WNS +0.030 при 32/16)
     // PH_NORM1C: тернарный декремент fq_q (borrow-цепочка) -> fq_dec_q
     // PH_NORM2: инверсия знака (up_big) / ×-баррель (dn_small) + e_sum_next
     localparam int PH_IDLE = 0;
@@ -762,16 +738,15 @@ module tfadd_raw (
     localparam int PH_NORM0A = 15;
     localparam int PH_NORM1A = 16;
     localparam int PH_NORM1B = 17;
-    localparam int PH_NORM1B2 = 18;  // BUG-058: скан corr_n1 из гейт-бит cg_q (разрез k_nrm_q -> corr_n1_q)
-    localparam int PH_NORM1C = 19;
-    localparam int PH_NORM2 = 20;
-    localparam int PH_DONE = 21;
-    localparam int PH_NORM0B = 22;   // BUG-053: слияние групп скана; BUG-057: слияние под-групп (стадия 1b)
-    localparam int PH_NORM0C = 23;   // BUG-057: слияние групп скана (стадия 2, бывш. PH_NORM0B)
-    // (индексы 22/23 — после PH_DONE — чтобы не перенумеровывать остальные
+    localparam int PH_NORM1C = 18;
+    localparam int PH_NORM2 = 19;
+    localparam int PH_DONE = 20;
+    localparam int PH_NORM0B = 21;   // BUG-053: слияние групп скана; BUG-057: слияние под-групп (стадия 1b)
+    localparam int PH_NORM0C = 22;   // BUG-057: слияние групп скана (стадия 2, бывш. PH_NORM0B)
+    // (индексы 21/22 — после PH_DONE — чтобы не перенумеровывать остальные
     //  фазы; case-порядок не зависит от значений, переходы явные по фазе)
 
-    logic [4:0] phase;   // 24 состояния (0..23) -> 5 бит (было 16 -> 4 бита)
+    logic [4:0] phase;   // 23 состояния (0..22) -> 5 бит (было 16 -> 4 бита)
     // ---- PH_NORM1A -> PH_NORM2: промежуточные регистры нормализации (BUG-045) ----
     logic [83:0] fq_dec_q;    // результат floor-деления (без инверсии знака)
     logic        up_big_q;    // P >= 19
@@ -796,7 +771,6 @@ module tfadd_raw (
             k_nrm_q <= 0;
             p_found_q <= 0; p_top_q <= 0; rest_n1_q <= 0;
             fq_mid_q <= 0; corr_nz_q <= 0; corr_i1_q <= 0;
-            cg_q <= 0;
             g_nz_q <= 0; g_top_q <= 0; g_top_n1_q <= 0;
             g_rest_nz_q <= 0; g_rest_n1_q <= 0;
             sg_nz_q <= 0; sg_top_q <= 0; sg_top_n1_q <= 0;
@@ -980,18 +954,6 @@ module tfadd_raw (
                     k_dn_q      <= k_dn;
                     e_sum_next_q <= e_sum_next;
                     fq_q        <= fq;
-                    // BUG-058: corr_n1 НЕ вычисляется здесь (каскад сравнений
-                    // t<k_nrm_q перенесён в одиночные гейт-биты cg_c/q, скан
-                    // коррекции -> corr_n1_q уехал в новую PH_NORM1B2).
-                    cg_q        <= cg_c;
-                    phase <= PH_NORM1B2;
-                end
-                PH_NORM1B2: begin
-                    // BUG-058: приоритетный скан ОДНОБИТОВЫХ гейт-предикатов
-                    // cg_q (corr_nz_q[t] && t < k_nrm_q, захвачен в PH_NORM1B) ->
-                    // corr_n1_q. Структура — как NORM0-сканы (цепочка first-one
-                    // по 1-бит флагам, ~2-3 LUT), конус k_nrm_q -> corr_n1_q
-                    // сокращён с ~6 LUT до 1 LUT (гейт-предикат cg_c).
                     corr_n1_q   <= corr_n1;
                     phase <= PH_NORM1C;
                 end
@@ -999,7 +961,7 @@ module tfadd_raw (
                     // разрез 3 (BUG-046, перенесён сюда): тернарный декремент fq_q
                     // (borrow-цепочка 42 тритов) — бит-в-бит то же значение fq_dec,
                     // что считал прежний комбинаторный блок, из зарегистрированного
-                    // входа (fq_q из PH_NORM1B, corr_n1_q из PH_NORM1B2).
+                    // входа (fq_q/corr_n1_q из PH_NORM1B).
                     fq_dec_q <= fq_dec_f(fq_q, corr_n1_q);
                     phase <= PH_NORM2;
                 end
