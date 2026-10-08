@@ -2,11 +2,12 @@
 // tfadd_raw.sv — сумматор НЕНОРМАЛИЗОВАННЫХ продуктов TFloat48, BARREL-версия
 // ============================================================================
 // Шаг 1 плана пайплайнинга дерева (разрешено пользователем, 2026-09-06).
-// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 14 тактов (15 состояний; было 10 тактов/11
-//   состояний после BUG-047, 9 тактов/10 после BUG-046, 8 тактов/9 до):
+// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 15 тактов (16 состояний; было 14 тактов/15
+//   состояний до BUG-053, 10 тактов/11 после BUG-047, 9 тактов/10 после
+//   BUG-046, 8 тактов/9 до):
 //   IDLE -> INIT -> ALGN(баррель) -> ADD0..ADD5 (6 половинных секций) ->
-//   NORM0A(сырые сканы) -> NORM1A -> NORM1B -> NORM1C(pipe fq_dec) ->
-//   NORM2 -> DONE.
+//   NORM0A(групп. мини-сканы, ст.1 BUG-053) -> NORM0B(слияние групп, ст.2) ->
+//   NORM1A -> NORM1B -> NORM1C(pipe fq_dec) -> NORM2 -> DONE.
 //
 // BUG-048 (тайминг-цикл, gen_ad[u_add]): два разреза остаточных путей.
 //   (a) ADD-фазы: каждая 14-тритная секция сумматора разрезана пополам
@@ -53,6 +54,22 @@
 //   читает комбинаторный k_nrm_c[2:0] от P_can (не менялось). FSM/латентность
 //   НЕ менялись (15 состояний/14 тактов). Семантика бит-в-бит:
 //   A/B tb_tdot_axi4 24/24 байта.
+//
+// BUG-053 (тайминг-догоняние, последний FATAL gen_ad[1], WNS -0.017ns):
+//   приоритетный скан sum (p_found/p_top/sum_neg/rest_n1) разрезан на ДВЕ
+//   регистровые стадии по принципу «групповой префикс» (G = 14 тритов,
+//   NG = 3 группы). Было: пара серийных проходов по 42 тритам прямо от sum
+//   в PH_NORM0A (первый ищет старший ненулевой трит, второй rest ниже него
+//   и ЗАВИСИТ от p_top первого; цепочка ~6-7 LUT) -> WNS-путь
+//   sum_reg -> rest_n1_q. Стало: стадия 1 (PH_NORM0A) считает для КАЖДОЙ
+//   группы НЕЗАВИСИМО сырые признаки (параллельные мини-сканы по 14 тритов,
+//   глубина ~2-3 LUT): g_nz/g_top/g_top_n1/g_rest_nz/g_rest_n1 и
+//   регистрирует их; стадия 2 (новая PH_NORM0B) сливает группы сверху вниз
+//   (3-way приоритет из ЗАРЕГИСТРИРОВАННЫХ признаков, глубина ~2 LUT) ->
+//   p_found_q/p_top_q/sum_neg_q/rest_n1_q. Математика та же
+//   (доказательство: proof_gprefix.py, 2.0M+ векторов old-scan == prefix,
+//   0 расхождений). Латентность: 14 -> 15 тактов (16 состояний, +PH_NORM0B).
+//   Семантика бит-в-бит: A/B tb_tdot_axi4 24/24 байта.
 //
 // Семантика НЕ изменилась (бит-в-бит). Доказательство: proof_tfadd_barrel.py
 // (ALL PROOFS PASSED, 280k+ векторов) + A/B на xsim: tb_tfadd_equiv.sv.
@@ -106,6 +123,10 @@ module tfadd_raw (
     localparam logic [1:0] P1 = 2'b01;
     localparam logic [1:0] N1 = 2'b10;
     localparam int W = 42;
+    // BUG-053: групповой префикс скан-стадии (стадия 1 = мини-сканы по группам,
+    // стадия 2 = слияние групп). NG групп по G тритов, NG*G == W.
+    localparam int NG = 3;
+    localparam int G  = 14;
 
     function automatic logic signed [2:0] trit_val2(input logic [1:0] c);
         case (c)
@@ -236,14 +257,29 @@ module tfadd_raw (
     //   rest_n1_q -> k_nrm_q (WNS +0.011). Значение barreля/коррекции то же
     //   (k_nrm_q был = k_nrm_c = P_can - 18, а p_can_q == P_can такта PH_NORM1A).
 
-    // ---- BUG-048: «сырые» скан-флаги sum (захват в PH_NORM0A) ----
-    // Приоритетные сканы (p_found/p_top/sum_neg/rest_n1) зарегистрированы
-    // СРАЗУ после сканирования (PH_NORM0A); дешифровка P_can и k_nrm_c =
-    // P_can - 18 выполняется в PH_NORM1A из ЭТИХ регистров. Конус
-    // sum_reg -> p_can_q/k_nrm_q/zero_q теряет слой дешифровки-вычитания.
-    logic        p_found_q;   // sum != 0 (захват в PH_NORM0A, BUG-048)
-    logic [5:0]  p_top_q;     // позиция старшего ненулевого трита (PH_NORM0A)
-    logic        rest_n1_q;   // старший ненулевой ниже p_top == N1 (PH_NORM0A)
+    // ---- BUG-048/BUG-053: «сырые» скан-флаги sum (захват в PH_NORM0B) ----
+    // BUG-048: приоритетные сканы зарегистрированы после сканирования;
+    //   дешифровка P_can и k_nrm_c = P_can - 18 выполняется в PH_NORM1A из
+    //   ЭТИХ регистров. BUG-053: само сканирование разрезано на 2 стадии —
+    //   PH_NORM0A захватывает сырые ГРУППОВЫЕ признаки ниже, PH_NORM0B
+    //   (новая) сливает группы в эти же финальные регистры. Конус sum_reg ->
+    //   rest_n1_q заканчивается на мини-скане G=14 тритов + 3-way приоритете.
+    logic        p_found_q;   // sum != 0 (захват в PH_NORM0B, BUG-053)
+    logic [5:0]  p_top_q;     // позиция старшего ненулевого трита (PH_NORM0B)
+    logic        rest_n1_q;   // старший ненулевой ниже p_top == N1 (PH_NORM0B)
+    // ---- BUG-053: «сырые» групповые признаки скан-стадии ----
+    // стадия 1 (PH_NORM0A): комбинаторные мини-сканы по группам из sum ->
+    //   g_*_q; стадия 2 (PH_NORM0B): слияние групп -> p_found_q/p_top_q/...
+    logic [NG-1:0]      g_nz;        // группа содержит ненулевой трит
+    logic [NG-1:0][5:0] g_top;       // абсолютный индекс старшего ненулевого трита
+    logic [NG-1:0]      g_top_n1;    // старший трит группы == N1
+    logic [NG-1:0]      g_rest_nz;   // ниже g_top в группе есть ненулевой трит
+    logic [NG-1:0]      g_rest_n1;   // высший из тритов ниже g_top == N1
+    logic [NG-1:0]      g_nz_q;      // (регистры стадии 1 -> стадия 2)
+    logic [NG-1:0][5:0] g_top_q;
+    logic [NG-1:0]      g_top_n1_q;
+    logic [NG-1:0]      g_rest_nz_q;
+    logic [NG-1:0]      g_rest_n1_q;
 
     // ---- Δe (9 бит, BUG-040 fix) и k_algn = min(|Δe|, 22) ----
     logic signed [8:0] de_s;
@@ -374,32 +410,70 @@ module tfadd_raw (
     logic [W-1:0] corr_nz_q;  // |sum|[t] != 0 (захват в PH_NORM1A, BUG-049)
     logic [W-1:0] corr_i1_q;  // |sum|[t] == N1 (захват в PH_NORM1A, BUG-049)
 
-    always_comb begin
-        sum_neg = 1'b0; p_found = 1'b0; p_top = 6'd0;
-        for (int t = W-1; t >= 0; t--) begin
-            if (sum[2*t +: 2] != 2'b00 && !p_found) begin
-                p_found = 1'b1;
-                p_top   = 6'(t);
-                sum_neg = (sum[2*t +: 2] == N1);
+    // ---- BUG-053: двухстадийный групповой префикс приоритетного скана ----
+    // мини-скан одной группы (семантика идентична старой паре проходов:
+    // 1-й ищет старший ненулевой трит группы, 2-й — высший ненулевой СТРОГО
+    // ниже него; см. proof_gprefix.py)
+    function automatic void gscan_f(input logic [83:0] sv, input int gb, input int ge,
+        output logic gnz, output logic [5:0] gtop, output logic gtop_n1,
+        output logic grst_nz, output logic grst_n1);
+        logic fnd;
+        fnd = 1'b0; gnz = 1'b0; gtop = 6'd0; gtop_n1 = 1'b0;
+        for (int t = ge; t >= gb; t--) begin
+            if (!fnd && sv[2*t +: 2] != 2'b00) begin
+                fnd = 1'b1; gnz = 1'b1;
+                gtop    = 6'(t);
+                gtop_n1 = (sv[2*t +: 2] == N1);
             end
         end
-    end
-    // отдельный проход для rest (старший ненулевой ниже p_top)
-    always_comb begin
-        logic rf;
-        rf = 1'b0; rest_n1 = 1'b0;
-        for (int t = W-2; t >= 0; t--) begin
-            if (!rf && 32'(t) < 32'(p_top) && sum[2*t +: 2] != 2'b00) begin
-                rf = 1'b1;
-                rest_n1 = (sum[2*t +: 2] == N1);
+        fnd = 1'b0; grst_nz = 1'b0; grst_n1 = 1'b0;
+        for (int t = ge; t >= gb; t--) begin
+            if (!fnd && 32'(t) < 32'(gtop) && sv[2*t +: 2] != 2'b00) begin
+                fnd = 1'b1; grst_nz = 1'b1;
+                grst_n1 = (sv[2*t +: 2] == N1);
             end
+        end
+    endfunction
+
+    // стадия 1 (PH_NORM0A): сырые групповые признаки — NG независимых
+    // параллельных мини-сканов по G тритов (глубина ~2-3 LUT)
+    always_comb begin
+        for (int g = 0; g < NG; g++)
+            gscan_f(sum, g*G, g*G + G - 1, g_nz[g], g_top[g], g_top_n1[g],
+                    g_rest_nz[g], g_rest_n1[g]);
+    end
+
+    // стадия 2 (PH_NORM0B): слияние групп сверху вниз из ЗАРЕГИСТРИРОВАННЫХ
+    // g_*_q (3-way приоритет, глубина ~2 LUT) -> финальные сканы.
+    // rest_n1: второй трит верхней ненулевой группы; если его нет — старший
+    // трит следующей ненулевой группы ниже; если и его нет — 0.
+    always_comb begin
+        p_found = g_nz_q[2] | g_nz_q[1] | g_nz_q[0];
+        if (g_nz_q[2]) begin
+            p_top   = g_top_q[2];
+            sum_neg = g_top_n1_q[2];
+            if (g_rest_nz_q[2])      rest_n1 = g_rest_n1_q[2];
+            else if (g_nz_q[1])      rest_n1 = g_top_n1_q[1];
+            else if (g_nz_q[0])      rest_n1 = g_top_n1_q[0];
+            else                     rest_n1 = 1'b0;
+        end else if (g_nz_q[1]) begin
+            p_top   = g_top_q[1];
+            sum_neg = g_top_n1_q[1];
+            if (g_rest_nz_q[1])      rest_n1 = g_rest_n1_q[1];
+            else if (g_nz_q[0])      rest_n1 = g_top_n1_q[0];
+            else                     rest_n1 = 1'b0;
+        end else begin
+            p_top   = g_top_q[0];
+            sum_neg = g_top_n1_q[0];
+            if (g_rest_nz_q[0])      rest_n1 = g_rest_n1_q[0];
+            else                     rest_n1 = 1'b0;
         end
     end
 
     // BUG-048: дешифровка P_can — из ЗАРЕГИСТРИРОВАННЫХ сканов (сырые флаги
-    // p_found_q/p_top_q/rest_n1_q захвачены в PH_NORM0A). Конус sum -> p_can_q/
-    // k_nrm_q теряет слой дешифровки + вычитания, приоритетный скан
-    // заканчивается на сырых регистрах.
+    // p_found_q/p_top_q/rest_n1_q захвачены в PH_NORM0B, BUG-053). Конус
+    // sum -> p_can_q/k_nrm_q теряет слой дешифровки + вычитания, приоритетный
+    // скан заканчивается на сырых регистрах.
     always_comb begin
         if (!p_found_q)         P_can = 6'd0;
         else if (p_top_q == 0)  P_can = 6'd0;                  // |sum| == 1
@@ -547,16 +621,20 @@ module tfadd_raw (
         e_sum_next = es9[7:0];
     end
 
-    // ---- FSM: фиксированные 14 тактов (BUG-045: PH_NORM разбит на 2 под-фазы;
+    // ---- FSM: фиксированные 15 тактов (BUG-045: PH_NORM разбит на 2 под-фазы;
     // BUG-046: PH_NORM1 разрезан на PH_NORM1A/PH_NORM1B — регистр
     // fq_q/corr_n1_q делил конус sum -> fq_dec_q на две стадии;
     // BUG-047: стадия 1 разрезана ещё раз, 10 -> 11 состояний;
     // BUG-048: ADD 3 секции -> 6 половин (+3 состояния) и сырые скан-флаги
-    //   в PH_NORM0A (+1 состояние), 11 -> 15 состояний) ----
+    //   в PH_NORM0A (+1 состояние), 11 -> 15 состояний;
+    // BUG-053: скан разрезан на 2 стадии (PH_NORM0A -> групповые признаки,
+    //   + PH_NORM0B слияние), 15 -> 16 состояний) ----
     // PH_ADD0..PH_ADD5: 6 половинных секций по 7 тритов; переносы между
     //   половинами через carry0a_q/carry1a_q/carry2a_q (BUG-048, разрез (a)).
-    // PH_NORM0A: сырые сканы sum (p_found/p_top/sum_neg/rest_n1) ->
-    //   регистры p_found_q/p_top_q/sum_neg_q/rest_n1_q (BUG-048, разрез (b)).
+    // PH_NORM0A: сырые ГРУППОВЫЕ признаки sum (мини-сканы по G=14 тритов,
+    //   стадия 1 группового префикса BUG-053) -> регистры g_*_q.
+    // PH_NORM0B: слияние групп сверху вниз (стадия 2 BUG-053) ->
+    //   регистры p_found_q/p_top_q/sum_neg_q/rest_n1_q (бывш. BUG-048, разрез (b)).
     // PH_NORM1A: дешифровка P_can (из ЗАРЕГИСТРИРОВАННЫХ флагов), k_nrm_c,
     //   стадия 1 ÷-барреля (fq_mid из |sum| и k_nrm_c[2:0]), |sum| и per-trit
     //   флаги коррекции -> регистры zero_q/sum_q/p_can_q/k_nrm_q/fq_mid_q/
@@ -583,8 +661,11 @@ module tfadd_raw (
     localparam int PH_NORM1C = 12;
     localparam int PH_NORM2 = 13;
     localparam int PH_DONE = 14;
+    localparam int PH_NORM0B = 15;   // BUG-053: слияние групп скана (стадия 2)
+    // (индекс 15 — после PH_DONE — чтобы не перенумеровывать остальные фазы;
+    //  case-порядок не зависит от значений, переходы явные по фазе)
 
-    logic [3:0] phase;   // 15 состояний (PH_DONE=14) -> 4 бита достаточно
+    logic [3:0] phase;   // 16 состояний (0..15) -> 4 бита достаточно
     // ---- PH_NORM1A -> PH_NORM2: промежуточные регистры нормализации (BUG-045) ----
     logic [83:0] fq_dec_q;    // результат floor-деления (без инверсии знака)
     logic        up_big_q;    // P >= 19
@@ -607,6 +688,8 @@ module tfadd_raw (
             sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0;
             p_found_q <= 0; p_top_q <= 0; rest_n1_q <= 0;
             fq_mid_q <= 0; corr_nz_q <= 0; corr_i1_q <= 0;
+            g_nz_q <= 0; g_top_q <= 0; g_top_n1_q <= 0;
+            g_rest_nz_q <= 0; g_rest_n1_q <= 0;
         end else begin
             valid_q <= 0;
             case (phase)
@@ -679,10 +762,22 @@ module tfadd_raw (
                     phase <= PH_NORM0A;
                 end
                 PH_NORM0A: begin
-                    // разрез (b) BUG-048: СЫРЫЕ сканы sum регистрируются сразу
-                    // после приоритетного скана (перенос P_can/k_nrm_c уехал в
-                    // PH_NORM1A) — конус sum_reg -> p_found_q/p_top_q/rest_n1_q
-                    // заканчивается на скане без слоя дешифровки.
+                    // BUG-053 стадия 1: захват «сырых» ГРУППОВЫХ признаков sum.
+                    // NG независимых параллельных мини-сканов по G=14 тритов
+                    // (глубина ~2-3 LUT) — конус sum_reg -> g_*_q без общей
+                    // цепочки; слияние групп уехало в PH_NORM0B.
+                    g_nz_q      <= g_nz;
+                    g_top_q     <= g_top;
+                    g_top_n1_q  <= g_top_n1;
+                    g_rest_nz_q <= g_rest_nz;
+                    g_rest_n1_q <= g_rest_n1;
+                    phase <= PH_NORM0B;
+                end
+                PH_NORM0B: begin
+                    // BUG-053 стадия 2: слияние групп сверху вниз (3-way приоритет
+                    // из ЗАРЕГИСТРИРОВАННЫХ g_*_q, глубина ~2 LUT) -> те же
+                    // финальные сканы, что старая PH_NORM0A (BUG-048, разрез (b))
+                    // брала прямо от sum; дешифровка P_can по-прежнему в PH_NORM1A.
                     p_found_q <= p_found;
                     p_top_q   <= p_top;
                     sum_neg_q <= sum_neg;
@@ -692,7 +787,7 @@ module tfadd_raw (
                 PH_NORM1A: begin
                     // разрез 1 (BUG-046) + BUG-047 + BUG-048: дешифровка P_can из
                     // ЗАРЕГИСТРИРОВАННЫХ флагов (p_found_q/p_top_q/rest_n1_q из
-                    // PH_NORM0A) — конус от sum_reg до p_can_q/zero_q является
+                    // PH_NORM0B) — конус от sum_reg до p_can_q/zero_q является
                     // ТОЛЬКО дешифровкой (2-3 LUT). BUG-052: k_nrm_q удалён,
                     // вычитание -18 ушло в PH_NORM1B от регистра p_can_q.
                     zero_q    <= !p_found_q;
