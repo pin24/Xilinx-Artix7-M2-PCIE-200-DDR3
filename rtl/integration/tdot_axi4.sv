@@ -167,13 +167,33 @@ module tdot_axi4 #(
     assign clk   = M_AXI_ACLK;
     assign rst_n = M_AXI_ARESETN;
 
+    // ---- BUG-054: локальный буфер сброса ядра (fix recovery rst->CLR, 32/16) ----
+    // Внешний rst_n приходит от proc_sys_reset 125M внутри BD (rst_core_125M) и
+    // разводится на CLR-входы ВСЕХ регистров ядра (огромный fanout) — FATAL
+    // recovery-путь rst_core_125M -> gen_ad[7].u_add/fq_q_reg[44]/CLR (-1.595).
+    // 2-стадийный синхронизатор-буфер на clk образует локальный асинхронный
+    // сброс ТОЛЬКО для u_core: деассерция на 2 такта позже внешней (корректно:
+    // старт задачи всегда после reset_assert), а recovery-путь CLR начинается с
+    // регистра рядом с ядром (короткий reset-tree), а не из удалённого BD-IP.
+    (* ASYNC_REG = "TRUE" *)
+    logic rst_core_b0, rst_core_buf;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rst_core_b0  <= 1'b0;   // активный НИЗКИЙ сброс (как rst_n)
+            rst_core_buf <= 1'b0;
+        end else begin
+            rst_core_b0  <= 1'b1;
+            rst_core_buf <= rst_core_b0;
+        end
+    end
+
     // ==================== ядро ====================
     logic [48*NUM_MAC-1:0] core_data, core_weights;
     logic core_valid_in, core_valid_out;
     logic [47:0] core_result;
 
     compute_dot_par_raw #(.NUM_MAC(NUM_MAC), .ADDERS(ADDERS)) u_core (
-        .clk(clk), .rst_n(rst_n),
+        .clk(clk), .rst_n(rst_core_buf),
         .data_in(core_data), .weights(core_weights), .valid_in(core_valid_in),
         .result_out(core_result), .valid_out(core_valid_out)
     );

@@ -44,16 +44,10 @@
 //   FSM/латентность НЕ менялись (14 тактов). Семантика бит-в-бит:
 //   A/B tb_tdot_axi4 24/24 байта.
 //
-// BUG-052 (микро-разрез последнего тонкого пути PH_NORM1A): регистр k_nrm_q
-//   УДАЛЁН — вычитание -18 (было k_nrm_q <= k_nrm_c, k_nrm_c = P_can - 18)
-//   ушло из конуса rest_n1_q/p_top_q (WNS-путь со slack +0.011ns) в PH_NORM1B:
-//   все потребители k_nrm (стадия 2 ÷-барреля, corr_n1, sat_k, e_sum_next)
-//   считают k_nrm = p_can_q - 18 комбинаторно от РЕГИСТРА p_can_q (захват
-//   PH_NORM1A). Математика та же: k_nrm_q был = k_nrm_c = P_can-18, а
-//   p_can_q == P_can того же такта. Стадия 1 ÷-барреля (fq_mid_q) по-прежнему
-//   читает комбинаторный k_nrm_c[2:0] от P_can (не менялось). FSM/латентность
-//   НЕ менялись (15 состояний/14 тактов). Семантика бит-в-бит:
-//   A/B tb_tdot_axi4 24/24 байта.
+// BUG-052 (микро-разрез тонкого пути PH_NORM1A, 16/4): регистр k_nrm_q был
+//   удалён (вычитание -18 ушло в PH_NORM1B от регистра p_can_q). При 32/16
+//   ЭТОТ путь стал FATAL (p_can_q -> fq_q, -1.976) — см. BUG-054, который
+//   возвращает захват k_nrm_q в PH_NORM1A (математика не меняется).
 //
 // BUG-053 (тайминг-догоняние, последний FATAL gen_ad[1], WNS -0.017ns):
 //   приоритетный скан sum (p_found/p_top/sum_neg/rest_n1) разрезан на ДВЕ
@@ -70,6 +64,16 @@
 //   (доказательство: proof_gprefix.py, 2.0M+ векторов old-scan == prefix,
 //   0 расхождений). Латентность: 14 -> 15 тактов (16 состояний, +PH_NORM0B).
 //   Семантика бит-в-бит: A/B tb_tdot_axi4 24/24 байта.
+//
+// BUG-054 (тайминг-цикл 32/16, FATAL p_can_q -> fq_q, WNS -1.976ns): путь
+//   PH_NORM1B p_can_q_reg -> fq_q_reg шёл через k_nrm = p_can_q - 18 (comb) и
+//   баррель-финал {k_nrm[5:3]} -> 8:1-mux. Стало: захват k_nrm_q <= k_nrm_c
+//   в PH_NORM1A ПАРАЛЛЕЛЬНО fq_mid_q (оба от комбинаторики NORM1A, та же
+//   фаза), все потребители PH_NORM1B (финал ÷-барреля по k_nrm_q[5:3],
+//   corr_n1, sat_k, e_sum_next) читают ТОЛЬКО регистр k_nrm_q. Стадии 1/2
+//   барреля согласованы: k_nrm_q == k_nrm_c того же такта (как при BUG-051).
+//   Математика бит-в-бит та же. FSM/латентность НЕ менялись (16 состояний/
+//   15 тактов). Семантика: A/B tb_tdot_axi4 24/24 байта.
 //
 // Семантика НЕ изменилась (бит-в-бит). Доказательство: proof_tfadd_barrel.py
 // (ALL PROOFS PASSED, 280k+ векторов) + A/B на xsim: tb_tfadd_equiv.sv.
@@ -504,7 +508,7 @@ module tfadd_raw (
     logic        up_big;      // P >= 19  -> floor/3^(P-18)
     logic        dn_small;    // P <= 17  -> x3^(18-P)
     logic [5:0]  k_nrm_c;     // сырое P - 18 (комбинаторно, стадия 1 ÷-барреля, BUG-047)
-    logic [5:0]  k_nrm;       // P - 18 = p_can_q - 18 (1..23); BUG-052: от регистра p_can_q
+    logic [5:0]  k_nrm_q;     // P - 18 (1..23), захват PH_NORM1A (BUG-054: разрез p_can_q -> fq_q)
     logic        sat_entry, sat_k, sat_norm;
     logic [83:0] fq;          // ÷-баррель (сдвиг |sum|)
     // ---- BUG-051: ÷-баррель fq разрезан на ДВЕ регистровые стадии ----
@@ -526,13 +530,13 @@ module tfadd_raw (
     assign up_big   = !zero_q && (p_can_q >= 6'd19);
     assign dn_small = !zero_q && (p_can_q <= 6'd17);
     assign k_nrm_c  = P_can - 6'd18;
-    // BUG-052: k_nrm считается от ЗАРЕГИСТРИРОВАННОЙ p_can_q (захват PH_NORM1A)
-    // вместо удалённого регистра k_nrm_q — путь rest_n1_q -> k_nrm_q разорван;
-    // математика та же: k_nrm_q был = k_nrm_c = P_can-18, p_can_q == P_can.
-    assign k_nrm    = p_can_q - 6'd18;
+    // BUG-054: k_nrm_q (захват PH_NORM1A из k_nrm_c = P_can - 18) — все потребители
+    // PH_NORM1B (финал ÷-барреля по k_nrm_q[5:3], corr_n1, sat_k, e_sum_next)
+    // читают РЕГИСТР, а не комбинаторный p_can_q - 18: конус p_can_q -> fq_q
+    // сокращён до 8:1-мукса по 3 битам селекта k_nrm_q[5:3] (FATAL -1.976, 32/16).
     assign sat_entry = (e_sum > 8'sd40);
     assign sat_k     = up_big &&
-        (($signed({e_sum[7], e_sum}) + $signed({2'b00, k_nrm})) > 9'sd40);
+        (($signed({e_sum[7], e_sum}) + $signed({2'b00, k_nrm_q})) > 9'sd40);
     assign sat_norm  = sat_entry || sat_k;
 
     // ÷-баррель, стадия 1 (коарс: сдвиг на k_nrm[2:0] тритов, 0..7):
@@ -550,7 +554,7 @@ module tfadd_raw (
     // две регистровые ступени: (t + 8·k_hi) + k_lo == t + k_nrm).
     always_comb begin
         logic [5:0] k_hi8;
-        k_hi8 = {k_nrm[5:3], 3'b000};
+        k_hi8 = {k_nrm_q[5:3], 3'b000};
         for (int t = 0; t < W; t++)
             fq[2*t +: 2] = (t + k_hi8 <= W-1)
                          ? fq_mid_q[2*(t + k_hi8) +: 2] : 2'b00;
@@ -562,7 +566,7 @@ module tfadd_raw (
         logic cf;
         cf = 1'b0; corr_n1 = 1'b0;
         for (int t = W-1; t >= 0; t--) begin
-            if (!cf && 32'(t) < 32'(k_nrm) && corr_nz_q[t]) begin
+            if (!cf && 32'(t) < 32'(k_nrm_q) && corr_nz_q[t]) begin
                 cf = 1'b1;
                 corr_n1 = corr_i1_q[t];
             end
@@ -613,7 +617,7 @@ module tfadd_raw (
     always_comb begin
         logic signed [8:0] es9;
         if (up_big)
-            es9 = $signed({e_sum[7], e_sum}) + $signed({2'b00, k_nrm});
+            es9 = $signed({e_sum[7], e_sum}) + $signed({2'b00, k_nrm_q});
         else if (dn_small)
             es9 = $signed({e_sum[7], e_sum}) - $signed({3'b000, k_dn});
         else
@@ -686,6 +690,7 @@ module tfadd_raw (
             carry0a_q <= 0; carry1a_q <= 0; carry2a_q <= 0;
             fq_q <= 0; corr_n1_q <= 0;
             sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0;
+            k_nrm_q <= 0;
             p_found_q <= 0; p_top_q <= 0; rest_n1_q <= 0;
             fq_mid_q <= 0; corr_nz_q <= 0; corr_i1_q <= 0;
             g_nz_q <= 0; g_top_q <= 0; g_top_n1_q <= 0;
@@ -801,6 +806,10 @@ module tfadd_raw (
                     corr_nz_q   <= corr_nz;
                     corr_i1_q   <= corr_i1;
                     fq_mid_q    <= fq_mid;
+                    // BUG-054: k_nrm_q <= k_nrm_c (= P_can - 18, тот же такт, что
+                    // fq_mid_q) — стадии 1/2 ÷-барреля согласованы (k_nrm_q ==
+                    // k_nrm_c, как при BUG-051); PH_NORM1B читает только регистр.
+                    k_nrm_q     <= k_nrm_c;
                     phase <= PH_NORM1B;
                 end
                 PH_NORM1B: begin
