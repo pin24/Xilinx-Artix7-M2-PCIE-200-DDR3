@@ -2,16 +2,17 @@
 // tfadd_raw.sv — сумматор НЕНОРМАЛИЗОВАННЫХ продуктов TFloat48, BARREL-версия
 // ============================================================================
 // Шаг 1 плана пайплайнинга дерева (разрешено пользователем, 2026-09-06).
-// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 22 такта (23 состояния; было 21 такт/22
-//   состояния до BUG-057, 15 тактов/16 состояний до BUG-056, 14 тактов/15
-//   после BUG-053, 10 тактов/11 после BUG-047, 9 тактов/10 после BUG-046,
-//   8 тактов/9 до):
+// ЛАТЕНТНОСТЬ: ФИКСИРОВАННАЯ 23 такта (24 состояния; было 22 такта/23
+//   состояния до BUG-059, 21 такт/22 до BUG-057, 15 тактов/16 состояний
+//   до BUG-056, 14 тактов/15 после BUG-053, 10 тактов/11 после BUG-047,
+//   9 тактов/10 после BUG-046, 8 тактов/9 до):
 //   IDLE -> INIT -> ALGN(баррель) -> ADD0..ADD11 (6 секций x 2 под-фазы 3+4
 //   трита, BUG-048+BUG-056) ->
 //   NORM0A(под-групп. мини-сканы 7 тритов, ст.1a BUG-057) ->
 //   NORM0B(слияние под-групп в группы, ст.1b BUG-057) ->
 //   NORM0C(слияние групп, ст.2 BUG-053) ->
-//   NORM1A -> NORM1B -> NORM1C(pipe fq_dec) -> NORM2 -> DONE.
+//   NORM1A -> NORM1B -> NORM1C(borrow lo, 21 трит) -> NORM1C2(borrow hi,
+//   21 трит, BUG-059) -> NORM2 -> DONE.
 //
 // BUG-048 (тайминг-цикл, gen_ad[u_add]): два разреза остаточных путей.
 //   (a) ADD-фазы: каждая 14-тритная секция сумматора разрезана пополам
@@ -102,6 +103,21 @@
 //   барреля согласованы: k_nrm_q == k_nrm_c того же такта (как при BUG-051).
 //   Математика бит-в-бит та же. FSM/латентность НЕ менялись (16 состояний/
 //   15 тактов). Семантика: A/B tb_tdot_axi4 24/24 байта.
+//
+// BUG-059 (тайминг-догоняние 32/16, запас после BUG-058 +0.030 минимальный):
+//   borrow-цепочка тернарного декремента fq_dec_f (42 трита серийного borrow
+//   из corr_n1_q в PH_NORM1C) разрезана пополам, как ADD-цепочки BUG-056:
+//   PH_NORM1C считает ПЕРВЫЕ 21 трит (0..20) из fq_q/corr_n1_q и
+//   регистрирует fq_dec_lo_q + borrow_top_q (borrow, выходящий из трита 20);
+//   НОВАЯ PH_NORM1C2 считает ВТОРЫЕ 21 трит (21..41) из fq_q[83:42] и
+//   ЗАРЕГИСТРИРОВАННОГО borrow_top_q -> fq_dec_q = {hi, lo}. corr_n1_q НЕ
+//   тронут (остаётся в PH_NORM1B вместе с fq_q, как до BUG-058) — компактность
+//   NORM1C против BUG-058 сохранена. Перенос «N1 -> P1 + borrow дальше»
+//   ассоциативен (риппл, как ADD-переносы): итог бит-в-бит тот же fq_dec_f.
+//   Путь corr_n1_q -> fq_dec_q (42 трита) сокращён до двух половин по 21
+//   триту на такт. ФАЗ 23 -> 24, латентность 22 -> 23 такта (валид-агностично:
+//   контроллер ждёт valid_out, lockstep принимает сдвиг). Семантика бит-в-бит:
+//   A/B tb_tdot_axi4 24/24 байта.
 //
 // Семантика НЕ изменилась (бит-в-бит). Доказательство: proof_tfadd_barrel.py
 // (ALL PROOFS PASSED, 280k+ векторов) + A/B на xsim: tb_tfadd_equiv.sv.
@@ -634,28 +650,54 @@ module tfadd_raw (
             end
         end
     end
-    // тернарный декремент fq (borrow идёт по цепочке N1). Вынесен в ФУНКЦИЮ,
-    // чтобы бит-в-бит тот же результат считать в PH_NORM1C от
-    // ЗАРЕГИСТРИРОВАННОГО входа (fq_q, corr_n1_q) — разрез конуса
-    // sum -> fq_dec_q (BUG-046). Функция идентична прежнему always_comb.
-    function automatic logic [83:0] fq_dec_f(input logic [83:0] fq_in,
-                                             input logic        corr_in);
+    // тернарный декремент fq (borrow идёт по цепочке N1). BUG-059: единая
+    // функция fq_dec_f (42 трита) разрезана на ДВЕ половины по 21 триту —
+    // fq_dec_lo_f (триты 0..20, PH_NORM1C) возвращает {borrow_out, fq_lo}
+    // (регистрируются в borr_top_q/fq_dec_lo_q) и fq_dec_hi_f (триты 21..41,
+    // PH_NORM1C2) стартует от ЗАРЕГИСТРИРОВАННОГО borrow_top_q. Циклы
+    // идентичны прежнему (ассоциативная риппл-цепочка): итог бит-в-бит тот же.
+    function automatic logic [43:0] fq_dec_lo_f(input logic [83:0] fq_in,
+                                                input logic        corr_in);
         logic [1:0] borr;
         logic signed [2:0] sv;
-        fq_dec_f = fq_in;
-        borr   = corr_in ? N1 : 2'b00;
-        for (int t = 0; t < W; t++) begin
+        logic [83:0] fqb;
+        fqb  = fq_in;
+        borr = corr_in ? N1 : 2'b00;
+        for (int t = 0; t < 21; t++) begin
             if (borr != 2'b00) begin
-                sv = trit_val2(fq_dec_f[2*t +: 2]) + trit_val2(borr);
+                sv = trit_val2(fqb[2*t +: 2]) + trit_val2(borr);
                 if (sv < -1) begin
-                    fq_dec_f[2*t +: 2] = P1;   // -2 -> +1, borrow дальше
+                    fqb[2*t +: 2] = P1;   // -2 -> +1, borrow дальше
                     borr = N1;
                 end else begin
-                    fq_dec_f[2*t +: 2] = int2trit2(sv);
+                    fqb[2*t +: 2] = int2trit2(sv);
                     borr = 2'b00;
                 end
             end
         end
+        fq_dec_lo_f = {borr, fqb[41:0]};
+    endfunction
+
+    function automatic logic [41:0] fq_dec_hi_f(input logic [41:0] fq_hi,
+                                                input logic [1:0]  borr_in);
+        logic [1:0] borr;
+        logic signed [2:0] sv;
+        logic [41:0] fqb;
+        fqb  = fq_hi;
+        borr = borr_in;
+        for (int t = 0; t < 21; t++) begin
+            if (borr != 2'b00) begin
+                sv = trit_val2(fqb[2*t +: 2]) + trit_val2(borr);
+                if (sv < -1) begin
+                    fqb[2*t +: 2] = P1;   // -2 -> +1, borrow дальше
+                    borr = N1;
+                end else begin
+                    fqb[2*t +: 2] = int2trit2(sv);
+                    borr = 2'b00;
+                end
+            end
+        end
+        fq_dec_hi_f = fqb;
     endfunction
 
     // k_dn: мин(18-P, e_sum+40) для ×-барреля NORM2; сам ×-баррель
@@ -698,7 +740,10 @@ module tfadd_raw (
     // BUG-056: ADD 3+4-под-фазы, 16 -> 22 состояния;
     // BUG-057: скан разрезан ЕЩЁ раз — под-группы SG=7 (PH_NORM0A) /
     //   слияние под-групп (PH_NORM0B) / слияние групп (PH_NORM0C), 22 -> 23
-    //   состояния) ----
+    //   состояния;
+    // BUG-059: borrow-цепочка fq_dec разрезана пополам (PH_NORM1C первая
+    //   половина 21 трит -> fq_dec_lo_q/borr_top_q, PH_NORM1C2 вторая половина
+    //   21 трит -> fq_dec_q), 23 -> 24 состояния) ----
     // PH_ADD0..PH_ADD11: 12 под-фаз по <=4 тритов (BUG-048: 6 половин по 7
     //   тритов; BUG-056: ещё раз пополам 3+4, +6 состояний) - переносы между
     //   половинами через carry0a_q/carry1a_q/carry2a_q, внутри половин через
@@ -718,7 +763,10 @@ module tfadd_raw (
     //   corr_nz_q/corr_i1_q), up_big/dn_small, k_dn, e_sum_next, sat_norm ->
     //   регистры fq_q/corr_n1_q/up_big_q/dn_small_q/k_dn_q/e_sum_next_q/sat_q
     //   (вторая половина стадии 1; BUG-047, BUG-049)
-    // PH_NORM1C: тернарный декремент fq_q (borrow-цепочка) -> fq_dec_q
+    // PH_NORM1C: тернарный декремент fq_q, ПЕРВАЯ половина borrow-цепочки
+    //   (триты 0..20) -> fq_dec_lo_q + borrow_top_q (BUG-059)
+    // PH_NORM1C2: ВТОРАЯ половина (триты 21..41 от borrow_top_q) -> fq_dec_q
+    //   (BUG-059)
     // PH_NORM2: инверсия знака (up_big) / ×-баррель (dn_small) + e_sum_next
     localparam int PH_IDLE = 0;
     localparam int PH_INIT = 1;
@@ -743,12 +791,16 @@ module tfadd_raw (
     localparam int PH_DONE = 20;
     localparam int PH_NORM0B = 21;   // BUG-053: слияние групп скана; BUG-057: слияние под-групп (стадия 1b)
     localparam int PH_NORM0C = 22;   // BUG-057: слияние групп скана (стадия 2, бывш. PH_NORM0B)
-    // (индексы 21/22 — после PH_DONE — чтобы не перенумеровывать остальные
+    localparam int PH_NORM1C2 = 23;  // BUG-059: вторая половина borrow-цепочки fq_dec
+    // (индексы 21/22/23 — после PH_DONE — чтобы не перенумеровывать остальные
     //  фазы; case-порядок не зависит от значений, переходы явные по фазе)
 
-    logic [4:0] phase;   // 23 состояния (0..22) -> 5 бит (было 16 -> 4 бита)
+    logic [4:0] phase;   // 24 состояния (0..23) -> 5 бит (было 23 -> 5 бит)
     // ---- PH_NORM1A -> PH_NORM2: промежуточные регистры нормализации (BUG-045) ----
     logic [83:0] fq_dec_q;    // результат floor-деления (без инверсии знака)
+    // ---- BUG-059: разрез borrow-цепочки fq_dec (PH_NORM1C -> NORM1C2) ----
+    logic [41:0] fq_dec_lo_q; // младшая половина fq_dec (триты 0..20, захват PH_NORM1C)
+    logic [1:0]  borr_top_q;  // borrow, выходящий из трита 20 (вход второй половины)
     logic        up_big_q;    // P >= 19
     logic        dn_small_q;  // P <= 17
     logic [5:0]  k_dn_q;      // сдвиг влево (×3^k)
@@ -767,6 +819,7 @@ module tfadd_raw (
             carry0a_q <= 0; carry1a_q <= 0; carry2a_q <= 0;
             b0a_q <= 0; b0b_q <= 0; b1a_q <= 0; b1b_q <= 0; b2a_q <= 0; b2b_q <= 0;
             fq_q <= 0; corr_n1_q <= 0;
+            fq_dec_lo_q <= 0; borr_top_q <= 0;
             sum_q <= 0; sum_neg_q <= 0; p_can_q <= 0;
             k_nrm_q <= 0;
             p_found_q <= 0; p_top_q <= 0; rest_n1_q <= 0;
@@ -958,11 +1011,20 @@ module tfadd_raw (
                     phase <= PH_NORM1C;
                 end
                 PH_NORM1C: begin
-                    // разрез 3 (BUG-046, перенесён сюда): тернарный декремент fq_q
-                    // (borrow-цепочка 42 тритов) — бит-в-бит то же значение fq_dec,
-                    // что считал прежний комбинаторный блок, из зарегистрированного
-                    // входа (fq_q/corr_n1_q из PH_NORM1B).
-                    fq_dec_q <= fq_dec_f(fq_q, corr_n1_q);
+                    // BUG-059: ПЕРВАЯ половина borrow-цепочки (триты 0..20) из
+                    // зарегистрированного входа (fq_q/corr_n1_q из PH_NORM1B, без
+                    // изменений против BUG-046) -> fq_dec_lo_q + borrow_top_q.
+                    // corr_n1_q по-прежнему живёт в PH_NORM1B (компактность NORM1C
+                    // против BUG-058 не нарушена: fq_dec_q здесь НЕ пишется).
+                    {borr_top_q, fq_dec_lo_q} <= fq_dec_lo_f(fq_q, corr_n1_q);
+                    phase <= PH_NORM1C2;
+                end
+                PH_NORM1C2: begin
+                    // BUG-059: ВТОРАЯ половина (триты 21..41) от ЗАРЕГИСТРИРОВАННОГО
+                    // borrow_top_q и fq_q[83:42] -> fq_dec_q = {hi, lo}. Итог
+                    // (бит-в-бит прежний fq_dec_f): младшие 42 бита — прямой выход
+                    // fq_dec_lo_q, старшие 42 — посчитаны от borrow_top_q.
+                    fq_dec_q <= {fq_dec_hi_f(fq_q[83:42], borr_top_q), fq_dec_lo_q};
                     phase <= PH_NORM2;
                 end
                 PH_NORM2: begin
