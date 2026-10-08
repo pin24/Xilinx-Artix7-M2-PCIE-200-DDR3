@@ -172,9 +172,10 @@ module tdot_axi4 #(
     // разводится на CLR-входы ВСЕХ регистров ядра (огромный fanout) — FATAL
     // recovery-путь rst_core_125M -> gen_ad[7].u_add/fq_q_reg[44]/CLR (-1.595).
     // 2-стадийный синхронизатор-буфер на clk образует локальный асинхронный
-    // сброс ТОЛЬКО для u_core: деассерция на 2 такта позже внешней (корректно:
-    // старт задачи всегда после reset_assert), а recovery-путь CLR начинается с
-    // регистра рядом с ядром (короткий reset-tree), а не из удалённого BD-IP.
+    // сброс для ядра И аккумулятора (u_core, u_acc): деассерция на 2 такта позже
+    // внешней (корректно: старт задачи всегда после reset_assert), а recovery-путь
+    // CLR начинается с регистра рядом с ядром (короткий reset-tree), а не из
+    // удалённого BD-IP. Внешние контроллеры/AXI-Lite/FIFO остаются на rst_n.
     (* ASYNC_REG = "TRUE" *)
     logic rst_core_b0, rst_core_buf;
     always_ff @(posedge clk or negedge rst_n) begin
@@ -209,7 +210,7 @@ module tdot_axi4 #(
     logic [47:0] add_res_w;
 
     tfadd48 u_acc (
-        .clk(clk), .rst_n(rst_n),
+        .clk(clk), .rst_n(rst_core_buf),
         .valid_in(acc_start_q), .a(acc_q), .b(core_result),
         .valid_out(add_valid_w), .result(add_res_w)
     );
