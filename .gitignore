@@ -58,3 +58,15 @@ parsetab.py
 
 # local snapshots (audit 2026-09-11)
 _backup_*/
+
+# Build/sim artifacts (backup 2026-10-11)
+*.wdb
+*.vcd
+*.pdb
+*.tmh
+*.out
+*.err
+*.mcs
+*.bit
+xsim.dir/
+.taskqueue/

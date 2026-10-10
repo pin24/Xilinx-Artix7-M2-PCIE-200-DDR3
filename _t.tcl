@@ -1,0 +1,2 @@
+puts HELLO_FROM_VIVADO
+exit
