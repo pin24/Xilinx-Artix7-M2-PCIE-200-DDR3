@@ -611,6 +611,29 @@ class TdotCore:
     def read_tf48(self, addr: int) -> int:
         return struct.unpack("<Q", self.dev.read_dma(addr, 8))[0] & 0xFFFFFFFFFFFF
 
+    # ---- 6-байт packing (TFloat48 = ровно 6 байт; экономия 25% DDR3/PCIe) ----
+    # Экономия: пара data+weights = 12 байт вместо 16 -> PCIe-потолок +33%.
+    # ТРЕБУЕТ от RTL: burst-адрес i*6 (не i*8) и word-straddle barrel
+    # (элементы пересекают 64-битные слова). RTL tdot_axi4 сейчас читает i*8,
+    # 6 не кратна 8 -> packed-AXI с выравниванием. Это отдельная RTL-задача.
+    def pack_tf48(self, bits_list) -> bytes:
+        buf = bytearray()
+        for b in bits_list:
+            buf += struct.pack("<Q", b & 0xFFFFFFFFFFFF)[:6]
+        return bytes(buf)
+
+    def unpack_tf48(self, buf: bytes, n: int) -> list:
+        out = []
+        for i in range(n):
+            out.append(int.from_bytes(buf[i*6:(i+1)*6], "little"))
+        return out
+
+    def write_tf48_packed(self, addr: int, bits_list) -> None:
+        self.dev.write_dma(addr, self.pack_tf48(bits_list))
+
+    def read_tf48_packed(self, addr: int, n: int) -> list:
+        return self.unpack_tf48(self.dev.read_dma(addr, n * 6), n)
+
     # ---- высокоуровневый вызов ----
     def dot(self, data_bits, weights_bits, data_addr: int = 0x0,
             weights_addr: int = 0x1000, result_addr: int = 0x2000) -> int:
