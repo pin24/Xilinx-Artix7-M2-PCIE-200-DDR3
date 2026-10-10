@@ -455,7 +455,7 @@ module tdot_axi4 #(
                 end
                 RST_ACT: begin
                     // выдача AR на очередной burst
-                    if (!ar_valid_r && (rd_issued < rd_total)) begin
+                    if (!ar_valid_r && (rd_issued < rd_total) && !fifo_full) begin
                         ar_addr_r <= rd_addr + (rd_issued * SW);
                         ar_len_r  <= (rd_total - rd_issued >= BURST_RD_LEN) ?
                                      (BURST_RD_LEN - 1) : (rd_total - rd_issued - 1);
@@ -607,6 +607,8 @@ module tdot_axi4 #(
     logic [31:0] n_left_q;            // сколько пар осталось (включая текущий проход)
     logic [31:0] elems_done_q;        // пар обработано с начала задачи
     logic [7:0]  passes_q;            // завершено проходов в текущей задаче
+    logic        sat_q;               // n_total был > MAX_N_TOTAL (насыщение) -> completion status
+    logic        align_q;             // адрес задачи не кратен 8 (AXI-выравнивание) -> completion status
 
     // дескриптор (снимается с fifo во время fetch)
     logic        fetch_active;
@@ -659,6 +661,7 @@ module tdot_axi4 #(
             use_sched_q <= 0;
             cur_data_q <= 0; cur_weights_q <= 0; cur_result_q <= 0;
             n_left_q <= 0; elems_done_q <= 0; passes_q <= 0;
+            sat_q <= 0; align_q <= 0;
             sched_rptr_q <= 0; done_cnt_q <= 0; irq_pending_q <= 0;
             fetch_active <= 0; fetch_cnt <= 0;
             for (int i = 0; i < 4; i++) desc_w[i] <= 64'h0;
@@ -680,6 +683,10 @@ module tdot_axi4 #(
                 n_left_q      <= n_total_legacy;
                 elems_done_q  <= 0;
                 passes_q      <= 0;
+                sat_q         <= (n_in_reg > MAX_N_TOTAL);
+                align_q       <= ((data_start_reg[2:0] != 3'h0) ||
+                                  (weights_start_reg[2:0] != 3'h0) ||
+                                  (result_addr_reg[2:0] != 3'h0));
                 cstate <= CS_RD_DATA;
                 rd_addr  <= data_start_reg[AW-1:0];
                 rd_total <= (n_total_legacy > NUM_MAC) ? NUM_MAC : n_total_legacy;
@@ -726,16 +733,24 @@ module tdot_axi4 #(
                     cur_weights_q <= {16'h0, job_weights_addr_q};
                     cur_result_q  <= {16'h0, job_result_addr_q};
                     n_left_q      <= n_total_sched;
-                    elems_done_q  <= 0;
-                    passes_q      <= 0;
-                    cstate <= CS_RD_DATA;
-                    rd_addr  <= job_data_addr_q[AW-1:0];
+    elems_done_q  <= 0;
+    passes_q      <= 0;
+    sat_q         <= (job_n_total_q > MAX_N_TOTAL[15:0]);
+    align_q       <= ((job_data_addr_q[2:0] != 3'h0) ||
+                      (job_weights_addr_q[2:0] != 3'h0) ||
+                      (job_result_addr_q[2:0] != 3'h0));
+    cstate <= CS_RD_DATA;
+    rd_addr  <= job_data_addr_q[AW-1:0];
                     rd_total <= (n_total_sched > NUM_MAC) ? NUM_MAC
                                                           : n_total_sched;
                     rd_start <= 1;
                 end
                 CS_RD_DATA: begin
-                    if (rd_done) begin
+                    if (align_q) begin
+                        // адрес не кратен 8: burst-первый beat частичный -> данные
+                        // смещены. Пропустить вычисление, завершить со статусом align.
+                        cstate <= CS_DONE;
+                    end else if (rd_done) begin
                         cstate <= CS_RD_WEIGHTS;
                         rd_addr  <= cur_weights_q[AW-1:0] + elems_done_q * SW;
                         rd_total <= chunk_n;
@@ -864,7 +879,7 @@ module tdot_axi4 #(
                         // W1: {48'h0, passes[7:0], status[7:0]}
                         wr_addr  <= comp_base_q[AW-1:0]
                                     + {20'h0, sched_rptr_q, 4'b0} + SW;
-                        wr_data  <= {48'h0, passes_q, 8'h00};
+                        wr_data  <= {48'h0, passes_q, 6'b0, align_q, sat_q};
                         wr_start <= 1;
                         cstate <= CS_CMP3;
                     end
