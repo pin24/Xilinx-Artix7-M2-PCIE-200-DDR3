@@ -15,7 +15,16 @@ from block import arith48
 RTL = os.path.dirname(os.path.abspath(__file__))
 BLOCK = os.path.join(RTL, "..", "block")
 SIM = os.path.join(RTL, "sim")
-XIL_BIN = "C:/AMDDesignTools/Vivado/2021.2/bin"
+_CANDS = ["C:/AMDDesignTools/2025.2/Vivado/bin", "C:/Xilinx/Vivado/2025.2/bin",
+          "C:/AMDDesignTools/Vivado/2021.2/bin"]
+XIL_BIN = os.environ.get("VIVADO_BIN")
+if not XIL_BIN:
+    for c in _CANDS:
+        if os.path.exists(os.path.join(c, "xvlog.bat")):
+            XIL_BIN = c
+            break
+    else:
+        XIL_BIN = _CANDS[0]
 NUM_MAC = int(sys.argv[1]) if len(sys.argv) > 1 else 32
 os.makedirs(SIM, exist_ok=True)
 
@@ -187,6 +196,7 @@ def run_sim():
         os.path.join(BLOCK, "tbyte_mul.sv"),
         os.path.join(BLOCK, "tfadd_raw.sv"),
         os.path.join(BLOCK, "tfmul_raw.sv"),
+        os.path.join(BLOCK, "tfadd48.sv"),
         os.path.join(BLOCK, "compute_dot_par_raw.sv"),
         os.path.join(RTL, "tdot_axi4.sv"),
         tb_use,
