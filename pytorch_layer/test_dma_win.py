@@ -112,6 +112,13 @@ class XdmaWinDma(XdmaDevice):
             return h
 
         self._ctrl = _open(self.base + r"\control")
+        # DIAG 2026-10-08: AXI-Lite периферия (TDOT/XADC/GPIO) лежит в BAR0,
+        # доступна через \user (как test_dma.c DEV_CONTROL). \control — это
+        # config-BAR (движ. регистры XDMA), оттуда периферию не прочитать.
+        try:
+            self._user = _open(self.base + r"\user")
+        except XdmaError:
+            self._user = self._ctrl
         try:
             self._h2c = _open(self.base + r"\h2c_0")
         except XdmaError:
@@ -164,13 +171,13 @@ class XdmaWinDma(XdmaDevice):
     def read(self, addr, length=4):
         if not (self.AXI_LITE_BASE <= addr < 0x80000000):
             raise XdmaError(f"addr 0x{addr:X} not in AXI-Lite range")
-        return self._xfer(self._ctrl, False, addr - self.AXI_LITE_BASE,
+        return self._xfer(self._user, False, addr - self.AXI_LITE_BASE,
                           b"", length)
 
     def write(self, addr, data):
         if not (self.AXI_LITE_BASE <= addr < 0x80000000):
             raise XdmaError(f"addr 0x{addr:X} not in AXI-Lite range")
-        self._xfer(self._ctrl, True, addr - self.AXI_LITE_BASE, data, len(data))
+        self._xfer(self._user, True, addr - self.AXI_LITE_BASE, data, len(data))
 
     def read32(self, addr):
         return struct.unpack("<I", self.read(addr, 4))[0]

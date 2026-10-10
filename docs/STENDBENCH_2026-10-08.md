@@ -17,3 +17,13 @@
 ## ШАГ 7 - dot 1: PASS result=0x001000000000 (совпадает с симуляцией=1.0)
 ## ШАГ 8 - dot 16: PASS result=0x066900000000 (16.0 path)
 ## ШАГ 9 - dot 32: PASS result=0x041680000000 (канонический 'сумма 32', совпадает с RTL-эмуляцией tb_tdot) - ЖЕЛЕЗО=СИМУЛЯЦИЯ
+
+## Нагрузочный скрипт stress_platform.py (08.10) — статус
+- Создан: pytorch_layer/stress_platform.py. Полная нагрузка: N DOT-потоков (tdot.dot n=16) + M DMA-потоков (loopback на разные DDR3-оффсеты) + фоновый monitor XADC (temp/VCCINT/CSI), итог+CSSV.
+- Параметры: --sec --dots --dma --n --interval --csv.
+- ПРОВЕДЕНЫ: диагностика (устройство OK, CORE_PARAMS 0x1010=16/16), regs/firmware PASS, loopback 512/1024/2048/1M PASS, dot 1/8/16/32 PASS (dot 32=0x041680000000 совпадает с RTL-эмуляцией - ЖЕЛЕЗО=СИМУЛЯЦИЯ).
+- НАЙДЕНЫ И ИСПРАВЛЕНЫ ПРИ ОТЛАДКЕ:
+  * XdmaWinDma.read/write шли через \control (config-BAR) вместо \user (AXI-Lite периферия TDOT/XADC) => WinError 1. FIX: открыли \user и читаем периферию оттуда (test_dma_win.py).
+  * stress с несколькими потоками падал Access Violation (0xC0000005): XdmaWinDma использует ОДИН event на объект, потоки конкурировали -> гонка. FIX: единый глобальный lock поверх всех dev-операций (ядро всё равно сериализует канал).
+  * XADC temp выдал мусор 4262C при valid=1 (BUG-031: XADC занят MIG). FIX: валидация диапазона (temp -40..125, vcc 0..2) -> инвалидировать мусор.
+- ТЕХНИЧЕСКОЕ: полный stress-прогон на плате НЕ выполнялся (требует разрешения; команда: python stress_platform.py --sec 60 --dots 4 --dma 2 --csv stress.csv). Прошивка на плате = 16/16 (не 32/16).
