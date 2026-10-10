@@ -66,3 +66,30 @@
 - `RD_LEN_W`, `fifo_full` — intentional (будущее расширение), задокументированы в комментариях.
 - REQP-123, отключённый MCP, clk50 create_clock — обоснованные решения, менять без new-аудита не стоит.
 - Симуляционная арифметика верифицирована (RTL == arith48 == torch, max diff ~5e-7).
+
+---
+
+# РЕ-АУДИТ 2026-10-11 (после исправлений)
+
+## Выполнено (коммиты, запушено в GitHub)
+1. **Бэкап** `ddf7710` — рабочее дерево, `AUDIT_PLAN.md`, `_*.tcl/_*.bat`, `.gitignore`+артефакты.
+2. **Харнесс** `e8889b0` — `verify_tdot_axi4.py`: авто-детект Vivado 2025.2 (был жёсткий 2021.2, xvlog не запускался) + добавлен отсутствующий `tfadd48.sv` в список компиляции (чистый `xsim.dir` → elaboration падал). Харнесс теперь воспроизводим с нуля.
+3. **RTL-robustness** `884b5ab` — `tdot_axi4.sv`: completion-статус флаги насыщения long-dot (`sat_q`) и кратности адреса (`align_q`); CS_RD_DATA align-guard пропускает невыровненный burst; read-FSM AR гейтится `!fifo_full` (защитный backpressure). **Инертно для корректных входов** (xsim `got` не изменился — подтверждено прогоном NUM_MAC=32).
+4. **P1b-модель** `p1b_csa_model.py` — base-3 CSA-дерево: NUM_MAC=16 → 4 уровня, 9 3:2-компрессоров/колонку × 20 = **180 LUT-таблиц** против ~50k LUT текущего 24-фазного `tfadd_raw`; латентность 24→4. **Вывод: дерево = LUT-выигрыш, НЕ DSP-выигрыш** (DSP48 бинарный, base-3/base-81 carry s//81 не нативен). DSP48 помогает только финальный binary-add.
+5. **P3-хост** `e9b1937` — `xdma_driver.py` pack/unpack 6-байт TFloat48 (`pack_tf48/write_tf48_packed/read_tf48_packed`), round-trip верифицирован; экономия 25% DDR3/PCIe. RTL-требование: burst `i*6` + word-straddle barrel (6 не кратна 8) — отдельная RTL-задача.
+6. **DDR3 round-trip** — `ddr3_roundtrip_test.py` (mock), 8-байт и 6-байт round-trip OK.
+
+## Ключные находки ре-аудита
+- **Проверка — главный незакрытый зазор.** Харнесс `verify_tdot_axi4.py` (seed 71) даёт 4/4 расхождений при NUM_MAC=32, расходясь в младших тритах. Причина: **эталон харнесса `_norm_raw_rtl` (итеративный floor) НЕ bit-accurate к round-to-nearest `tfadd_raw`** (`P_can = p_top - rest_n1`, `corr_n1`). RTL проверен A/B-тестом по золотым векторам (автор, 24/24); random-харнесс — слабая независимая сверка. **Бит-accurate Python-эталон = крупная отдельная задача** (нужно точное правило round-to-nearest tfadd_raw, 1133 строк/24 фазы).
+- **P1a/P1b RTL-реализация отложена** — вслепую (без bit-accurate эталона) rewrite аккумулятора/дерева нарушает core-инвариант «bit-в-bit» и тихо портит данные. Направление (base-3 CSA дерево + одна нормализация) подтверждено моделью, реализация требует эталона.
+- **P0 (DDR3/MIG)** — статус MIG (mmcm_locked, init_calib_complete) уже доступен через GPIO2 (0x40020008), `check_mig.py` читает; stub в top косметика для sniffer. Блокер — hardware-калибровка MIG (вне кода). Tooling (check_mig.py, test_dma_win.py, ddr3_roundtrip_test.py) готов.
+
+## Обновлённый приоритетный план
+1. **P0-vf:** bit-accurate Python-эталон round-to-nearest `tfadd_raw` → валидация A/B; затем random-харнесс становится доверенным. (фундамент перед P1a/P1b)
+2. **P0-hw:** MIG bring-up на плате (GPIO2), DMA ReadBlock/WriteBlock к 0x80000000, dot из DDR3 vs эталон.
+3. **P1a:** carry-save long-dot аккумулятор + единственная нормализация (после эталона, xsim A/B).
+4. **P1b:** base-3 CSA-дерево LUT (180-360 таблиц, 4 уровня) + финальный binary-add; DSP48 — опционально на финальный add. (после эталона)
+5. **P3:** RTL burst `i*6` + word-straddle barrel для 6-байт packing.
+6. **P2:** rebalance 16 MAC / 8-4-2-1; register slices на AXI-мастере для routing margin.
+7. **P5/P6:** XADC независимый клок + thermal monitor; fallback 110/100 МГц.
+8. Гигиена: удалить неиспользуемые модули (`tbyte_mul`/`tfmac`/`tfmul_kbd`, legacy `tdot_axi_lite`), `.bak_*`, единая `docs/ADDRESS_MAP.md`, подпись+инсталлятор драйвера.
