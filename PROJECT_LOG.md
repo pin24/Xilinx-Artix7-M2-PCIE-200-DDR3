@@ -65,3 +65,31 @@ Top-level RTL `xdma_ddr3_core_top.sv` — общий (flat-variant: нет icap/
 - Каждый коммит/правка помечается [FLAT]/[DFX]/[SHARED] в commit message и в этом логе.
 - Проверка прошивки фиксируется отдельной строкой с указанием версии и NUM_MAC/ADDERS.
 - Артефакты flat → `build/artifacts_flat`; DFX → `build/artifacts_dfx`.
+
+---
+
+## Базовые метрики FLAT (baseline, для сравнения оптимизаций)
+
+### FLAT baseline [FLAT] NUM_MAC=32 ADDERS=16 (собрано, timing MET)
+- Slice LUTs: **85370 / 133800 = 63.80%**
+- Slice Registers: **74116 / 267600 = 27.70%**
+- Block RAM Tile: **43.5 / 365 = 11.92%**
+- DSPs: **0 / 740 = 0.00%**
+- Тайминг: **WNS +0.111 ns, WHS +0.030 ns, TNS/THS 0 — timing MET**
+- Артефакты: `build/artifacts_flat/xdma_ddr3_core_top.bit/.bin/.mcs`
+- xsim: `rtl_vs_arith48.py` 0/8 (RTL==arith48==dot_ref_raw); `verify_tdot_axi4.py` 4/4
+  расхождений = floor-эталон харнесса (seed 71), НЕ RTL-баг (RTL bit-accurate к arith48).
+
+### DFX baseline [DFX] NUM_MAC=16 ADDERS=4 (собрано, timing MET)
+- Тайминг: WNS +0.425 ns, WHS +0.009 ns — timing MET
+- Артефакты: full + partial bitstreams (pblock_rm_partial)
+
+### Целевые направления оптимизации (кандидаты, сравнение после каждого)
+- P1b base-3 CSA-дерево: ожидаемо LUT ядра ↓ (tree ~50k LUT → 180-360 таблиц), latency
+  tree 24→4, tree-throughput 0.67→1 рез./такт. Результат-меняющий → re-verify vs arith48.
+- P2a конвейер MAC-массива: sustained throughput ↑.
+- P3a 6-байт packing RTL (burst i*6 + barrel): PCIe-потолок +33%.
+- P4 pblock/floorplan: routing margin.
+
+Сравнение фиксируется строкой: метрика baseline → после → дельта (LUT/WNS/latency),
+с пометкой [FLAT] и NUM_MAC/ADDERS.
