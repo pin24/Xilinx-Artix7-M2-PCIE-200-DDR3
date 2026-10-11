@@ -544,6 +544,12 @@ class TdotCore:
         full_da = DDR3_BASE + data_addr
         full_wa = DDR3_BASE + weights_addr
         full_ra = DDR3_BASE + result_addr
+        # [FLAT] P1-align guard: RTL burst INCR требует кратности 8 (8-байт слово
+        # TFloat48); невыровненный адрес -> partial первый beat, данные смещены.
+        if (full_da & 7) or (full_wa & 7) or (full_ra & 7):
+            raise XdmaError(
+                f"адрес не кратен 8: data={full_da:#x} weights={full_wa:#x} "
+                f"result={full_ra:#x} - RTL burst требует 8-байтного выравнивания")
         self._reg_w(0x14, full_da & 0xFFFFFFFF)            # DATA_ADDR_LO
         self._reg_w(0x18, (full_da >> 32) & 0xFFFFFFFF)    # DATA_ADDR_HI
         self._reg_w(0x1C, full_wa & 0xFFFFFFFF)            # WEIGHTS_ADDR_LO
