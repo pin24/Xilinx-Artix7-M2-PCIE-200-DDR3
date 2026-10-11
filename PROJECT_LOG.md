@@ -105,3 +105,9 @@ Top-level RTL `xdma_ddr3_core_top.sv` — общий (flat-variant: нет icap/
   харнесса (seed 71), НЕ RTL-баг.
 - Итог: PCIe-потолок (Gen2 x4) — 16 MAC достаточно; −27% LUT, WNS-запас вырос. Целевая
   конфигурация Пете подтверждена на flat-сборке.
+
+### FLAT rebuild [FLAT] NUM_MAC=32 ADDERS=16 — стабильность подтверждена
+- Rebuild идентичен baseline: LUT 85370 (63.8%), WNS +0.111, WHS +0.030, TNS/THS 0 — timing MET,
+  Bitgen Completed. Артефакты `build/artifacts_flat/`. RTL-robustness (sat/align/fifo) + host
+  alignment-guard интегрированы, datapath цел (rtl_vs_arith48 0/8).
+- Открытый зазор: tdot-path (seed 71) exp=05 vs arith48 exp=1a — dedicated расследование tb-формата.
