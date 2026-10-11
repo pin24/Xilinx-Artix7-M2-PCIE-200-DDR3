@@ -49,17 +49,17 @@ import os, subprocess, struct, time
 AXI_LITE_BASE = 0x4000_0000   # начало AXI-Lite окна (BAR0)
 DDR3_BASE     = 0x8000_0000   # база DDR3 (от неё отсчитываются смещения DMA)
 
-# адресная база AXI-Lite регистров ядра (DFX BD, xdma_axi_lite_smc):
-#   M00 GPIO  0x4002_0000    M03 TDOT   0x4002_3000
-#   M01 DFX sock 0x4002_2000 M04 ICAP   0x4002_4000
-#   M02 HWICAP 0x4000_1000   M05 XADC   0x4600_0000
-#   M06 SPI   0x4002_5000
-REG_BASE  = 0x4002_3000      # tdot_axi4 регистры
-ICAP_BASE = 0x4002_4000      # ICAP-контроллер
-GPIO_BASE = 0x4002_0000      # axi_gpio (не используется)
-HWICAP_BASE = 0x4000_1000    # axi_hwicap (если потребуется прямой доступ)
-DFX_SOCK_BASE = 0x4002_2000  # dfx_socket/decouple_shutdown_ctrl (shutdown/decouple GPIO)
-SPI_BASE = 0x4002_5000       # SPI-over-PCIe (hot-flash без JTAG)
+# адресная база AXI-Lite регистров ядра. [FLAT] BD содержит ТОЛЬКО:
+#   M00 GPIO 0x40020000, M03 TDOT 0x40023000, M05 XADC 0x46000000,
+#   DataMover MM2S 0x40010000 / S2MM 0x40018000, DDR3 0x80000000.
+# [DFX]-ONLY (в FLAT BD НЕ существуют, обращение вернёт ошибку BAR):
+#   DFX sock 0x40022000, ICAP 0x40024000, SPI 0x40025000.
+REG_BASE  = 0x4002_3000      # tdot_axi4 регистры (FLAT + DFX)
+ICAP_BASE = 0x4002_4000      # [DFX-only] ICAP-контроллер (в FLAT BD нет)
+GPIO_BASE = 0x4002_0000      # axi_gpio
+HWICAP_BASE = 0x4000_1000    # [DFX-only legacy] axi_hwicap
+DFX_SOCK_BASE = 0x4002_2000  # [DFX-only] dfx_socket/decouple_shutdown_ctrl
+SPI_BASE = 0x4002_5000       # [DFX-only] SPI-over-PCIe (hot-flash без JTAG)
 # legacy alias (модульно совместим со старым именем)
 DDR_BASE = DDR3_BASE
 
