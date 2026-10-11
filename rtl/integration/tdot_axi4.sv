@@ -73,7 +73,7 @@ module tdot_axi4 #(
     parameter int C_M_AXI_ID_WIDTH   = 1,
     parameter int C_M_AXI_ADDR_WIDTH = 32,
     parameter int C_M_AXI_DATA_WIDTH = 64,
-    parameter int BURST_RD_LEN = 16,   // макс. слов в одной read-транзакции
+    parameter int BURST_RD_LEN = 32,   // макс. слов в одной read-транзакции (P3b: длиннее burst = выше обмен)
     parameter int BURST_WR_LEN = 8     // макс. слов в одной write-транзакции
 )(
     // ---- AXI-Lite slave (регистры команд/статуса) ----
