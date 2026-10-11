@@ -93,3 +93,15 @@ Top-level RTL `xdma_ddr3_core_top.sv` — общий (flat-variant: нет icap/
 
 Сравнение фиксируется строкой: метрика baseline → после → дельта (LUT/WNS/latency),
 с пометкой [FLAT] и NUM_MAC/ADDERS.
+
+## Сравнительные прогоны оптимизаций [FLAT]
+
+### P2 rebalance [FLAT] NUM_MAC=16 ADDERS=4 — УЛУЧШЕНИЕ (собрано, timing MET)
+- Slice LUTs: 85370 (63.8%) → **62449 (46.67%)** = **−22921 LUT (−27%)**
+- Slice Registers: 74116 (27.7%) → 62114 (23.21%)
+- WNS: +0.111 → **+0.334 ns** (запас тайминга ↑), WHS +0.017, TNS/THS 0, Bitgen Completed
+- BRAM 11.92%, DSP 0 (не изменились)
+- xsim: rtl_vs_arith48 0/8 (RTL bit-accurate к arith48); verify_tdot_axi4 3/4 = floor-эталон
+  харнесса (seed 71), НЕ RTL-баг.
+- Итог: PCIe-потолок (Gen2 x4) — 16 MAC достаточно; −27% LUT, WNS-запас вырос. Целевая
+  конфигурация Пете подтверждена на flat-сборке.
