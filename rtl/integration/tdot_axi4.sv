@@ -39,6 +39,41 @@
 //   [0x54/0x58] COMP_BASE_LO/HI  база области завершений
 //   [0x5C] SCHED_STATUS RO: бит0 sched_busy, бит1 irq_pending
 //   [0x60] DONE_CNT     RO счётчик завершённых задач (16 бит, free-running)
+//
+// Наблюдаемость (OBS, Task 35; за образец взяты счётчики openTPU,
+// github.com/FeSens/openTPU, docs/observability.md, Apache-2.0):
+//   [0x64] OBS_CTRL    W: бит0 CLEAR (действие: обнулить все счётчики),
+//                      бит1 FREEZE (уровень: пауза счёта событий; CYCLES
+//                      не замирает — free-running всегда)
+//   [0x68] BUILD_ID    RO: первые 8 hex git-коммита битстрима (параметр;
+//                      0 = не передан сборкой). Ответ на «какой битстрим
+//                      на плате» без выгрузки.
+//   [0x6C] CAPS        RO: [7:0] NUM_MAC, [11:8] ADDERS (сатурация 15),
+//                      [15:12] log2(BURST_RD_LEN), [16] планировщик есть,
+//                      [31:24] версия REGMAP (=1)
+//   [0x70/0x74] CYCLES_LO/HI  RO 64-бит free-running счётчик тактов
+//   [0x78] BUSY_CYCLES RO тактов с busy_q=1 (задача исполняется)
+//   [0x7C] MEM_CYCLES  RO тактов в фазе памяти (CS_RD_DATA/CS_RD_WEIGHTS/
+//                      CS_FETCH_DESC)
+//   [0x80] LOAD_CYCLES RO тактов загрузки ядра (CS_LOAD, 2-стадийный)
+//   [0x84] COMPUTE_CYCLES RO тактов вычисления (CS_RUN/CS_WAIT/CS_ACCUM_WAIT)
+//   [0x88] AR_CNT      RO AXI4 read-транзакций (AR handshakes)
+//   [0x8C] BEAT_CNT    RO принятых R-битов (64-бит слов)
+//   [0x90] AR_STALL    RO тактов, когда наш AR держится, а ARREADY=0
+//                      (бэкпрешер интерконнекта)
+//   [0x94] R_WAIT      RO тактов в RST_ACT: биты ещё ожидаются, бит не
+//                      принят, AR-ожидания нет = латентность памяти/
+//                      меж-burst-дыры (аналог STARVE у openTPU)
+//   [0x98] WR_CNT      RO AXI4 write-транзакций (B handshakes)
+//   [0x9C] JOB_CNT     RO запущенных задач (легаси GO + планировщик)
+//   [0xA0] FIFO_FULL_EV RO тактов fifo_full (диагностика; по дизайну 0)
+//   [0xA4] SNAP        W: любое значение — атомарно защёлкнуть все счётчики
+//                      в теневые копии (снимок консистентен по определению)
+//   [0xA8..0xD8]       RO теневые копии: CYCLES_LO_S, CYCLES_HI_S, BUSY_S,
+//                      MEM_S, LOAD_S, COMPUTE_S, AR_S, BEAT_S, AR_STALL_S,
+//                      R_WAIT_S, WR_S, JOB_S, FIFO_FULL_S (13 слов)
+// Все 32-бит счётчики событий переполняются по модулю 2^32 (как у openTPU);
+// CLEAR обнуляет и счётчики, и тени. FREEZE не останавливает CYCLES.
 // Кольцо: 256 дескрипторов (таблица 8 КБ) / 256 завершений (4 КБ), указатели
 // 8-бит с естественным переполнением (mod 256).
 //
@@ -71,8 +106,10 @@ module tdot_axi4 #(
     parameter int C_M_AXI_ID_WIDTH   = 1,
     parameter int C_M_AXI_ADDR_WIDTH = 32,
     parameter int C_M_AXI_DATA_WIDTH = 64,
-    parameter int BURST_RD_LEN = 16,   // макс. слов в одной read-транзакции
-    parameter int BURST_WR_LEN = 8     // макс. слов в одной write-транзакции
+    parameter int BURST_RD_LEN = 32,   // макс. слов в одной read-транзакции
+                                       // (P3b как в main 9f57084: 16→32)
+    parameter int BURST_WR_LEN = 8,    // макс. слов в одной write-транзакции
+    parameter logic [31:0] BUILD_ID = 32'h0 // git-коммит битстрима (OBS 0x68)
 )(
     // ---- AXI-Lite slave (регистры команд/статуса) ----
     input  logic                                  S_AXI_ACLK,
@@ -194,6 +231,26 @@ module tdot_axi4 #(
     logic [31:0] res0_reg, res1_reg;
     logic busy_q, done_q;
 
+    // ==================== наблюдаемость (OBS, Task 35) ====================
+    // За образец — счётчики openTPU (github.com/FeSens/openTPU,
+    // docs/observability.md, Apache-2.0): free-running CYCLES, событийные
+    // счётчики, атомарный SNAP-снимок в тени. Слова 25..54 (байты 0x64..0xD8).
+    localparam int        OBS_REGMAP_V  = 1;
+    localparam logic [3:0] CAPS_L2BURST = $clog2(BURST_RD_LEN);
+    localparam logic [3:0] CAPS_ADDERS  = (ADDERS > 15) ? 4'd15 : ADDERS[3:0];
+    localparam logic [7:0] CAPS_NUMMAC  = NUM_MAC[7:0];
+    logic        obs_freeze_q;   // OBS_CTRL.bit1: пауза событийного счёта
+    logic        obs_clear_q;    // OBS_CTRL.bit0: импульс обнуления
+    logic        obs_snap;       // SNAP: импульс защёлкивания теней
+    logic [63:0] cnt_cycles;
+    logic [31:0] cnt_busy, cnt_mem, cnt_load, cnt_compute;
+    logic [31:0] cnt_ar, cnt_beat, cnt_ar_stall, cnt_r_wait;
+    logic [31:0] cnt_wr, cnt_job, cnt_fifo_full;
+    logic [63:0] snap_cycles;
+    logic [31:0] snap_busy, snap_mem, snap_load, snap_compute;
+    logic [31:0] snap_ar, snap_beat, snap_ar_stall, snap_r_wait;
+    logic [31:0] snap_wr, snap_job, snap_fifo_full;
+
     // ---- регистры планировщика ----
     logic        sched_en_q;        // SCHED_CTRL.bit0
     logic        sched_irq_en_q;    // SCHED_CTRL.bit1
@@ -236,6 +293,7 @@ module tdot_axi4 #(
             sched_en_q <= 0; sched_irq_en_q <= 0; sched_flush_q <= 0;
             sched_wptr_q <= 0;
             desc_base_q <= 0; comp_base_q <= 0;
+            obs_freeze_q <= 0; obs_clear_q <= 0; obs_snap <= 0;
             // sched_rptr_q/irq_pending_q/done_cnt_q — в блоке контроллера
         end else begin
             // приём AW/W в защёлки по handshake каждого канала независимо
@@ -274,11 +332,19 @@ module tdot_axi4 #(
                     6'd20: desc_base_q[63:32] <= wdata_q;
                     6'd21: comp_base_q[31:0]  <= wdata_q;
                     6'd22: comp_base_q[63:32] <= wdata_q;
+                    // ---- наблюдаемость (OBS) ----
+                    6'd25: begin
+                        obs_freeze_q <= wdata_q[1];
+                        obs_clear_q  <= wdata_q[0];   // импульс, самоочистка ниже
+                    end
+                    6'd41: obs_snap <= 1'b1;          // любое значение = снимок
                     default: ;
                 endcase
             end else begin
                 if (go_reg) go_reg <= 0;         // самосброс GO
                 if (sched_flush_q) sched_flush_q <= 0; // самоочистка flush
+                if (obs_clear_q) obs_clear_q <= 0;     // импульс CLEAR
+                if (obs_snap) obs_snap <= 0;           // импульс SNAP
             end
         end
     end
@@ -337,6 +403,38 @@ module tdot_axi4 #(
             6'd22: rdata = comp_base_q[63:32];
             6'd23: rdata = {30'b0, irq_pending_q, sched_busy_q};
             6'd24: rdata = {16'h0, done_cnt_q};
+            // ---- наблюдаемость (OBS) ----
+            6'd25: rdata = {30'b0, obs_freeze_q, 1'b0};
+            6'd26: rdata = BUILD_ID;
+            6'd27: rdata = {8'(OBS_REGMAP_V), 7'b0, 1'b1,
+                            CAPS_L2BURST, CAPS_ADDERS, CAPS_NUMMAC};
+            6'd28: rdata = cnt_cycles[31:0];
+            6'd29: rdata = cnt_cycles[63:32];
+            6'd30: rdata = cnt_busy;
+            6'd31: rdata = cnt_mem;
+            6'd32: rdata = cnt_load;
+            6'd33: rdata = cnt_compute;
+            6'd34: rdata = cnt_ar;
+            6'd35: rdata = cnt_beat;
+            6'd36: rdata = cnt_ar_stall;
+            6'd37: rdata = cnt_r_wait;
+            6'd38: rdata = cnt_wr;
+            6'd39: rdata = cnt_job;
+            6'd40: rdata = cnt_fifo_full;
+            6'd41: rdata = 32'h0;               // SNAP только на запись
+            6'd42: rdata = snap_cycles[31:0];
+            6'd43: rdata = snap_cycles[63:32];
+            6'd44: rdata = snap_busy;
+            6'd45: rdata = snap_mem;
+            6'd46: rdata = snap_load;
+            6'd47: rdata = snap_compute;
+            6'd48: rdata = snap_ar;
+            6'd49: rdata = snap_beat;
+            6'd50: rdata = snap_ar_stall;
+            6'd51: rdata = snap_r_wait;
+            6'd52: rdata = snap_wr;
+            6'd53: rdata = snap_job;
+            6'd54: rdata = snap_fifo_full;
             default: rdata = 32'h0;
         endcase
     end
@@ -404,6 +502,31 @@ module tdot_axi4 #(
     logic [31:0]   rd_total;
     logic [31:0]   rd_issued, rd_recv;
     logic          rd_done;
+    // комбинационные величины очередного burst (P3b + кламп 4KB, Task 35)
+    logic [AW-1:0]  ar_addr_w;
+    logic [12:0]    bnd_bytes_w;   // 13 бит: 4096 не влезает в 12 (12'h1000 = 0!)
+    logic [10:0]    bnd_words_w;
+    logic [7:0]     len_full_w, ar_len_w;
+    logic           ar_hs_w, ar_beat_w;
+
+    always_comb begin
+        ar_addr_w = rd_addr + (rd_issued * SW);
+        // байтов до границы 4KB. Адрес 8-выровнен по контракту хоста
+        // (set_addrs ×8); при хост-баге не-выровненности bnd_words зажимается
+        // в 1 — burst не зависнет, но контракт уже нарушен хостом (см. docs).
+        bnd_bytes_w = 13'h1000 - {1'b0, ar_addr_w[11:0]};
+        bnd_words_w = ((bnd_bytes_w >> AXI_SZ) == 11'd0) ? 11'd1
+                      : (bnd_bytes_w >> AXI_SZ);
+        len_full_w  = ((rd_total - rd_issued) >= BURST_RD_LEN) ?
+                      (BURST_RD_LEN - 1) : (rd_total - rd_issued - 1);
+        // min(len_full, bnd_words-1): burst заканчивается строго ДО границы.
+        // len_full <= 255 всегда, поэтому 8-битный результат корректен.
+        ar_len_w    = ({2'b0, len_full_w} >= (bnd_words_w - 11'd1)) ?
+                      bnd_words_w[7:0] - 8'd1 : len_full_w;
+        // для OBS-счётчиков
+        ar_hs_w   = ar_valid_r && M_AXI_ARREADY;
+        ar_beat_w = (rstate == RST_ACT) && M_AXI_RVALID && r_ready_r;
+    end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -421,11 +544,14 @@ module tdot_axi4 #(
                     end
                 end
                 RST_ACT: begin
-                    // выдача AR на очередной burst
+                    // выдача AR на очередной burst. P3b: BURST_RD_LEN=32
+                    // (256 Б на AR). AXI4 запрещает пересекать 4KB-границу
+                    // (spec A4.3.1) — длина burst клампится до границы:
+                    // в main (9f57084) клампа нет, там это латентный дефект
+                    // при ×8-выровненных, но не 4KB-выровненных адресах.
                     if (!ar_valid_r && (rd_issued < rd_total)) begin
-                        ar_addr_r <= rd_addr + (rd_issued * SW);
-                        ar_len_r  <= (rd_total - rd_issued >= BURST_RD_LEN) ?
-                                     (BURST_RD_LEN - 1) : (rd_total - rd_issued - 1);
+                        ar_addr_r  <= ar_addr_w;
+                        ar_len_r   <= ar_len_w;
                         ar_valid_r <= 1;
                     end
                     if (ar_valid_r && M_AXI_ARREADY) begin
@@ -856,6 +982,78 @@ module tdot_axi4 #(
                 fifo_pop = (rd_idx < n_in_eff);              // data-фаза
             else
                 fifo_pop = ((rd_idx - NUM_MAC) < n_in_eff);  // weights-фаза
+        end
+    end
+
+    // ==================== OBS: фазовые признаки и счётчики ====================
+    // Семантика повторяет openTPU (docs/observability.md): событие считается
+    // в такт, когда оно произошло; CYCLES free-running и FREEZE не подчиняется.
+    wire obs_mem_c      = (cstate == CS_RD_DATA)   || (cstate == CS_RD_WEIGHTS) ||
+                          (cstate == CS_FETCH_DESC);
+    wire obs_load_c     = (cstate == CS_LOAD);
+    wire obs_compute_c  = (cstate == CS_RUN)       || (cstate == CS_WAIT) ||
+                          (cstate == CS_ACCUM_WAIT);
+    // AR держится, слейв не готов (бэкпрешер интерконнекта)
+    wire obs_ar_stall_c = ar_valid_r && !M_AXI_ARREADY;
+    // биты ещё ожидаются, но это не бэкпрешер AR и не приём бита:
+    // латентность памяти и меж-burst-дыры (аналог STARVE у openTPU)
+    wire obs_r_wait_c   = (rstate == RST_ACT) && (rd_recv < rd_total) &&
+                          !ar_beat_w && !obs_ar_stall_c;
+    wire obs_wr_hs_c    = M_AXI_BVALID && b_ready_r;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            cnt_cycles <= 64'd0;
+            cnt_busy <= 32'd0;      cnt_mem <= 32'd0;
+            cnt_load <= 32'd0;      cnt_compute <= 32'd0;
+            cnt_ar <= 32'd0;        cnt_beat <= 32'd0;
+            cnt_ar_stall <= 32'd0;  cnt_r_wait <= 32'd0;
+            cnt_wr <= 32'd0;        cnt_job <= 32'd0;
+            cnt_fifo_full <= 32'd0;
+        end else begin
+            cnt_cycles <= cnt_cycles + 64'd1;    // free-running всегда
+            if (obs_clear_q) begin
+                cnt_busy <= 32'd0;      cnt_mem <= 32'd0;
+                cnt_load <= 32'd0;      cnt_compute <= 32'd0;
+                cnt_ar <= 32'd0;        cnt_beat <= 32'd0;
+                cnt_ar_stall <= 32'd0;  cnt_r_wait <= 32'd0;
+                cnt_wr <= 32'd0;        cnt_job <= 32'd0;
+                cnt_fifo_full <= 32'd0;
+            end else if (!obs_freeze_q) begin
+                cnt_busy      <= cnt_busy      + {31'b0, busy_q};
+                cnt_mem       <= cnt_mem       + {31'b0, obs_mem_c};
+                cnt_load      <= cnt_load      + {31'b0, obs_load_c};
+                cnt_compute   <= cnt_compute   + {31'b0, obs_compute_c};
+                cnt_ar        <= cnt_ar        + {31'b0, ar_hs_w};
+                cnt_beat      <= cnt_beat      + {31'b0, ar_beat_w};
+                cnt_ar_stall  <= cnt_ar_stall  + {31'b0, obs_ar_stall_c};
+                cnt_r_wait    <= cnt_r_wait    + {31'b0, obs_r_wait_c};
+                cnt_wr        <= cnt_wr        + {31'b0, obs_wr_hs_c};
+                cnt_job       <= cnt_job       + {31'b0, job_start ||
+                                                     (cstate == CS_SCHED_KICK)};
+                cnt_fifo_full <= cnt_fifo_full + {31'b0, fifo_full};
+            end
+        end
+    end
+
+    // SNAP: атомарный снимок всех счётчиков (импульс obs_snap из записи 0xA4)
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            snap_cycles <= 64'd0;
+            snap_busy <= 32'd0;      snap_mem <= 32'd0;
+            snap_load <= 32'd0;      snap_compute <= 32'd0;
+            snap_ar <= 32'd0;        snap_beat <= 32'd0;
+            snap_ar_stall <= 32'd0;  snap_r_wait <= 32'd0;
+            snap_wr <= 32'd0;        snap_job <= 32'd0;
+            snap_fifo_full <= 32'd0;
+        end else if (obs_snap) begin
+            snap_cycles <= cnt_cycles;
+            snap_busy <= cnt_busy;           snap_mem <= cnt_mem;
+            snap_load <= cnt_load;           snap_compute <= cnt_compute;
+            snap_ar <= cnt_ar;               snap_beat <= cnt_beat;
+            snap_ar_stall <= cnt_ar_stall;   snap_r_wait <= cnt_r_wait;
+            snap_wr <= cnt_wr;               snap_job <= cnt_job;
+            snap_fifo_full <= cnt_fifo_full;
         end
     end
 

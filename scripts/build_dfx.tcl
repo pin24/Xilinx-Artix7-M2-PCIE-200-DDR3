@@ -94,6 +94,16 @@ puts " JOBS       : ${JOBS}"
 puts " SKIP_SYNTH : ${SKIP_SYNTH}"
 puts "============================================================"
 
+# ---------- 0-b. BUILD_ID (Task 35, за образец — openTPU BUILD_ID) ----------
+# Первые 8 hex git-коммита попадают в регистр tdot BUILD_ID (0x68):
+# ответ на «какой битстрим на плате» читается из железа. Вне git-дерева
+# (архив/экспорт) — 00000000, регистр читается как 0.
+set BUILD_ID_HEX "00000000"
+if {![catch {exec git -C ${ROOT} rev-parse --short=8 HEAD} bid]} {
+    set BUILD_ID_HEX [string trim ${bid}]
+}
+puts " BUILD_ID   : 0x${BUILD_ID_HEX}"
+
 # ---------- 1. Создание проекта (с полной очисткой кэша) ----------
 puts "=== 1. CREATE PROJECT ==="
 file mkdir [file dirname ${PROJ_DIR}]
@@ -322,6 +332,7 @@ add_files -norecurse \
     ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
 set_property generic ADDERS=${ADDERS} [current_fileset]
+set_property generic BUILD_ID=32'h${BUILD_ID_HEX} [current_fileset]
 
 # ---------- 4. Констрейны ----------
 puts "=== 4. ADD CONSTRAINTS ==="
