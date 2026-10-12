@@ -553,3 +553,24 @@ Work Log:
 
 Stage Summary:
 - openTPU — главный источник не RTL-кода, а дисциплины: измеримость (счётчики+трейс), bit-exact CI без Vivado, гейт-процесс турнира. Первое внедрение — счётчики BUSY/MAC/STARVE/DMA_WAIT в GPIO-блок FLAT: дадут число для решения по cherry-pick BURST_RD_LEN=32 и по overlap'у CS_LOAD. Apache-2.0 позволяет прямой перенос с атрибуцией.
+
+---
+Task ID: 35 (+36-a..d аудит)
+Agent: main (Super Z) + 4 аудитора
+Task: Внедрение лучшего из openTPU в сборку: OBS-счётчики + SNAP + BUILD_ID/CAPS, BURST_RD_LEN 16→32 + кламп 4KB; многоагентный аудит и фиксы
+
+Work Log:
+- ВНЕДРЕНИЕ (коммит 55b21fc):
+  - tdot_axi4.sv: OBS-блок по образцу openTPU docs/observability.md (Apache-2.0) — CYCLES 64-бит free-running; событийные 32-бит: BUSY/MEM/LOAD/COMPUTE (фазовая декомпозиция задачи), AR/BEAT/AR_STALL/R_WAIT (память: транзакции/биты/бэкпрешер/латентность-STARVE), WR/JOB/FIFO_FULL; CLEAR (0x64 bit0, импульс, только событийные — семантика openTPU), FREEZE (bit1, не действует на CYCLES), SNAP (0xA4) → 13 атомарных теней 0xA8..0xD8; BUILD_ID (0x68, параметр), CAPS (0x6C: NUM_MAC/ADDERS/log2BURST/SCHED/REGMAP_V=1). Слова 25..54, старая карта не тронута.
+  - BURST_RD_LEN 16→32 (P3b как в main 9f57084) + КЛАМП 4KB (AXI4 A4.3.1): ar_len = min(len_full, bnd_words-1). НАЙДЕН ЛАТЕНТНЫЙ ДЕФЕКТ: и наша старая ветка, и main P3b НЕ клампили — модель (scripts/check_burst_4kb.py, матрица 512 смещений × 75 длин × 4 burst) показала ~1.5-2.5% burst'ов с нарушением границы. NEW: 0 нарушений, бит-в-бит совпадение с OLD там, где OLD корректен (32893/32893), не-выровненные старты (91 контракт-кейс) — без зависаний.
+  - xdma_ddr3_core_top.sv: BUILD_ID проброшен в u_tdot. build_dfx.tcl: BUILD_ID_HEX из git rev-parse --short=8 (+ regexp-гард 8 hex, фоллбэк 00000000 вне git) → generic BUILD_ID=32'h...; в логе сборки строка «BUILD_ID : 0x...».
+  - xdma_driver.py: аддитивные методы TdotCore: read_build_id (с гардом против main-магии 'TDOT' на 0x68: regmap_version==0 → 0), read_caps, obs_clear (RMW — сохраняет FREEZE), obs_freeze, obs_snap, obs_read, obs_read_shadow.
+  - Доки: docs/OBSERVABILITY.md (полная таблица, семантика, рецепт профиля), строка в docs/ADDRESS_MAP.md §3.
+- АУДИТ (4 параллельных агента, вердикты все GO-с-замечаниями, CRITICAL=0): 36-a RTL-adversarial (FIFO_FULL_EV легально ~2-4 такта/проход — дока врала; CLEAR не трогает тени — дока врала, openTPU-фидельно; obs_clear снимал FREEZE; CAPS_L2BURST без сатурации; sched_busy_q не драйверится — PRE-EXISTING, вне скоупа), 36-b host-compat (карта RTL↔host сошлась 18/18 офсетов; verify_fpga_backend PASS; ссылка в ADDRESS_MAP), 36-c build-flow (TCL 5/5 сценариев PASS вкл. нет-git/detached/worktree; 32'h-форма — правильный выбор; Makefile не тронут; НАХОДКА: main-FLAT имеет MAGIC 'TDOT' на 0x68 → хост-гард добавлен), 36-d openTPU-fidelity (таблица семантики сверена; RTL фиделен openTPU, врала только дока; SNAP-счётчик снимков — сознательное упрощение).
+- ФИКСЫ ПО АУДИТУ (коммит 187dc69): доки FIFO_FULL_EV/CLEAR/тени/SNAP-read-0/W-R; obs_clear RMW; read_build_id regmap-гард; CAPS_L2BURST сатурация (+ фикс каста logic[3:0]'→4' по pyslang); BUILD_ID regexp-гард в tcl; модель расширена (burst 1/256, totals 1000/2000, не-выровненная секция); ADDRESS_MAP строка OBS.
+- ПРОВЕРКИ: pyslang-элаборация 10 файлов сборки — 0 новых ошибок (3 пре-эксистинга в whitelist: tfadd_raw UsedBeforeDeclared ×2, tfmul_raw AutoFromStaticInit; Vivado их толерирует); check_burst_4kb PASS; check_driver_build PASS=30 FAIL=0; py_compile OK; verify_fpga_backend PASS (агент 36-b); structural lint OK.
+
+Stage Summary:
+- Готово к стенду: счётчики дают базовую линию compute-vs-memory ДО любых дальнейших оптимизаций (overlap CS_LOAD, cherry-pick решений); BUILD_ID закрывает «какой битстрим на плате»; BURST=32+кламп безопаснее main (у которого клампа нет — кандидат на upstream).
+- Лаборатории: (1) полная сборка — ожидать «BUILD_ID : 0x...»; после прошивки read_build_id()==хэш коммита, read_caps()=={regmap:1, sched:True, log2_burst:5, adders, num_mac}; (2) xsim directed-тест: кламп-кейс (data_addr у 4KB-границы, BURST=32) + OBS-smoke (CLEAR→GO→SNAP→тени: JOB=1, BEAT=2n+4 если с fetch); (3) TB пинит BURST_RD_LEN(16) — при апдейте TB перевести на 32.
+- Push — по явной команде (локально ahead 4: a804fca, 55b21fc, 187dc69 + worklog).
