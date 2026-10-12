@@ -110,6 +110,7 @@ DDR3 **не сконфигурирован**, поэтому:
 | `0x54`/`0x58` | `COMP_BASE_LO/HI` | R/W | `[31:0]` | База области завершений в DDR3 |
 | `0x5C` | `SCHED_STATUS` | R | `[0]` sched_busy, `[1]` irq_pending | Состояние движка планировщика |
 | `0x60` | `DONE_CNT` | R | `[15:0]` | Свободно-бежащий счётчик завершённых задач |
+| `0x64`–`0xD8` | `OBS_*` | R/W | см. доку | **Наблюдаемость (Task 35)**: OBS_CTRL/BUILD_ID/CAPS/CYCLES/BUSY/MEM/LOAD/COMPUTE/AR/BEAT/AR_STALL/R_WAIT/WR/JOB/FIFO_FULL/SNAP + 13 теней. Полная таблица и семантика — `docs/OBSERVABILITY.md` |
 
 ### 3.1. Планировщик: дескрипторы, завершения, IRQ
 

@@ -14,10 +14,11 @@
 Матрица: все ×8-выровненные смещения внутри 4KB-страницы (512 шт.) × длины
 векторов 1..520 слов + граничные случаи. Адреса — DDR3 0x8000_0000 + offset.
 """
-BURST_LENS = (16, 32)
+BURST_LENS = (1, 16, 32, 256)
 BASE = 0x8000_0000
 PAGE = 0x1000
-TOTALS = list(range(1, 65)) + [128, 200, 255, 256, 257, 300, 384, 512, 520]
+TOTALS = list(range(1, 65)) + [128, 200, 255, 256, 257, 300, 384, 512, 520,
+                               1000, 2000]
 
 
 def old_len(addr, rd_total, rd_issued, burst):
@@ -111,9 +112,39 @@ def main():
                                   f"off=0x{off:X} total={total}")
                             fails += 1
 
+    # --- не-×8-выровненные старты (нарушение хост-контракта) ---
+    # RTL не зависает, ar_len зажимается до минимума; straddle неизбежен
+    # и классифицируется как вина хоста. Проверяем: нет зависаний/отрицательных,
+    # NEW даёт ar_len=0 в первом burst при bnd_bytes<8, биты не теряются.
+    unaligned_cases = unaligned_straddles = 0
+    for total in (1, 8, 32, 100):
+        for off in list(range(0xFe0, PAGE)):
+            if off % 8 == 0:
+                continue
+            addr = BASE + off
+            seq = issue_bursts(addr, total, 32, new_len)
+            if seq is None:
+                print(f"NEW UNALIGNED HANG: off=0x{off:X} total={total}")
+                fails += 1
+                continue
+            unaligned_cases += 1
+            beats = sum(L + 1 for _, L in seq)
+            if beats != total:
+                print(f"NEW UNALIGNED BEATS: off=0x{off:X} total={total}")
+                fails += 1
+            a0, L0 = seq[0]
+            if (PAGE - (a0 & 0xFFF)) < 8 and L0 != 0:
+                print(f"NEW UNALIGNED len!=0 at bnd<8: off=0x{off:X} L={L0}")
+                fails += 1
+            for a, L in seq:
+                if crosses_4k(a, L):
+                    unaligned_straddles += 1   # вина хоста, не NEW
+
     print("=" * 64)
     print(f"Кейсов: смещений {len(offsets)} x длин {len(TOTALS)} = "
-          f"{len(offsets) * len(TOTALS)} на конфиг")
+          f"{len(offsets) * len(TOTALS)} на конфиг; "
+          f"не-выровненных: {unaligned_cases} (straddle-кейсы контракта: "
+          f"{unaligned_straddles})")
     for b in BURST_LENS:
         pct = 100.0 * old_viol[b] / max(1, old_total_cases[b] * 8)  # ~на burst
         print(f"OLD burst={b}: нарушений границ {old_viol[b]} "
@@ -122,9 +153,9 @@ def main():
     print(f"NEW(16)==OLD(16) там, где OLD корректен: "
           f"{splits_equal_where_old_ok}/{splits_old_ok_cases}")
     print("=" * 64)
-    if fails == 0 and new_viol[16] == 0 and new_viol[32] == 0:
-        print("PASS: NEW не пересекает 4KB ни в одном кейсе; биты не теряются;"
-              " OLD подтверждён нарушающим.")
+    if fails == 0 and all(v == 0 for v in new_viol.values()):
+        print("PASS: NEW не пересекает 4KB ни в одном кейсе (выровненные); "
+              "биты не теряются; OLD подтверждён нарушающим.")
         return 0
     print(f"FAIL: {fails} проблем")
     return 1

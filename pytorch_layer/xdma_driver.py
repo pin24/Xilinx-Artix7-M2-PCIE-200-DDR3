@@ -375,7 +375,9 @@ class TdotCore:
     OBS_R_WAIT       = 0x94   # RO тактов ожидания данных (аналог STARVE)
     OBS_WR           = 0x98   # RO AXI4 write-транзакций
     OBS_JOB          = 0x9C   # RO запущенных задач
-    OBS_FIFO_FULL    = 0xA0   # RO тактов fifo_full (по дизайну 0)
+    OBS_FIFO_FULL    = 0xA0   # RO тактов fifo_full; при полных проходах
+                              # (n_in >= NUM_MAC) ~2-4 такта/проход ЛЕГАЛЬНО —
+                              # тревога только при аномальном росте
     OBS_SNAP         = 0xA4   # W: любое значение = атомарный снимок
     OBS_SHADOW_BASE  = 0xA8   # RO: 13 слов теней (CYCLES_LO/HI + 11 счётчиков)
 
@@ -383,7 +385,15 @@ class TdotCore:
                   "ar", "beat", "ar_stall", "r_wait", "wr", "job", "fifo_full"]
 
     def read_build_id(self) -> int:
-        """BUILD_ID битстрима (первые 8 hex git-коммита; 0 = не передан)."""
+        """BUILD_ID битстрима (первые 8 hex git-коммита; 0 = не передан).
+
+        Осторожно с кросс-ветками: на main-FLAT (без OBS-карты) слово 0x68
+        отдаёт MAGIC 'TDOT' (0x54444F54) — валидно выглядящий фейк. Гард:
+        если regmap_version (CAPS[31:24]) == 0, битстрим без OBS-карты ->
+        возвращаем 0.
+        """
+        if (self._reg_r(self.OBS_CAPS) >> 24) & 0xFF == 0:
+            return 0   # битстрим без OBS (например, main-FLAT): MAGIC не BUILD_ID
         return self._reg_r(self.OBS_BUILD_ID)
 
     def read_caps(self) -> dict:
@@ -398,8 +408,14 @@ class TdotCore:
         }
 
     def obs_clear(self) -> None:
-        """Обнулить все OBS-счётчики (импульс CLEAR)."""
-        self._reg_w(self.OBS_CTRL, 0x1)
+        """Обнулить событийные OBS-счётчики (импульс CLEAR).
+
+        Семантика openTPU: CYCLES и теневые регистры (SNAP-снимки) НЕ
+        затрагиваются. Запись в OBS_CTRL обновляет ОБА бита, поэтому здесь
+        read-modify-write: активный FREEZE сохраняется.
+        """
+        cur = self._reg_r(self.OBS_CTRL)
+        self._reg_w(self.OBS_CTRL, 0x1 | (cur & 0x2))
 
     def obs_freeze(self, on: bool) -> None:
         """Пауза событийного счёта (CYCLES продолжает идти)."""

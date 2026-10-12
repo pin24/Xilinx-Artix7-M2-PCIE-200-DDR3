@@ -66,14 +66,23 @@
 //                      меж-burst-дыры (аналог STARVE у openTPU)
 //   [0x98] WR_CNT      RO AXI4 write-транзакций (B handshakes)
 //   [0x9C] JOB_CNT     RO запущенных задач (легаси GO + планировщик)
-//   [0xA0] FIFO_FULL_EV RO тактов fifo_full (диагностика; по дизайну 0)
+//   [0xA0] FIFO_FULL_EV RO тактов fifo_full. ВНИМАНИЕ: при полном проходе
+//                      (n_in >= NUM_MAC) в конце weights-burst FIFO ЛЕГАЛЬНО
+//                      бывает ровно полон ~2-4 такта на проход — это НЕ
+//                      деградация. Тревога = аномальный рост относительно
+//                      ~3×passes
 //   [0xA4] SNAP        W: любое значение — атомарно защёлкнуть все счётчики
-//                      в теневые копии (снимок консистентен по определению)
+//                      в теневые копии (снимок консистентен по определению);
+//                      читается 0 (у openTPU читается число снимков — мы это
+//                      упростили, отличий по теням нет)
 //   [0xA8..0xD8]       RO теневые копии: CYCLES_LO_S, CYCLES_HI_S, BUSY_S,
 //                      MEM_S, LOAD_S, COMPUTE_S, AR_S, BEAT_S, AR_STALL_S,
 //                      R_WAIT_S, WR_S, JOB_S, FIFO_FULL_S (13 слов)
 // Все 32-бит счётчики событий переполняются по модулю 2^32 (как у openTPU);
-// CLEAR обнуляет и счётчики, и тени. FREEZE не останавливает CYCLES.
+// CLEAR обнуляет СОБЫТИЙНЫЕ счётчики (не CYCLES, не тени — семантика
+// openTPU: их CLEAR тоже не трогает UPTIME и тени). FREEZE не действует
+// на CYCLES; запись в OBS_CTRL обновляет ОБА бита (CLEAR не сохраняет
+// FREEZE — хост делает RMW, см. xdma_driver.py obs_clear()).
 // Кольцо: 256 дескрипторов (таблица 8 КБ) / 256 завершений (4 КБ), указатели
 // 8-бит с естественным переполнением (mod 256).
 //
@@ -236,7 +245,12 @@ module tdot_axi4 #(
     // docs/observability.md, Apache-2.0): free-running CYCLES, событийные
     // счётчики, атомарный SNAP-снимок в тени. Слова 25..54 (байты 0x64..0xD8).
     localparam int        OBS_REGMAP_V  = 1;
-    localparam logic [3:0] CAPS_L2BURST = $clog2(BURST_RD_LEN);
+    // log2(BURST_RD_LEN) с сатурацией: 4 бита врут при BURST_RD_LEN >= 32768
+    // (все AXI4-легальные значения ≤ 256 -> clog2 ≤ 8, помещается);
+    // не-степень двойки даёт ⌈log2⌉ (округление вверх) — это сознательно:
+    // поле информативное, а не точное
+    localparam logic [3:0] CAPS_L2BURST = ($clog2(BURST_RD_LEN) > 15) ? 4'd15 :
+                                          4'($clog2(BURST_RD_LEN));
     localparam logic [3:0] CAPS_ADDERS  = (ADDERS > 15) ? 4'd15 : ADDERS[3:0];
     localparam logic [7:0] CAPS_NUMMAC  = NUM_MAC[7:0];
     logic        obs_freeze_q;   // OBS_CTRL.bit1: пауза событийного счёта
@@ -520,7 +534,10 @@ module tdot_axi4 #(
         len_full_w  = ((rd_total - rd_issued) >= BURST_RD_LEN) ?
                       (BURST_RD_LEN - 1) : (rd_total - rd_issued - 1);
         // min(len_full, bnd_words-1): burst заканчивается строго ДО границы.
-        // len_full <= 255 всегда, поэтому 8-битный результат корректен.
+        // Инвариант (проверен перебором в check_burst_4kb.py): ветка клампа
+        // достижима только при bnd_words <= 256 (иначе len_full ≤ 255 <
+        // < bnd_words-1), поэтому срез [7:0] безпотерьен для любого
+        // AXI4-легального BURST_RD_LEN <= 256.
         ar_len_w    = ({2'b0, len_full_w} >= (bnd_words_w - 11'd1)) ?
                       bnd_words_w[7:0] - 8'd1 : len_full_w;
         // для OBS-счётчиков

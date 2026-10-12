@@ -102,6 +102,11 @@ set BUILD_ID_HEX "00000000"
 if {![catch {exec git -C ${ROOT} rev-parse --short=8 HEAD} bid]} {
     set BUILD_ID_HEX [string trim ${bid}]
 }
+# гард: в регистр 32'h идёт ровно 8 hex (rev-parse --short=8 теоретически
+# может вернуть длиннее — усечение в Vivado пошло бы по младшим, а не «первые 8»)
+if {![regexp {^[0-9a-f]{8}$} $BUILD_ID_HEX]} {
+    set BUILD_ID_HEX "00000000"
+}
 puts " BUILD_ID   : 0x${BUILD_ID_HEX}"
 
 # ---------- 1. Создание проекта (с полной очисткой кэша) ----------
