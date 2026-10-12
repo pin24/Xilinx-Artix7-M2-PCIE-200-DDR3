@@ -538,3 +538,18 @@ Work Log:
 - Верификация после push+fetch: ahead/behind 0/0, рабочее дерево чистое, origin HEAD = 4535447.
 Stage Summary:
 - На стенде теперь: git pull --ff-only → build.cmd → ожидать «Creating INF from INX (version 1.1.2.0)» без USAGE-дампа → install.cmd (админ) → reboot → test_xdma.exe.
+
+---
+Task ID: 34
+Agent: main (Super Z)
+Task: Исследование openTPU (github.com/FeSens/openTPU) — что заимствовать для нашего тернарного TFloat48-движка; ответ на «что нам дадут эти улучшения»
+
+Work Log:
+- Клонирован openTPU (tip 810632e, 2026-10-12, Apache-2.0, ~162K строк). Это зрелый TPU: Kintex-7 xc7k480t, 2×DDR3-1066 (17.1 GB/s peak), LiteDRAM с CPU-самокалибровкой (12 с, без хоста), систолический MXU (MCOLS=4, int8, D=128-байт чанки) + fp32 VPU + квантизатор, ISA (8×32-bit слов/инстр.), ISA-симулятор как спецификация, bit-exact RTL==ISA==карта (0 ulp), ядро ol+компилятор, профилировщик Lens, счётчики/трейс-буфер, турнир архитектур. Реально гоняет Qwen3/LFM2/Gemma4/Phi-4-mini (decode 4-86 tok/s, DRAM 82-94% пика).
+- Прочитаны: README.md, docs/mxu_systolic.md, docs/observability.md, docs/tourney.md, docs/stream.md (шапка), структура rtl/ и tests/.
+- Отбор переносимого (детали в ответе пользователю): (1) пер-юнит free-running счётчики + SNAP-снапшоты + STARVE-семантика (BUSY−MAC−STARVE) — измерить compute-bound vs memory/AR-bound нашего tdot; (2) bit-exact Verilator CI против Python-модели (наши CS_LOAD и 2'sd2 баги ловятся этим классом тестов); (3) принципы управления конвейером MXU: row-gated pops (без CE в compute), overlap следующей команды с drain'ом текущей, размер result FIFO (их 32→64: «32 blocked the pops, MLP decode +18%») → у нас аналог = overlap CS_LOAD весов следующего вызова с compute текущего; (4) BUILD_ID/CAPS-регистры (git-коммит битстрима в HW — у нас FLAT/TMUL/лабораторные сборки); (5) методика турнира (гейты lint→bit-exact→perf→synth, area_eq, accept-правила) как оформление нашей параллельной лабораторной работы; (6) scoreboard-подход: аналитическая Python-модель циклов, калибруемая замерами (у них ошибка 0.4-2.7%).
+- НЕ переносится (с мотивацией): LiteDRAM (MIG работает, их мотив — ECC/мульти-канал/CPU-калибровка; у нас 1×16-bit линия), ISA+секвенсор+компилятор (архитектурный оверкилл для GEMV-блока), FP4/int8-квант (другая арифметика; параллель их KL-vs-floor валидации ↔ наш открытый floor-vs-round), сам систолический DSP-массив (int8 DSP48-цепи ≠ тернарная LUT-арифметика, DSP=0 намеренно).
+- Код не менялся; pure analysis. Коммит — только worklog.
+
+Stage Summary:
+- openTPU — главный источник не RTL-кода, а дисциплины: измеримость (счётчики+трейс), bit-exact CI без Vivado, гейт-процесс турнира. Первое внедрение — счётчики BUSY/MAC/STARVE/DMA_WAIT в GPIO-блок FLAT: дадут число для решения по cherry-pick BURST_RD_LEN=32 и по overlap'у CS_LOAD. Apache-2.0 позволяет прямой перенос с атрибуцией.
