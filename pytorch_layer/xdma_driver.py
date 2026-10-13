@@ -604,6 +604,89 @@ class TdotCore:
         cres1 = self._reg_r(0x30) & 0xFFFF             # CORE_RES1 = {16'h0, result[47:32]}
         return ((cres1 & 0xFFFF) << 32) | (cres0 & 0xFFFFFFFF)
 
+    # ---- наблюдаемость (OBS, Task 35; за образец — openTPU, Apache-2.0) ----
+    # Адреса в main-карте СДВИНУТЫ относительно ветки XDMA_DDR3_TMUL на +0x8:
+    # в main 0x64/0x68 заняты CORE_PARAMS/MAGIC, поэтому OBS начинаются с 0x6C.
+    # Все методы АДДИТИВНЫЕ: существующее поведение TdotCore не меняется.
+    OBS_CTRL         = 0x6C   # W: bit0 CLEAR (импульс), bit1 FREEZE (уровень)
+    OBS_BUILD_ID     = 0x70   # RO: git-коммит битстрима (32'h0 = не передан)
+    OBS_CAPS         = 0x74   # RO: [7:0] NUM_MAC, [11:8] ADDERS,
+                              #     [15:12] log2(BURST_RD_LEN), [16] SCHED,
+                              #     [31:24] версия REGMAP
+    OBS_CYCLES_LO    = 0x78   # RO, 64-бит free-running
+    OBS_CYCLES_HI    = 0x7C
+    OBS_BUSY         = 0x80   # RO тактов busy_q=1
+    OBS_MEM          = 0x84   # RO тактов фазы памяти (RD_DATA/RD_WEIGHTS/FETCH)
+    OBS_LOAD         = 0x88   # RO тактов CS_LOAD
+    OBS_COMPUTE      = 0x8C   # RO тактов CS_RUN/CS_WAIT/CS_ACCUM_WAIT
+    OBS_AR           = 0x90   # RO AXI4 read-транзакций
+    OBS_BEAT         = 0x94   # RO принятых 64-бит слов
+    OBS_AR_STALL     = 0x98   # RO тактов AR-бэкпрешера
+    OBS_R_WAIT       = 0x9C   # RO тактов ожидания данных (аналог STARVE)
+    OBS_WR           = 0xA0   # RO AXI4 write-транзакций
+    OBS_JOB          = 0xA4   # RO запущенных задач
+    OBS_FIFO_FULL    = 0xA8   # RO тактов fifo_full (по дизайну 0)
+    OBS_SNAP         = 0xAC   # W: любое значение = атомарный снимок
+    OBS_SHADOW_BASE  = 0xB0   # RO: 13 слов теней (CYCLES_LO/HI + 11 счётчиков)
+
+    _OBS_ORDER = ["cycles_lo", "cycles_hi", "busy", "mem", "load", "compute",
+                  "ar", "beat", "ar_stall", "r_wait", "wr", "job", "fifo_full"]
+
+    def read_build_id(self) -> int:
+        """BUILD_ID битстрима (первые 8 hex git-коммита; 0 = не передан)."""
+        return self._reg_r(self.OBS_BUILD_ID)
+
+    def read_caps(self) -> dict:
+        """CAPS: конфигурация битстрима, читаемая из железа."""
+        v = self._reg_r(self.OBS_CAPS)
+        return {
+            "regmap_version": (v >> 24) & 0xFF,
+            "sched":          bool((v >> 16) & 1),
+            "log2_burst":     (v >> 12) & 0xF,
+            "adders":         (v >> 8) & 0xF,
+            "num_mac":        v & 0xFF,
+        }
+
+    def obs_clear(self) -> None:
+        """Обнулить все OBS-счётчики (импульс CLEAR)."""
+        self._reg_w(self.OBS_CTRL, 0x1)
+
+    def obs_freeze(self, on: bool) -> None:
+        """Пауза событийного счёта (CYCLES продолжает идти)."""
+        self._reg_w(self.OBS_CTRL, 0x2 if on else 0x0)
+
+    def obs_snap(self) -> None:
+        """Атомарно защёлкнуть все счётчики в теневые регистры."""
+        self._reg_w(self.OBS_SNAP, 0x1)
+
+    def obs_read(self) -> dict:
+        """Прочитать все счётчики (последовательно; для консистентного
+        снимка вызывайте obs_snap() и читайте obs_read_shadow())."""
+        r = lambda off: self._reg_r(off)
+        lo = r(self.OBS_CYCLES_LO)
+        return {
+            "cycles":     (r(self.OBS_CYCLES_HI) << 32) | lo,
+            "busy":       r(self.OBS_BUSY),
+            "mem":        r(self.OBS_MEM),
+            "load":       r(self.OBS_LOAD),
+            "compute":    r(self.OBS_COMPUTE),
+            "ar":         r(self.OBS_AR),
+            "beat":       r(self.OBS_BEAT),
+            "ar_stall":   r(self.OBS_AR_STALL),
+            "r_wait":     r(self.OBS_R_WAIT),
+            "wr":         r(self.OBS_WR),
+            "job":        r(self.OBS_JOB),
+            "fifo_full":  r(self.OBS_FIFO_FULL),
+        }
+
+    def obs_read_shadow(self) -> dict:
+        """Теневые регистры после obs_snap(): консистентный атомарный снимок."""
+        vals = [self._reg_r(self.OBS_SHADOW_BASE + 4 * i)
+                for i in range(len(self._OBS_ORDER))]
+        d = dict(zip(self._OBS_ORDER, vals))
+        d["cycles"] = (d.pop("cycles_hi") << 32) | d.pop("cycles_lo")
+        return d
+
     # ---- данные ----
     def write_tf48(self, addr: int, bits_list) -> None:
         """Раскладывает список 48-битных TFloat48 по 8 байт/элемент."""

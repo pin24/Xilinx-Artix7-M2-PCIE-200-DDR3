@@ -1,6 +1,47 @@
 # Worklog
 
 ---
+Task ID: 2026-10-11-obs-merge
+Agent: MultiTool
+Task: Слияние OBS из ветки XDMA_DDR3_TMUL в main (сохранение host-контракта MAGIC/CORE_PARAMS)
+Work Log:
+- Изучены 4 новых коммита XDMA_DDR3_TMUL (a804fca, 55b21fc, 187dc69, a7b44fd) — tdot OBS-наблюдаемость.
+- В методологии: не переключаем ветку; OBS-функциональность влита в main аккуратной правкой, чтобы сохранить host-контракт (в main 0x64=CORE_PARAMS, 0x68=MAGIC). Поэтому OBS в main СДВИНУТЫ на 0x6C+ (в TMUL они на 0x64+).
+- Изменено/добавлено:
+  - rtl/integration/tdot_axi4.sv — параметр BUILD_ID, OBS-регистры (0x6C OBS_CTRL, 0x70 BUILD_ID, 0x74 CAPS, 0x78..0xA8 счётчики, 0xAC SNAP, 0xB0..0xE0 тени), счётчики+SNAP-блоки, 4KB-кламп read-burst.
+  - rtl/integration/xdma_ddr3_core_top.sv — параметр BUILD_ID, проброс в u_tdot.
+  - scripts/build_flat.tcl + build_dfx.tcl — generic BUILD_ID=32'h<hex-коммит>.
+  - pytorch_layer/xdma_driver.py — TdotCore OBS-методы (read_build_id/read_caps/obs_*).
+  - scripts/check_burst_4kb.py — модель верификации 4KB-burst (перенос из TMUL).
+  - docs/OBSERVABILITY.md (новый), docs/ADDRESS_MAP.md §3.4.
+Stage Summary:
+- Полный xvlog-линт всех flat-RTL — чисто (0 ERROR/WARNING), включая OBS-tdot и top.
+- check_burst_4kb.py — PASS (NEW не пересекает 4KB; OLD нарушает; эквивалентность на адекватных случаях).
+- xdma_driver.py import ok, OBS-методы присутствуют.
+- Аудит OBS-карты: адреса RTL↔host↔docs совпадают (смещение +0x8 от TMUL); конфликта с MAGIC/CORE_PARAMS нет.
+- НЕ коммичено (по правилу — только по явному запросу).
+
+---
+Task ID: 2026-10-11-audit
+Agent: MultiTool
+Task: Полный аудит связей/регистров/адресации + SPI-over-PCIe → неблокирующий stub
+Work Log:
+- Проведён сводный аудит адресной карты (новая 0x4002xxxx / DDR3 0x80000000 / BRAM 0x10000000),
+  регистровых карт периферии (tdot/icap/xadc/gpio/spi), RTL-связей top и host-драйвера.
+  Отчёт: docs/AUDIT_FULL_2026-10-11.md.
+- Вывод: оперативная карта адресов/регистров/связей согласована 100% (RTL↔BD↔host↔драйвер).
+  Найдены МИНОР легаси-остатки вне оперативного пути (edge_cases.py/emulate_test.py, docs).
+- SPI-over-PCIe: по запросу заменён полноценный rtl/integration/spi_over_pcie.sv на НЕБЛОКИРУЮЩИЙ
+  STUB (AXI-Lite отвечает, START→DONE сразу; НЕ инстанцирует STARTUPE2; qspi pins = 'z / cs=1)
+  → флэш-пины свободны для JTAG program_hw_cfgmem (исключён Labtools 27-3347).
+  Модуль ни в одной активной сборке не подключён. xvlog-линт чистый.
+Stage Summary:
+- Оперативный путь согласован; легаси только в эмуляторах/доках.
+- SPI-stub готов и линтится; `program_spi_flash.py` совместим по интерфейсу.
+- Рекомендация: при желании полного удаления SPI-функции убрать program_spi_flash.py +
+  spi_over_pcie.sv + flash_access_top.sv + почистить доки (на решение пользователя).
+
+---
 Task ID: 2026-10-04-multipacket-fix
 Agent: MultiTool
 Task: Фикс зависания DMA-записи >512Б (итог) — вариант B v1.1.27

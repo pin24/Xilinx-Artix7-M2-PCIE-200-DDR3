@@ -209,6 +209,19 @@ add_files -norecurse \
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
 set_property generic ADDERS=${ADDERS} [current_fileset]
 
+# ---------- 0-b. BUILD_ID (Task 35; за образец — openTPU BUILD_ID) ----------
+# Первые 8 hex git-коммита попадают в регистр tdot BUILD_ID (0x70 в main-карте).
+# Вне git-дерева (архив/экспорт) — 00000000, регистр читается как 0.
+set BUILD_ID_HEX "00000000"
+if {![catch {exec git -C ${ROOT} rev-parse --short=8 HEAD} bid]} {
+    set BUILD_ID_HEX [string trim ${bid}]
+}
+if {![regexp {^[0-9a-f]{8}$} $BUILD_ID_HEX]} {
+    set BUILD_ID_HEX "00000000"
+}
+set_property generic BUILD_ID=32'h${BUILD_ID_HEX} [current_fileset]
+puts " BUILD_ID   : 0x${BUILD_ID_HEX}"
+
 # ---------- 4. Constraints (no pblock in flat) ----------
 puts "=== 4. ADD CONSTRAINTS ==="
 set pins_xdc   ${ROOT}/constraints/xdma_ddr3_pins.xdc

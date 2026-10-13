@@ -74,7 +74,8 @@ module tdot_axi4 #(
     parameter int C_M_AXI_ADDR_WIDTH = 32,
     parameter int C_M_AXI_DATA_WIDTH = 64,
     parameter int BURST_RD_LEN = 32,   // макс. слов в одной read-транзакции (P3b: длиннее burst = выше обмен)
-    parameter int BURST_WR_LEN = 8     // макс. слов в одной write-транзакции
+    parameter int BURST_WR_LEN = 8,    // макс. слов в одной write-транзакции
+    parameter logic [31:0] BUILD_ID = 32'h0 // git-коммит битстрима (OBS 0x70; 0 = не передан)
 )(
     // ---- AXI-Lite slave (регистры команд/статуса) ----
     input  logic                                  S_AXI_ACLK,
@@ -222,6 +223,26 @@ module tdot_axi4 #(
     logic [31:0] res0_reg, res1_reg;
     logic busy_q, done_q;
 
+    // ==================== наблюдаемость (OBS, Task 35, openTPU-inspired) ====
+    // Счётчики/снимки размещены на СВОБОДНЫХ смещениях (0x6C+), т.к. 0x64/0x68
+    // в main-карте заняты CORE_PARAMS/MAGIC (host-контракт). Отличие от
+    // ветки XDMA_DDR3_TMUL (там OBS_CTRL@0x64/BUILD_ID@0x68): см. ADDRESS_MAP§OBS.
+    localparam int        OBS_REGMAP_V  = 1;
+    localparam logic [3:0] CAPS_L2BURST = $clog2(BURST_RD_LEN);
+    localparam logic [3:0] CAPS_ADDERS  = (ADDERS > 15) ? 4'd15 : ADDERS[3:0];
+    localparam logic [7:0] CAPS_NUMMAC  = NUM_MAC[7:0];
+    logic        obs_freeze_q;   // OBS_CTRL.bit1: пауза событийного счёта
+    logic        obs_clear_q;    // OBS_CTRL.bit0: импульс обнуления
+    logic        obs_snap;       // SNAP: импульс защёлкивания теней
+    logic [63:0] cnt_cycles;
+    logic [31:0] cnt_busy, cnt_mem, cnt_load, cnt_compute;
+    logic [31:0] cnt_ar, cnt_beat, cnt_ar_stall, cnt_r_wait;
+    logic [31:0] cnt_wr, cnt_job, cnt_fifo_full;
+    logic [63:0] snap_cycles;
+    logic [31:0] snap_busy, snap_mem, snap_load, snap_compute;
+    logic [31:0] snap_ar, snap_beat, snap_ar_stall, snap_r_wait;
+    logic [31:0] snap_wr, snap_job, snap_fifo_full;
+
     // ---- регистры планировщика ----
     logic        sched_en_q;        // SCHED_CTRL.bit0
     logic        sched_irq_en_q;    // SCHED_CTRL.bit1
@@ -264,6 +285,7 @@ module tdot_axi4 #(
             sched_en_q <= 0; sched_irq_en_q <= 0; sched_flush_q <= 0;
             sched_wptr_q <= 0;
             desc_base_q <= 0; comp_base_q <= 0;
+            obs_freeze_q <= 0; obs_clear_q <= 0; obs_snap <= 0;
             // sched_rptr_q/irq_pending_q/done_cnt_q — в блоке контроллера
         end else begin
             // приём AW/W в защёлки по handshake каждого канала независимо
@@ -302,11 +324,19 @@ module tdot_axi4 #(
                     6'd20: desc_base_q[63:32] <= wdata_q;
                     6'd21: comp_base_q[31:0]  <= wdata_q;
                     6'd22: comp_base_q[63:32] <= wdata_q;
+                    // ---- наблюдаемость (OBS; 0x6C=6'd27, 0xAC=6'd43) ----
+                    6'd27: begin
+                        obs_freeze_q <= wdata_q[1];
+                        obs_clear_q  <= wdata_q[0];   // импульс, самоочистка ниже
+                    end
+                    6'd43: obs_snap <= 1'b1;          // любое значение = снимок
                     default: ;
                 endcase
             end else begin
                 if (go_reg) go_reg <= 0;         // самосброс GO
                 if (sched_flush_q) sched_flush_q <= 0; // самоочистка flush
+                if (obs_clear_q) obs_clear_q <= 0;     // импульс CLEAR
+                if (obs_snap) obs_snap <= 0;           // импульс SNAP
             end
         end
     end
@@ -370,6 +400,38 @@ module tdot_axi4 #(
             6'd25: rdata = {16'h0, ADDERS[7:0], NUM_MAC[7:0]};
             // 6'd26 [0x68] MAGIC RO: 0x54444F54 ('TDOT') - identity for driver
             6'd26: rdata = 32'h54444F54;
+            // ---- наблюдаемость (OBS; WORD = BAJТЫ: 6'd27=0x6C, ... 6'd56=0xE0) ----
+            6'd27: rdata = {30'b0, obs_freeze_q, 1'b0};          // OBS_CTRL (RO-статус)
+            6'd28: rdata = BUILD_ID;                             // BUILD_ID
+            6'd29: rdata = {8'(OBS_REGMAP_V), 7'b0, 1'b1,
+                            CAPS_L2BURST, CAPS_ADDERS, CAPS_NUMMAC}; // CAPS
+            6'd30: rdata = cnt_cycles[31:0];                     // CYCLES_LO
+            6'd31: rdata = cnt_cycles[63:32];                    // CYCLES_HI
+            6'd32: rdata = cnt_busy;                             // BUSY_CYCLES
+            6'd33: rdata = cnt_mem;                              // MEM_CYCLES
+            6'd34: rdata = cnt_load;                             // LOAD_CYCLES
+            6'd35: rdata = cnt_compute;                          // COMPUTE_CYCLES
+            6'd36: rdata = cnt_ar;                               // AR_CNT
+            6'd37: rdata = cnt_beat;                             // BEAT_CNT
+            6'd38: rdata = cnt_ar_stall;                         // AR_STALL
+            6'd39: rdata = cnt_r_wait;                           // R_WAIT
+            6'd40: rdata = cnt_wr;                               // WR_CNT
+            6'd41: rdata = cnt_job;                              // JOB_CNT
+            6'd42: rdata = cnt_fifo_full;                        // FIFO_FULL_EV
+            6'd43: rdata = 32'h0;                                // SNAP (write-only)
+            6'd44: rdata = snap_cycles[31:0];                    // CYCLES_LO_S
+            6'd45: rdata = snap_cycles[63:32];                   // CYCLES_HI_S
+            6'd46: rdata = snap_busy;                            // BUSY_S
+            6'd47: rdata = snap_mem;                             // MEM_S
+            6'd48: rdata = snap_load;                            // LOAD_S
+            6'd49: rdata = snap_compute;                         // COMPUTE_S
+            6'd50: rdata = snap_ar;                              // AR_S
+            6'd51: rdata = snap_beat;                            // BEAT_S
+            6'd52: rdata = snap_ar_stall;                        // AR_STALL_S
+            6'd53: rdata = snap_r_wait;                          // R_WAIT_S
+            6'd54: rdata = snap_wr;                              // WR_S
+            6'd55: rdata = snap_job;                             // JOB_S
+            6'd56: rdata = snap_fifo_full;                       // FIFO_FULL_S
             default: rdata = 32'h0;
         endcase
     end
@@ -437,6 +499,13 @@ module tdot_axi4 #(
     logic [31:0]   rd_total;
     logic [31:0]   rd_issued, rd_recv;
     logic          rd_done;
+    // комбинационные величины очередного AR-burst (4KB-кламп, Task 35/OBS);
+    // объявлены здесь, т.к. xvlog требует объявления до использования в RST_ACT.
+    logic [AW-1:0]  ar_addr_w;
+    logic [12:0]    bnd_bytes_w;   // 13 бит: 4096 не влезает в 12 бит (12'h1000=0)
+    logic [10:0]    bnd_words_w;
+    logic [7:0]     len_full_w, ar_len_w;
+    logic           ar_hs_w, ar_beat_w;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -454,11 +523,15 @@ module tdot_axi4 #(
                     end
                 end
                 RST_ACT: begin
-                    // выдача AR на очередной burst
+                    // выдача AR на очередной burst. P3b: BURST_RD_LEN=32
+                    // (256 Б на AR). AXI4 запрещает пересекать 4KB-границу
+                    // (spec A4.3.1) — длина burst клампится до границы.
+                    // Здесь (main) кламп добавлен вместе с OBS (Task 35),
+                    // чтобы закрыть латентный дефект при ×8-выровненном,
+                    // но не 4KB-выровненном адресе.
                     if (!ar_valid_r && (rd_issued < rd_total) && !fifo_full) begin
-                        ar_addr_r <= rd_addr + (rd_issued * SW);
-                        ar_len_r  <= (rd_total - rd_issued >= BURST_RD_LEN) ?
-                                     (BURST_RD_LEN - 1) : (rd_total - rd_issued - 1);
+                        ar_addr_r <= ar_addr_w;
+                        ar_len_r  <= ar_len_w;
                         ar_valid_r <= 1;
                     end
                     if (ar_valid_r && M_AXI_ARREADY) begin
@@ -921,6 +994,90 @@ assign diag_done = done_q;
                 fifo_pop = (rd_idx < n_in_eff);              // data-фаза
             else
                 fifo_pop = ((rd_idx - NUM_MAC) < n_in_eff);  // weights-фаза
+        end
+    end
+
+    // ==================== OBS: 4KB-кламп read-burst (AXI4 A4.3.1) ============
+    // Комбинационные величины очередного AR-burst (декл. выше, у read-мастера).
+    always_comb begin
+        ar_addr_w = rd_addr + (rd_issued * SW);
+        bnd_bytes_w = 13'h1000 - {1'b0, ar_addr_w[11:0]};
+        bnd_words_w = ((bnd_bytes_w >> AXI_SZ) == 11'd0) ? 11'd1
+                      : (bnd_bytes_w >> AXI_SZ);
+        len_full_w  = ((rd_total - rd_issued) >= BURST_RD_LEN) ?
+                      (BURST_RD_LEN - 1) : (rd_total - rd_issued - 1);
+        // min(len_full, bnd_words-1): burst заканчивается строго ДО 4KB-границы
+        ar_len_w    = ({2'b0, len_full_w} >= (bnd_words_w - 11'd1)) ?
+                      bnd_words_w[7:0] - 8'd1 : len_full_w;
+        ar_hs_w   = ar_valid_r && M_AXI_ARREADY;
+        ar_beat_w = (rstate == RST_ACT) && M_AXI_RVALID && r_ready_r;
+    end
+
+    // ==================== OBS: фазовые признаки и счётчики ====================
+    // Семантика повторяет openTPU (docs/OBSERVABILITY.md): событие считается
+    // в такт, когда оно произошло; CYCLES free-running и FREEZE не подчиняется.
+    wire obs_mem_c      = (cstate == CS_RD_DATA)   || (cstate == CS_RD_WEIGHTS) ||
+                          (cstate == CS_FETCH_DESC);
+    wire obs_load_c     = (cstate == CS_LOAD);
+    wire obs_compute_c  = (cstate == CS_RUN)       || (cstate == CS_WAIT) ||
+                          (cstate == CS_ACCUM_WAIT);
+    wire obs_ar_stall_c = ar_valid_r && !M_AXI_ARREADY;             // бэкпрешер AR
+    wire obs_r_wait_c   = (rstate == RST_ACT) && (rd_recv < rd_total) &&
+                          !ar_beat_w && !obs_ar_stall_c;            // латентность/дыры
+    wire obs_wr_hs_c    = M_AXI_BVALID && b_ready_r;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            cnt_cycles <= 64'd0;
+            cnt_busy <= 32'd0;      cnt_mem <= 32'd0;
+            cnt_load <= 32'd0;      cnt_compute <= 32'd0;
+            cnt_ar <= 32'd0;        cnt_beat <= 32'd0;
+            cnt_ar_stall <= 32'd0;  cnt_r_wait <= 32'd0;
+            cnt_wr <= 32'd0;        cnt_job <= 32'd0;
+            cnt_fifo_full <= 32'd0;
+        end else begin
+            cnt_cycles <= cnt_cycles + 64'd1;    // free-running всегда
+            if (obs_clear_q) begin
+                cnt_busy <= 32'd0;      cnt_mem <= 32'd0;
+                cnt_load <= 32'd0;      cnt_compute <= 32'd0;
+                cnt_ar <= 32'd0;        cnt_beat <= 32'd0;
+                cnt_ar_stall <= 32'd0;  cnt_r_wait <= 32'd0;
+                cnt_wr <= 32'd0;        cnt_job <= 32'd0;
+                cnt_fifo_full <= 32'd0;
+            end else if (!obs_freeze_q) begin
+                cnt_busy      <= cnt_busy      + {31'b0, busy_q};
+                cnt_mem       <= cnt_mem       + {31'b0, obs_mem_c};
+                cnt_load      <= cnt_load      + {31'b0, obs_load_c};
+                cnt_compute   <= cnt_compute   + {31'b0, obs_compute_c};
+                cnt_ar        <= cnt_ar        + {31'b0, ar_hs_w};
+                cnt_beat      <= cnt_beat      + {31'b0, ar_beat_w};
+                cnt_ar_stall  <= cnt_ar_stall  + {31'b0, obs_ar_stall_c};
+                cnt_r_wait    <= cnt_r_wait    + {31'b0, obs_r_wait_c};
+                cnt_wr        <= cnt_wr        + {31'b0, obs_wr_hs_c};
+                cnt_job       <= cnt_job       + {31'b0, job_start || (cstate == CS_SCHED_KICK)};
+                cnt_fifo_full <= cnt_fifo_full + {31'b0, fifo_full};
+            end
+        end
+    end
+
+    // SNAP: атомарный снимок всех счётчиков (импульс obs_snap из записи SNAP)
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            snap_cycles <= 64'd0;
+            snap_busy <= 32'd0;      snap_mem <= 32'd0;
+            snap_load <= 32'd0;      snap_compute <= 32'd0;
+            snap_ar <= 32'd0;        snap_beat <= 32'd0;
+            snap_ar_stall <= 32'd0;  snap_r_wait <= 32'd0;
+            snap_wr <= 32'd0;        snap_job <= 32'd0;
+            snap_fifo_full <= 32'd0;
+        end else if (obs_snap) begin
+            snap_cycles <= cnt_cycles;
+            snap_busy <= cnt_busy;           snap_mem <= cnt_mem;
+            snap_load <= cnt_load;           snap_compute <= cnt_compute;
+            snap_ar <= cnt_ar;               snap_beat <= cnt_beat;
+            snap_ar_stall <= cnt_ar_stall;   snap_r_wait <= cnt_r_wait;
+            snap_wr <= cnt_wr;               snap_job <= cnt_job;
+            snap_fifo_full <= cnt_fifo_full;
         end
     end
 

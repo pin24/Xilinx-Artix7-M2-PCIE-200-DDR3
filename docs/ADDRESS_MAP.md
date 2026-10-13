@@ -111,6 +111,25 @@ DDR3 **не сконфигурирован**, поэтому:
 | `0x54`/`0x58` | `COMP_BASE_LO/HI` | R/W | `[31:0]` | База области завершений в DDR3 |
 | `0x5C` | `SCHED_STATUS` | R | `[0]` sched_busy, `[1]` irq_pending | Состояние движка планировщика |
 | `0x60` | `DONE_CNT` | R | `[15:0]` | Свободно-бежащий счётчик завершённых задач |
+| `0x64` | `CORE_PARAMS` | R | `[7:0]` NUM_MAC, `[15:8]` ADDERS | Параметры компиляции ядра (автоопределение драйвером) |
+| `0x68` | `MAGIC` | R | `0x54444F54` ('TDOT') | Идентификация блока драйвером |
+| `0x6C` | `OBS_CTRL` | W | `[0]` CLEAR(импульс), `[1]` FREEZE(уровень) | Сброс/пауза счётчиков наблюдения (см. §3.4) |
+| `0x70` | `BUILD_ID` | R | 8 hex git-кома | Биtстрим-идентификация (0 = не передан) |
+| `0x74` | `CAPS` | R | `[7:0]` NUM_MAC, `[11:8]` ADDERS, `[15:12]` log2(BURST_RD_LEN), `[16]` sched, `[31:24]` REGMAP | Возможности битстрима |
+| `0x78..0xA8` | OBS-счётчики | R | CYCLES_LO/HI, BUSY, MEM, LOAD, COMPUTE, AR, BEAT, AR_STALL, R_WAIT, WR, JOB, FIFO_FULL | см. §3.4 |
+| `0xAC` | `SNAP` | W | любое | Атомарный снимок счётчиков в тени |
+| `0xB0..0xE0` | S-тени | R | 13 слов | Теневые копии после SNAP |
+
+### 3.4. Наблюдаемость (OBS, Task 35)
+
+Полная регистровая карта и семантика — `docs/OBSERVABILITY.md`. Кратко:
+- `CYCLES` — 64-бит free-running (не подчиняется FREEZE);
+- событийные 32-бит счётчики (MEM/LOAD/COMPUTE/AR/BEAT/AR_STALL/R_WAIT/WR/JOB/FIFO_FULL) считаются
+  в такт события; `CLEAR` обнуляет всё и тени; `FREEZE` паузит события, но не CYCLES;
+- `SNAP` → `0xB0..0xE0` — консистентный атомарный снимок;
+- host-API: `xdma_driver.TdotCore.{read_build_id, read_caps, obs_clear, obs_freeze, obs_snap, obs_read, obs_read_shadow}`.
+- Вместе с OBS внесён **4KB-кламп read-burst** (AXI4 A4.3.1) — закрывает латентный дефект
+  при ×8-выровненном, но не 4KB-выровненном адресе (модель `scripts/check_burst_4kb.py`).
 
 ### 3.1. Планировщик: дескрипторы, завершения, IRQ
 

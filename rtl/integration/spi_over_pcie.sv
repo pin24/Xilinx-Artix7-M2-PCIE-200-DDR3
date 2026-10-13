@@ -1,32 +1,26 @@
 // ============================================================================
-// spi_over_pcie.sv - SPI master over AXI-Lite (SPI-over-PCIe, R-14)
+// spi_over_pcie.sv - SPI master over AXI-Lite (SPI-over-PCIe, R-14) - STUB
 // ============================================================================
-// Purpose: allow host to write a new bitstream into the on-board SPI flash
-// (W25Q128JV) via the ICAPE2/STARTUPE2 path, WITHOUT needing JTAG.
+// REWRITTEN 2026-10-11: replaced with a non-blocking STUB.
 //
-// Register map (32-bit, byte address, decode [4:2], 32-byte space):
-//   [0x00] CTRL   bit0 START (self-clear), bit1 ABORT
-//                 bit2 WREN (send 0x06 first), bit3 RDID (send 0x9F first)
-//   [0x04] STATUS bit0 BUSY, bit1 DONE, bit2 ERROR, bit3 WIP_FLASH
-//   [0x08] CMD    SPI command byte (0x03 read, 0x02 page program,
-//                 0x20 sector erase, 0x06 WREN, 0x05 RDSR, 0xC7 chip erase)
-//   [0x0C] ADDR   24-bit flash address
-//   [0x10] LEN    transfer length in bytes (for DATA phase)
-//   [0x14] DATA   write-only, tx byte FIFO (byte in bits[7:0])
-//   [0x18] RX     read-only, last received byte in bits[7:0]
+// Why: the real spi_over_pcie instantiated STARTUPE2 and drove the dedicated
+// QSPI flash pins (FCS_B=T19, D00=P22, D01=R22, D02=P21, D03=R21) as user I/O,
+// so even a configured FPGA held the flash pins -> Vivado lab tool reported
+//     Labtools 27-3347 "Failure to set flash parameters"
+// at program_hw_cfgmem (JTAG flash). The module was removed from all active
+// bitstreams (FLAT and DFX) on 2026-10-05 (top no longer instantiates it, and
+// the S_AXI_SPI_REGS BD port was dropped). This file is retained ONLY as a
+// compatibility stub.
 //
-// Protocol (host side):
-//   1. Write CMD (e.g. 0x06 WREN, 0x20 sector-erase, 0x02 page-program, 0x03 read)
-//   2. Write ADDR (for commands that need it)
-//   3. Write LEN (number of data bytes)
-//   4. For each byte to send: write DATA
-//   5. Write CTRL.START=1
-//   6. Poll STATUS.BUSY until 0, check ERROR
-//   7. Read RX for each received byte (drained one per DATA write or polled)
-//
-// STARTUPE2: after FPGA configuration, the dedicated SPI pins become user I/O
-// via STARTUPE2 (USRCCLKO=CCLK, USRDON=MOSI, USRDIN=MISO, USRCSN=CS_b).
-// Only ONE STARTUPE2 instance per design (already not used elsewhere).
+// Stub behavior:
+//   * Answers all AXI-Lite access normally (no hang) so any host tool that
+//     pokes 0x40025000 keeps working.
+//   * STATUS[0x04] reads DONE=1 (BUSY=0) so a host polling "START then check
+//     BUSY/DONE" completes immediately and does not wait forever.
+//   * Does NOT instantiate STARTUPE2 and does NOT drive the QSPI flash pins:
+//     spi_cclk held low, qspi_cs_n deasserted, qspi_d0..d3 = high-impedance.
+//     => flash pins are free for JTAG program_hw_cfgmem (no 27-3347).
+//   * No real SPI activity is performed.
 //
 // Refs: UG470 (7 Series Configuration), UG953 (7 Series Primitives).
 // ============================================================================
@@ -35,7 +29,7 @@
 module spi_over_pcie #(
     parameter int C_S_AXI_DATA_WIDTH = 32,
     parameter int C_S_AXI_ADDR_WIDTH = 8,
-    parameter int CLK_DIV = 16               // SPI clk = S_AXI_ACLK / (2*CLK_DIV)
+    parameter int CLK_DIV = 16               // kept for interface compatibility (unused)
 )(
     input  logic                                  S_AXI_ACLK,
     input  logic                                  S_AXI_ARESETN,
@@ -58,6 +52,9 @@ module spi_over_pcie #(
     output logic [1:0]                            S_AXI_RRESP,
     output logic                                  S_AXI_RVALID,
     input  logic                                  S_AXI_RREADY,
+
+    // SPI / QSPI flash pins -- NOT driven by the stub (high-impedance),
+    // so the on-board flash is not blocked from JTAG programming.
     output logic                                  spi_cclk,
     output logic                                  qspi_cs_n,
     inout  wire                                   qspi_d0,
@@ -68,339 +65,108 @@ module spi_over_pcie #(
 
     localparam int ADDR_LSB = 2;
 
-    // ==================== Registers (fast domain) ==========================
-    logic        ctrl_start_q, ctrl_abort_q;
-    logic        cmd_wren_q, cmd_rdid_q;
-    logic [7:0]  cmd_byte_q;
-    logic [23:0] addr_q;
-    logic [31:0] len_q;
-    logic [7:0]  tx_byte_q;
-    logic        tx_byte_valid_q;
-    logic [7:0]  rx_byte_q;
-    logic        status_busy_q, status_done_q, status_error_q;
-    logic        status_wip_q;
-
-    // Effective SPI opcode actually sent on the wire at START:
-    // CTRL.WREN shortcuts to 0x06, CTRL.RDID shortcuts to 0x9F,
-    // otherwise the CMD register byte is used verbatim.
-    wire [7:0] eff_cmd = cmd_wren_q ? 8'h06 :
-                         cmd_rdid_q ? 8'h9F : cmd_byte_q;
-
-    // ==================== AXI-Lite write channel ==========================
-    logic awready, wready, bvalid;
-    logic aw_latched, w_latched;
+    // ------------------------------------------------------------------
+    // AXI-Lite write channel (accept-and-ack, 2-phase)
+    // ------------------------------------------------------------------
+    logic                 awready, wready, bvalid;
     logic [C_S_AXI_ADDR_WIDTH-1:0] awaddr_q;
-    logic [C_S_AXI_DATA_WIDTH-1:0] wdata_q;
+    logic                 start_q;          // CTRL[0x00] bit0 (stub: latched, ignored)
 
-    wire aw_hs = S_AXI_AWVALID && awready;
-    wire w_hs  = S_AXI_WVALID  && wready;
-    wire wr_commit = aw_latched && w_latched && !bvalid;
+    localparam W_IDLE   = 1'b0;
+    localparam W_COMMIT = 1'b1;
+    logic wstate;
 
     always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
         if (!S_AXI_ARESETN) begin
-            awready <= 0; wready <= 0; bvalid <= 0;
-            aw_latched <= 0; w_latched <= 0;
-            awaddr_q <= 0; wdata_q <= 0;
+            wstate  <= W_IDLE;
+            bvalid  <= 1'b0;
+            awaddr_q<= 0;
+            start_q <= 1'b0;
         end else begin
-            if (aw_hs) awaddr_q <= S_AXI_AWADDR;
-            if (w_hs)  wdata_q  <= S_AXI_WDATA;
-            aw_latched <= aw_hs ? 1'b1 : (wr_commit ? 1'b0 : aw_latched);
-            w_latched  <= w_hs  ? 1'b1 : (wr_commit ? 1'b0 : w_latched);
-            bvalid     <= wr_commit ? 1'b1 :
-                          (bvalid && S_AXI_BREADY) ? 1'b0 : bvalid;
-            awready    <= !aw_latched || wr_commit;
-            wready     <= !w_latched  || wr_commit;
+            case (wstate)
+                W_IDLE: begin
+                    bvalid <= 1'b0;
+                    if (S_AXI_AWVALID && S_AXI_WVALID) begin
+                        awaddr_q <= S_AXI_AWADDR;
+                        if (S_AXI_AWADDR[ADDR_LSB+:2] == 2'd0)
+                            start_q <= S_AXI_WDATA[0];   // CTRL.GO latch (no effect)
+                        wstate   <= W_COMMIT;
+                    end
+                end
+                W_COMMIT: begin
+                    bvalid <= 1'b1;
+                    if (S_AXI_BREADY) begin
+                        bvalid <= 1'b0;
+                        wstate <= W_IDLE;
+                    end
+                end
+                default: wstate <= W_IDLE;
+            endcase
         end
     end
 
-    assign S_AXI_AWREADY = awready;
-    assign S_AXI_WREADY  = wready;
-    assign S_AXI_BVALID  = bvalid;
+    assign S_AXI_AWREADY = (wstate == W_IDLE) && S_AXI_AWVALID;
+    assign S_AXI_WREADY  = (wstate == W_IDLE) && S_AXI_WVALID;
     assign S_AXI_BRESP   = 2'b00;
+    assign S_AXI_BVALID  = bvalid;
 
-    // ==================== AXI-Lite read channel ===========================
-    logic arready, rvalid;
+    // ------------------------------------------------------------------
+    // AXI-Lite read channel (status stub -> DONE=1, others 0)
+    // ------------------------------------------------------------------
+    logic                 arready, rvalid;
     logic [C_S_AXI_ADDR_WIDTH-1:0] araddr_q;
-    wire ar_hs = S_AXI_ARVALID && arready;
+
+    localparam R_IDLE   = 1'b0;
+    localparam R_RVALID = 1'b1;
+    logic rstate;
 
     always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
         if (!S_AXI_ARESETN) begin
-            arready <= 0; rvalid <= 0; araddr_q <= 0;
+            rstate  <= R_IDLE;
+            rvalid  <= 1'b0;
+            araddr_q<= 0;
         end else begin
-            if (S_AXI_ARVALID && !arready && !rvalid) arready <= 1;
-            else                                        arready <= 0;
-            if (ar_hs) begin
-                araddr_q <= S_AXI_ARADDR;
-                rvalid   <= 1;
-            end else if (rvalid && S_AXI_RREADY) rvalid <= 0;
+            case (rstate)
+                R_IDLE: begin
+                    rvalid <= 1'b0;
+                    if (S_AXI_ARVALID) begin
+                        araddr_q <= S_AXI_ARADDR;
+                        rstate   <= R_RVALID;
+                    end
+                end
+                R_RVALID: begin
+                    rvalid <= 1'b1;
+                    if (S_AXI_RREADY) begin
+                        rvalid  <= 1'b0;
+                        rstate  <= R_IDLE;
+                    end
+                end
+                default: rstate <= R_IDLE;
+            endcase
         end
     end
 
-    logic [C_S_AXI_DATA_WIDTH-1:0] rdata_mux;
-    assign S_AXI_ARREADY = arready;
-    assign S_AXI_RVALID  = rvalid;
-    assign S_AXI_RDATA   = rdata_mux;
+    logic [C_S_AXI_DATA_WIDTH-1:0] rdata;
+    always_comb begin
+        // [0x04] STATUS: bit0 BUSY=0, bit1 DONE=1 -> host "START->poll" completes.
+        if (araddr_q[ADDR_LSB+:2] == 2'd1)
+            rdata = 32'h00000002;                                  // STATUS: DONE=1 (bit1), BUSY=0
+        else
+            rdata = 32'h00000000;                                  // CTRL/CMD/ADDR/LEN/DATA/RX -> 0
+    end
+    assign S_AXI_ARREADY = (rstate == R_IDLE) && S_AXI_ARVALID;
     assign S_AXI_RRESP   = 2'b00;
+    assign S_AXI_RDATA   = rdata;
+    assign S_AXI_RVALID  = rvalid;
 
-    // ==================== Register writes ==================================
-    wire wr_ctrl = wr_commit && (awaddr_q[ADDR_LSB+:3] == 3'd0);
-    wire wr_cmd  = wr_commit && (awaddr_q[ADDR_LSB+:3] == 3'd2);
-    wire wr_addr = wr_commit && (awaddr_q[ADDR_LSB+:3] == 3'd3);
-    wire wr_len  = wr_commit && (awaddr_q[ADDR_LSB+:3] == 3'd4);
-    wire wr_data = wr_commit && (awaddr_q[ADDR_LSB+:3] == 3'd5);
-
-    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
-        if (!S_AXI_ARESETN) begin
-            ctrl_start_q <= 1'b0; ctrl_abort_q <= 1'b0;
-            cmd_wren_q   <= 1'b0; cmd_rdid_q   <= 1'b0;
-            cmd_byte_q   <= 8'h0; addr_q       <= 24'h0;
-            len_q        <= 32'h0; tx_byte_q    <= 8'h0;
-            tx_byte_valid_q <= 1'b0;
-        end else begin
-            ctrl_start_q <= 1'b0;   // self-clear
-            if (wr_ctrl) begin
-                ctrl_start_q <= wdata_q[0];
-                ctrl_abort_q <= wdata_q[1];
-                cmd_wren_q   <= wdata_q[2];
-                cmd_rdid_q   <= wdata_q[3];
-            end
-            if (wr_cmd)  cmd_byte_q <= wdata_q[7:0];
-            if (wr_addr) addr_q     <= wdata_q[23:0];
-            if (wr_len)  len_q      <= wdata_q;
-            if (wr_data) begin
-                tx_byte_q       <= wdata_q[7:0];
-                tx_byte_valid_q <= 1'b1;
-            end
-            if (status_busy_q && tx_byte_valid_q) tx_byte_valid_q <= 1'b0;
-        end
-    end
-
-    // ==================== SPI clock divider ==============================
-    logic [15:0] div_cnt;
-    logic        spi_clk_q;
-    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
-        if (!S_AXI_ARESETN) begin
-            div_cnt   <= 16'h0;
-            spi_clk_q <= 1'b0;
-        end else if (div_cnt == CLK_DIV-1) begin
-            div_cnt   <= 16'h0;
-            spi_clk_q <= ~spi_clk_q;
-        end else begin
-            div_cnt <= div_cnt + 1'b1;
-        end
-    end
-
-    logic spi_clk_rise, spi_clk_fall;
-    logic spi_clk_q_d;
-    always_ff @(posedge S_AXI_ACLK) spi_clk_q_d <= spi_clk_q;
-    assign spi_clk_rise =  spi_clk_q & ~spi_clk_q_d;
-    assign spi_clk_fall = ~spi_clk_q &  spi_clk_q_d;
-
-    // ==================== SPI FSM =========================================
-    typedef enum logic [2:0] {
-        ST_IDLE, ST_CMD, ST_ADDR, ST_DATA, ST_UNIQUE_STATUS, ST_DONE, ST_ERROR
-    } state_t;
-    state_t state, state_n;
-
-    logic [2:0]  bit_cnt;
-    logic [1:0]  addr_bytes;   // number of address bytes already clocked out (0..2)
-    logic [7:0]  shift_out, shift_in;
-    logic [23:0] addr_shift;
-    logic [31:0] len_cnt;
-    logic        cs_n_q;
-    logic        mosi_q;
-
-    // Set WIP/ERROR status on abort and after erase
-    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
-        if (!S_AXI_ARESETN) begin
-            status_busy_q  <= 1'b0;
-            status_done_q  <= 1'b0;
-            status_error_q <= 1'b0;
-        end else begin
-            if (state == ST_IDLE && ctrl_start_q) begin
-                status_busy_q <= 1'b1;
-                status_done_q <= 1'b0;
-                status_error_q <= 1'b0;
-            end else if (state_n == ST_DONE) begin
-                status_busy_q <= 1'b0;
-                status_done_q <= 1'b1;
-            end else if (state_n == ST_ERROR) begin
-                status_busy_q  <= 1'b0;
-                status_error_q <= 1'b1;
-            end
-            if (ctrl_abort_q) begin
-                status_busy_q  <= 1'b0;
-                status_error_q <= 1'b1;
-            end
-        end
-    end
-
-    // SPI FSM.
-    // Phases:
-    //   ST_CMD            - clock out the 8-bit opcode, then classify the command
-    //                       (no-address one-shot, RDSR-style status, RDID, or a
-    //                       command that requires a 24-bit address phase).
-    //   ST_ADDR           - clock out the 24-bit address MSB-first onto MOSI.
-    //   ST_DATA           - clock out one data byte per SPI byte cell. Because
-    //                       there is only ONE tx byte slot (tx_byte_q), the host
-    //                       must send one byte per transfer (LEN=1). The byte is
-    //                       re-loaded into shift_out at the start of each cell.
-    //   ST_UNIQUE_STATUS  - RDSR (0x05) / RDSR2 (0x35): the flash returns the
-    //                       status byte immediately, no address, no data phase.
-    //   ST_DONE / ST_ERROR - the shared termination that raises CS_N.
-    // Note: there is NO RX FIFO. rx_byte_q holds only the LAST byte of a
-    // transfer, so the host reads SPI_RX once per accepted transaction.
-    always_ff @(posedge S_AXI_ACLK or negedge S_AXI_ARESETN) begin
-        if (!S_AXI_ARESETN) begin
-            state_n     <= ST_IDLE;
-            state       <= ST_IDLE;
-            bit_cnt     <= 3'h7;
-            addr_bytes  <= 2'd0;
-            shift_out   <= 8'h0;
-            shift_in    <= 8'h0;
-            addr_shift  <= 24'h0;
-            len_cnt     <= 32'h0;
-            cs_n_q      <= 1'b1;
-            mosi_q      <= 1'b1;   // SPI idle: drive MOSI high
-            rx_byte_q   <= 8'h0;
-            status_wip_q <= 1'b0;
-        end else begin
-            state <= state_n;
-            state_n <= state;   // MDRV-1 fix: registered default next-state
-            if (state == ST_IDLE && ctrl_start_q) state_n <= ST_CMD;
-            if (state == ST_IDLE && ctrl_start_q) begin
-                // Latch the opcode and operands at the start of the transfer.
-                bit_cnt    <= 3'h7;
-                addr_bytes <= 2'd0;
-                shift_out  <= eff_cmd;
-                addr_shift <= addr_q;
-                len_cnt    <= len_q;
-                cs_n_q     <= 1'b0;
-                rx_byte_q  <= 8'h0;
-            end
-            if (state == ST_CMD || state == ST_ADDR ||
-                state == ST_DATA || state == ST_UNIQUE_STATUS) begin
-                if (spi_clk_fall) begin
-                    // Drive MOSI on the falling edge (SPI mode 0).
-                    if (state == ST_ADDR) begin
-                        // Address phase: stream the 24-bit address MSB-first.
-                        mosi_q    <= addr_shift[23];
-                        addr_shift <= {addr_shift[22:0], 1'b0};
-                    end else begin
-                        // CMD / DATA / UNIQUE_STATUS: shift the tx register.
-                        mosi_q    <= shift_out[7];
-                        shift_out <= {shift_out[6:0], 1'b0};
-                    end
-                end
-                if (spi_clk_rise) begin
-                    shift_in <= {shift_in[6:0], spi_miso};
-                    if (bit_cnt == 3'h0) begin
-                        // A full byte has been clocked.
-                        bit_cnt <= 3'h7;
-                        case (state)
-                            ST_CMD: begin
-                                // Classify the opcode that was just sent.
-                                case (eff_cmd)
-                                    8'h06, 8'hC7: state_n <= ST_DONE;          // one-shot, no operands
-                                    8'h9F: begin                               // RDID: no address
-                                        shift_out <= tx_byte_q;
-                                        state_n   <= ST_DATA;
-                                    end
-                                    8'h05, 8'h35, 8'hA5: state_n <= ST_UNIQUE_STATUS; // RDSR-family
-                                    default: state_n   <= ST_ADDR;             // address-taking command
-                                endcase
-                            end
-                            ST_ADDR: begin
-                                if (addr_bytes == 2'd2) begin
-                                    // All 3 address bytes clocked out.
-                                    if (len_cnt == 32'h0) begin
-                                        // No data phase wanted (e.g. sector/block erase).
-                                        state_n <= ST_DONE;
-                                    end else begin
-                                        shift_out <= tx_byte_q;  // latch first data byte
-                                        state_n   <= ST_DATA;
-                                    end
-                                end else begin
-                                    addr_bytes <= addr_bytes + 1'b1;
-                                end
-                            end
-                            ST_DATA: begin
-                                // rx_byte_q stays the LAST byte of the transfer (no FIFO).
-                                rx_byte_q <= {shift_in[6:0], spi_miso};
-                                if (len_cnt == 32'h1) begin
-                                    state_n <= ST_DONE;
-                                end else begin
-                                    len_cnt   <= len_cnt - 1'b1;
-                                    shift_out <= tx_byte_q;   // latch next data byte
-                                end
-                            end
-                            ST_UNIQUE_STATUS: begin
-                                // Status byte captured; WIP is bit0 for 0x05.
-                                rx_byte_q   <= {shift_in[6:0], spi_miso};
-                                status_wip_q <= {shift_in[6:0], spi_miso}[0];
-                                state_n     <= ST_DONE;
-                            end
-                            default: state_n <= ST_DONE;
-                        endcase
-                    end else begin
-                        bit_cnt <= bit_cnt - 1'b1;
-                    end
-                end
-            end
-            if (state == ST_DONE || state == ST_ERROR) begin
-                cs_n_q <= 1'b1;
-                mosi_q <= 1'b1;   // return MOSI to idle-high on deselect
-                state_n <= ST_IDLE;
-            end
-        end
-    end
-
-
-    // ========================================================================
-    // STARTUPE2 - drives ONLY CCLK (L12). Verified 2026-09-13:
-    //   L12 is NOT a package pin -> CCLK reachable only via USRCCLKO.
-    //   FCS_B/D00-D03 (T19/P22/R22/P21/R21) constrained as REGULAR IO.
-    //   USRDONETS=1 keeps DOUT/CSO_B (AB20) in the fabric.
-    // NOTE: if axi_hwicap also instantiates STARTUPE2 (C_INCLUDE_STARTUP=1)
-    //   -> DRC UTLZ-1. Set axi_hwicap C_INCLUDE_STARTUP=0 (see docs).
-    // ========================================================================
-    STARTUPE2 #(
-        .PROG_USR("FALSE"),
-        .SIM_CCLK_FREQ(10.0)
-    ) u_startup (
-        .CFGCLK(),
-        .CFGMCLK(),
-        .EOS(),
-        .PREQ(),
-        .CLK(1'b0),
-        .GSR(1'b0),
-        .GTS(1'b0),
-        .KEYCLEARB(1'b0),
-        .PACK(1'b0),
-        .USRCCLKO(spi_clk_q),
-        .USRCCLKTS(1'b0),
-        .USRDONEO(1'b0),
-        .USRDONETS(1'b1)
-    );
-
-    assign spi_cclk = spi_clk_q;
-
-    // External QSPI pads (regular fabric IO). CCLK is inside STARTUPE2 above.
-    // Single-SPI only (no quad mode in this RTL).
-    //   qspi_d0 = MOSI: driven from mosi_q while CS is low (transfer active);
-    //             pulled HIGH (1) while CS is high so MOSI is idle-high, which
-    //             is the conventional SPI idle level.
-    //   qspi_d1 = MISO: tri-state input, read as spi_miso.
-    //   qspi_d2 = WP# / qspi_d3 = HOLD#: for W25Q in SPI mode these must be
-    //             held HIGH (de-asserted). Driving them to 1 is required;
-    //             they cannot be left floating ('bz).
-    assign qspi_cs_n = cs_n_q;
-    assign qspi_d0   = (mosi_q || cs_n_q) ? 1'b1 : 1'b0;
+    // ------------------------------------------------------------------
+    // SPI / QSPI pins: NOT driven (flash stays free for JTAG programming)
+    // ------------------------------------------------------------------
+    assign spi_cclk  = 1'b0;
+    assign qspi_cs_n = 1'b1;
+    assign qspi_d0   = 1'bz;
     assign qspi_d1   = 1'bz;
-    assign qspi_d2   = 1'b1;
-    assign qspi_d3   = 1'b1;
-
-    wire spi_miso;
-    assign spi_miso = qspi_d1;
+    assign qspi_d2   = 1'bz;
+    assign qspi_d3   = 1'bz;
 
 endmodule
