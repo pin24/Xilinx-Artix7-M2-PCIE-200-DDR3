@@ -1,6 +1,36 @@
 # Worklog
 
 ---
+Task ID: 2026-10-14-dma-snap-stress
+Agent: MultiTool
+Task: Фикс/верификация DMA>512, вариант-б параметров, SNAP-дефект, obs_smi.py, нагрузка 120с
+Work Log:
+- Проверено: file_io.c уже имеет лимит XDMA_MAX_TRANSFER_SIZE (многопакетности ≤8МБ нет); loopback 64/256/512/1024/2048/1MiB — все PASS.
+- Доказано (мин. тест): set_property generic НЕ применяется для int-параметров (пишется только bit-vector) → NUM_MAC/ADDERS переведены на STEPS.SYNTH_DESIGN.ARGS.GENERIC (build_flat.tcl).
+- Синхронизирована версия драйвера: build.cmd/inx → 1.1.29.0 (устройство реально 1.1.29, oem167).
+- OBS: тени (SNAP) дают устаревшие значения на длинных прогонах; обход — живые счётчики (live) достоверны; SNAP-дефект RTL оставлен на разбор.
+- Создан scripts/obs_smi.py — обновляемый дашборд (VT, прогресс-бары фаз, Δ-активность, кумулятивно внизу, --clear/--dot).
+- Нагрузка max: 20/50/120/120с — стабильно (BUSY 0.8-0.9%, JOB=итерациям, результат 16.0), bottleneck host/PCIe.
+- Записан docs/CHANGE_LOG_2026-10-14.md.
+Stage Summary:
+- Проблема записи >512 отсутствует; интерфейс мониторинга доработан; нагрузка подтверждает стабильность прошивки 2a1ea150/16/4.
+
+---
+Task ID: 2026-10-13-build
+Agent: MultiTool
+Task: Разбор логов flat-сборки (OBS) и фиксация метрик
+Work Log:
+- Прочитан timing_summary_routed + utilization_placed + synth-лог (C:\build_flat, impl_1).
+- Конфигурация сборки: NUM_MAC=16, ADDERS=4, BUILD_ID=32'h2a1ea150 (коммит OBS+SPI-stub), xc7a200t-2.
+- Тайминг: WNS +0.549 ns, TNS 0, failing 0/101364, WHS +0.036 — all constraints met (FATAL-гейт пройден).
+- Утилизация: LUT as Logic 58755 (43.91%), LUT as Memory 4730, BRAM 11.92%, DSP 0, CARRY4 1623.
+- Сравнение 16/4: WNS +0.334 → +0.549 (улучшение +0.215 ns) при добавлении OBS/4KB-clamp; LUT сопоставима (~47%).
+- Установлено: artifacts_flat/timing_FATAL.rpt датирован 11.10 (старый, от прошлой неудачной сборки), не актуален для текущей MET-сборки 13.10.
+- Записан docs/CHANGE_LOG_2026-10-13.md.
+Stage Summary:
+- Прошивка 16/4+OBS собрана с запасом по таймингу; артефакты готовы; можно прошивать и использовать OBS-мониторинг.
+
+---
 Task ID: 2026-10-11-obs-merge
 Agent: MultiTool
 Task: Слияние OBS из ветки XDMA_DDR3_TMUL в main (сохранение host-контракта MAGIC/CORE_PARAMS)
