@@ -813,6 +813,7 @@ class TdotScheduler:
         self._reg_w(SCHED_COMP_LO, (DDR3_BASE + comp_off) & 0xFFFFFFFF)
         self._reg_w(SCHED_COMP_HI, ((DDR3_BASE + comp_off) >> 32) & 0xFFFFFFFF)
         self._reg_w(SCHED_CTRL, 0)                            # flush самоочистился
+        self._reg_w(SCHED_CTRL, 0x1)                      # sched_en=1 (движок планировщика работает)
 
     # ---- регистры ----
     def _reg_w(self, off: int, val: int) -> None:
@@ -835,8 +836,14 @@ class TdotScheduler:
         jobs = list(jobs)
         if not jobs:
             return 0
-        if len(jobs) > self.depth:
-            raise ValueError(f"{len(jobs)} задач > глубины кольца {self.depth}")
+        # FIX 2026-10-14 (планировщик, обёртка кольца): при ровно depth задачах
+        # wptr/rptr обнуляются (mod depth) — различить 0 от depth невозможно,
+        # wait() ложно «успевает», collect падает с done==0. Запрещаем пакеты
+        # размером >= depth (максимум depth-1).
+        if len(jobs) >= self.depth:
+            raise ValueError(f"{len(jobs)} задач >= глубины кольца {self.depth} "
+                             f"(обёртка mod {self.depth} невозможна; максимум "
+                             f"{self.depth - 1} задач за пакет)")
         rptr = self._reg_r(SCHED_RPTR) & 0xFF
         pending = (self._wptr - rptr) & 0xFF
         if pending + len(jobs) > self.depth:
