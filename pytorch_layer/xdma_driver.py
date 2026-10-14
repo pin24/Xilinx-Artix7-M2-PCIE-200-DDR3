@@ -448,11 +448,20 @@ class XdmaWinUpstream(XdmaDevice):
                 raise XdmaError(f"cannot open {path}: WinError {ctypes.get_last_error()}")
             return h
 
-        self._ctl = _open(self.base + "\\control")
+        # Периферия (TDOT/GPIO/XADC) живёт в user-BAR (\user). \control (config-BAR,
+        # 64KB, движковые регистры XDMA) в этом драйвере может НЕ создаваться —
+        # открываем его ОПЦИОНАЛЬНО; для периферии обязателен \user.
+        self._ctl = None
+        try:
+            self._ctl = _open(self.base + "\\control")
+        except XdmaError:
+            self._ctl = None
         try:
             self._usr = _open(self.base + "\\user")
         except XdmaError:
             self._usr = None
+        if self._usr is None and self._ctl is None:
+            raise XdmaError(f"no usable BAR handle on {base}")
         self._h2c = _open(self.base + "\\h2c_0")
         self._c2h = _open(self.base + "\\c2h_0")
         self._ev = k32.CreateEventW(None, True, False, None)
@@ -492,12 +501,17 @@ class XdmaWinUpstream(XdmaDevice):
     def read(self, addr, length):
         if not (self.AXI_LITE_BASE <= addr < 0x80000000):
             raise XdmaError(f"addr 0x{addr:X} not in AXI-Lite range")
-        return self._xfer(self._ctl, False, addr - self.AXI_LITE_BASE, b"", length)
+        # Периферия (TDOT/GPIO/XADC) живёт в user-BAR (AXI-Lite 128MB),
+        # а НЕ в config-BAR (\control, 64KB config-regs). Только \user
+        # промаппливает AXI-Lite окно; \control не достаёт периферию.
+        h = self._usr if self._usr is not None else self._ctl
+        return self._xfer(h, False, addr - self.AXI_LITE_BASE, b"", length)
 
     def write(self, addr, data):
         if not (self.AXI_LITE_BASE <= addr < 0x80000000):
             raise XdmaError(f"addr 0x{addr:X} not in AXI-Lite range")
-        self._xfer(self._ctl, True, addr - self.AXI_LITE_BASE, data, len(data))
+        h = self._usr if self._usr is not None else self._ctl
+        self._xfer(h, True, addr - self.AXI_LITE_BASE, data, len(data))
 
     def write_dma(self, ddr_off, data):
         # HOST contract: clean raw DDR3 offset (from 0x80000000), like

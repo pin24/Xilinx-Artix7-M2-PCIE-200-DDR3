@@ -206,8 +206,9 @@ add_files -norecurse \
 # NOTE: icap_ctrl.sv / spi_over_pcie.sv are intentionally NOT added РІР‚вЂќ the flat
 # top RTL does not instantiate them. The files remain in the tree, unused.
 
-set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
-set_property generic ADDERS=${ADDERS} [current_fileset]
+# Generic NUM_MAC/ADDERS/BUILD_ID применяем ПОЗЖЕ — ПОСЛЕ set_property top
+# (см. "5. Regenerate wrapper"): применяемые к fileset ДО назначения top-модуля
+# численные generic не сохранялись в .xpr, и синтез брал дефолт top #(16,4).
 
 # ---------- 0-b. BUILD_ID (Task 35; за образец — openTPU BUILD_ID) ----------
 # Первые 8 hex git-коммита попадают в регистр tdot BUILD_ID (0x70 в main-карте).
@@ -219,7 +220,6 @@ if {![catch {exec git -C ${ROOT} rev-parse --short=8 HEAD} bid]} {
 if {![regexp {^[0-9a-f]{8}$} $BUILD_ID_HEX]} {
     set BUILD_ID_HEX "00000000"
 }
-set_property generic BUILD_ID=32'h${BUILD_ID_HEX} [current_fileset]
 puts " BUILD_ID   : 0x${BUILD_ID_HEX}"
 
 # ---------- 4. Constraints (no pblock in flat) ----------
@@ -251,6 +251,13 @@ make_wrapper -files [get_files xdma_ddr3_dfx.bd] -top -force
 set_property top ${TOP_NAME} [current_fileset]
 update_compile_order -fileset sources_1
 update_compile_order -fileset constrs_1
+
+# ---------- 5.1 Применение BUILD_ID (bit-vector generic; записи в .xpr) ----------
+# FIX 2026-10-14: NUM_MAC/ADDERS (тип `int`) Vivado НЕ принимает как fileset-generic
+# (проверено минимальным тестом) — их передаём через STEPS.SYNTH_DESIGN.ARGS.GENERIC
+# в разделе 8 (см. ниже). BUILD_ID (logic[31:0]) через fileset работает.
+set_property generic BUILD_ID=32'h${BUILD_ID_HEX} [current_fileset]
+puts " GENERIC  : NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} BUILD_ID=32'h${BUILD_ID_HEX}"
 
 # ---------- 6. Demote PCIe IP XDC ----------
 puts "=== 6. DEMOTE PCIE IP XDC ==="
@@ -299,6 +306,11 @@ if {$pcie_ip_xdc ne ""} {
 # ---------- 8. Implementation + Bitstream ----------
 puts "=== 8. IMPLEMENTATION + BITSTREAM ==="
 current_run [get_runs impl_1]
+# FIX 2026-10-14 (вариант б): NUM_MAC/ADDERS — параметры типа `int`, которые
+# Vivado не принимает как fileset-generic (проверено). Передаём их в синтез
+# через опцию -generic: set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC запускает
+# synth_design с -generic "NUM_MAC=.. ADDERS=..".
+set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC "NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}" [get_runs impl_1]
 catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}
 launch_runs impl_1 -to_step write_bitstream -jobs ${JOBS}
 wait_on_run impl_1

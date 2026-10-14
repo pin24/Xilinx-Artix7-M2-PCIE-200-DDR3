@@ -3,10 +3,10 @@ Signature="$WINDOWS NT$"
 Class=System
 ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
 Provider=%Provider%
-; Автономный DMA-драйвер XDMA (upstream-стек: file_io.c + libxdma).
-; Версию перезаписывает stampinf -v при сборке (build.cmd). Должна быть строго
-; новее уже установленной, иначе pnputil не обновит пакет.
-DriverVer=10/02/2026,1.1.22.0
+; РђРІС‚РѕРЅРѕРјРЅС‹Р№ DMA-РґСЂР°Р№РІРµСЂ XDMA (upstream-СЃС‚РµРє: file_io.c + libxdma).
+; Р’РµСЂСЃРёСЋ РїРµСЂРµР·Р°РїРёСЃС‹РІР°РµС‚ stampinf -v РїСЂРё СЃР±РѕСЂРєРµ (build.cmd). Р”РѕР»Р¶РЅР° Р±С‹С‚СЊ СЃС‚СЂРѕРіРѕ
+; РЅРѕРІРµРµ СѓР¶Рµ СѓСЃС‚Р°РЅРѕРІР»РµРЅРЅРѕР№, РёРЅР°С‡Рµ pnputil РЅРµ РѕР±РЅРѕРІРёС‚ РїР°РєРµС‚.
+DriverVer=10/04/2026,1.1.29.0
 CatalogFile=XDMA_DMA.cat
 
 [Manufacturer]
@@ -19,9 +19,9 @@ CatalogFile=XDMA_DMA.cat
 CopyFiles=CopyFiles
 AddReg=XDMA_DMA_AddReg
 
-; Регистрация источника событий для IoWriteErrorLogEntry (Event Log, System log).
-; Без EventMessageFile журнал не отображает записи от драйвера — поэтому добавляем
-; ключ в Services\EventLog\System\XDMA_DMA, указывая на .sys как message file.
+; Р РµРіРёСЃС‚СЂР°С†РёСЏ РёСЃС‚РѕС‡РЅРёРєР° СЃРѕР±С‹С‚РёР№ РґР»СЏ IoWriteErrorLogEntry (Event Log, System log).
+; Р‘РµР· EventMessageFile Р¶СѓСЂРЅР°Р» РЅРµ РѕС‚РѕР±СЂР°Р¶Р°РµС‚ Р·Р°РїРёСЃРё РѕС‚ РґСЂР°Р№РІРµСЂР° вЂ” РїРѕСЌС‚РѕРјСѓ РґРѕР±Р°РІР»СЏРµРј
+; РєР»СЋС‡ РІ Services\EventLog\System\XDMA_DMA, СѓРєР°Р·С‹РІР°СЏ РЅР° .sys РєР°Рє message file.
 [XDMA_DMA_AddReg]
 HKLM, "SYSTEM\CurrentControlSet\Services\EventLog\System\XDMA_DMA", "EventMessageFile", %REG_EXPAND_SZ%, "%12%\XDMA_DMA.sys"
 HKLM, "SYSTEM\CurrentControlSet\Services\EventLog\System\XDMA_DMA", "TypesSupported", %REG_DWORD%, 0x7
@@ -35,7 +35,7 @@ StartType=3
 ErrorControl=1
 ServiceBinary=%12%\XDMA_DMA.sys
 
-; KMDF WDF-секция — обязательна для WdfDriverCreate во время PnP-установки.
+; KMDF WDF-СЃРµРєС†РёСЏ вЂ” РѕР±СЏР·Р°С‚РµР»СЊРЅР° РґР»СЏ WdfDriverCreate РІРѕ РІСЂРµРјСЏ PnP-СѓСЃС‚Р°РЅРѕРІРєРё.
 [XDMA_DMA_Inst.NT.Wdf]
 KmdfService=XDMA_DMA, XDMA_DMA_wdfsect
 
