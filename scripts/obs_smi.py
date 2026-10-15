@@ -11,7 +11,7 @@
   python scripts/obs_smi.py --interval 0.5
 Требуется прошивка с OBS (BUILD_ID >= 2a1ea150).
 """
-import argparse, sys, time, struct
+import argparse, sys, time
 
 sys.path.insert(0, "pytorch_layer")
 
@@ -57,11 +57,8 @@ def main(argv=None):
 
     dev = Backend(base=base)
     core = TdotCore(dev, num_mac=args.num_mac, ddr_base=args.ddr_base)
-    # Реальная скорость линка (GT/s) из user-mode Windows без драйверного доступа
-    # к PCI config space недоступна; домашний регистр XDMA pcieWidth пуст на этой
-    # прошивке. В реальном времени показываем ФАКТИЧЕСКУЮ скорость передачи DMA (MB/s)
-    # (за кадр ниже) + конфиг-метку Gen2 x4.
-    pcie_label = "PCIe: Gen2 x4 @ 5.0 GT/s (конфиг) | live DMA MB/s ниже"
+    # (Реальная скорость линка GT/s из user-mode недоступна; показываем только
+    # фактическую скорость передачи DMA MB/s (за кадр) — без бесплатной строки PCIe.)
 
     one = 0x001000000000
     pairs = [one] * args.num_mac
@@ -108,7 +105,6 @@ def main(argv=None):
                  f"  tdot OBS console  "
                  f"(BUILD_ID=0x{core.read_build_id():08X}  /  build {args.num_mac} MAC)  "
                  f"[flat, live]   Ctrl+C для выхода\n"
-                 f"  {pcie_label}\n"
                  f"  {('-'*56)}\n"
                  f"  CYCLES (такты)  {cur['cycles']:>14,d}\n"
                  f"  ФАЗЫ (за кадр):\n"
