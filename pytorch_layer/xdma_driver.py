@@ -498,6 +498,14 @@ class XdmaWinUpstream(XdmaDevice):
             n = done
         return bytes(buf.raw[:n.value])
 
+    def read_config(self, offset: int, length: int = 4) -> bytes:
+        r"""Чтение из config-BAR (\control) драйвера XDMA напрямую (смещение от начала
+        конфиг-регистра). Периферию так НЕ читать (она в \user): тут только XDMA
+        движковые/конфиг-регистры (напр. pcieWidth@0x1C). Возвращает raw bytes."""
+        if self._ctl is None:
+            raise XdmaError("config-BAR (\control) недоступен")
+        return self._xfer(self._ctl, False, offset, b"", length)
+
     def read(self, addr, length):
         if not (self.AXI_LITE_BASE <= addr < 0x80000000):
             raise XdmaError(f"addr 0x{addr:X} not in AXI-Lite range")
