@@ -90,6 +90,7 @@ def main(argv=None):
     prev = None
     try:
         while True:
+            t_frame = time.monotonic()   # начало кадра (для реального времени)
             if args.dot > 0:
                 # прогнать N задач для создания нагрузки (ядро/AXI-активность)
                 for _ in range(args.dot):
@@ -118,13 +119,17 @@ def main(argv=None):
                 dj = dar = dbeat = dwr = dfifo = 0
 
             # ---- отрисовка кадра ----
-            job_s = (dj / (args.interval or 1)) if dj > 0 else 0.0
+            dt_real = time.monotonic() - t_frame      # реальная длительность цикла кадра
+            if dt_real <= 0.0:
+                dt_real = 1e-6
+            dmamb = dbeat * 8 / dt_real / 1e6         # живая DMA-скорость (по прочитанным словам)
+            job_s = (dj / dt_real) if dj > 0 else 0.0
             s = (f"\x1b[2J\x1b[H"
                  f"  tdot OBS console  "
                  f"(BUILD_ID=0x{core.read_build_id():08X}  /  build {args.num_mac} MAC)  "
                  f"[flat, live]   Ctrl+C для выхода\n"
                  f"  {('-'*56)}\n"
-                 f"  CYCLES (такты)  {cur['cycles']:>14,d}\n"
+                 f"  CYCLES (такты)  {cur['cycles']:>14,d}   кадр {dt_real*1000:.0f} мс\n"
                  f"  ФАЗЫ (за кадр):\n"
                  f"  BUSY     (занятость) [{bar(busy_p)}] {busy_p:6.1f}%   JOB/s={job_s:8.1f}\n"
                  f"  MEM      (память)    [{bar(mem_p)}] {mem_p:6.1f}%\n"
@@ -134,10 +139,8 @@ def main(argv=None):
                  f"  ТЕКУЩАЯ АКТИВНОСТЬ (Δ за кадр):\n"
                  f"  AR (чтение)=+{dar:,d}   BEAT (слова)=+{dbeat:,d}   "
                  f"WR (запись)=+{dwr:,d}   JOB (задачи)=+{dj:,d}\n"
-                 f"  DMA ~{dbeat*8/1e6/(args.interval or 1):8.1f} MB/s   "
+                 f"  DMA (живая, реал. время) = {dmamb:8.1f} MB/s   "
                  f"AR_STALL (бэкпрешер)={rwait_p:.3f}%  FIFO_FULL (Δ)=+{dfifo:,d}\n"
-                 f"  DMA РЕАЛЬНАЯ (1 MiB): " + (
-                     f"write={bench_w:.1f} / read={bench_r:.1f} MB/s" if bench_w is not None else "— (запусти с --bench)") + "\n"
                  f"  {('-'*56)}\n"
                  f"  КУМУЛЯТИВНО (с --clear): AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  "
                  f"WR={cur['wr']:,d}  JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"
