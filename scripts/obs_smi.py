@@ -45,6 +45,9 @@ def main(argv=None):
                     help="обнулить накопленные счётчики OBS перед стартом (иначе показываются "
                          "кумулятивные значения с последнего clear)")
     ap.add_argument("--dev", default=None)
+    ap.add_argument("--bench", action="store_true",
+                    help="прогнать быстрый DMA-бенчмарк (1 МиБ write+read) и показывать "
+                         "реальную пропускную MB/s (а не мгновенный ΔBEAT)")
     args = ap.parse_args(argv)
 
     if sys.platform.startswith("win"):
@@ -68,6 +71,21 @@ def main(argv=None):
         core.obs_clear()
         print("  OBS-счётчики обнулены (--clear).")
     time.sleep(0.3)
+
+    # DMA-бенчмарк (опционально): реальная пропускная 1 МиБ write+read
+    bench_w = bench_r = None
+    if args.bench:
+        try:
+            size = 1 << 20
+            buf = bytes((i & 255) for i in range(size))
+            off = 0x01000000
+            d = core.dev
+            d.write_dma(off, buf)                     # прогрев
+            t0 = time.time(); d.write_dma(off, buf); bench_w = size / (time.time() - t0) / 1e6
+            t0 = time.time(); d.read_dma(off, size);  bench_r = size / (time.time() - t0) / 1e6
+            print(f"  DMA-бенчмарк (1 MiB): write={bench_w:.1f} MB/s  read={bench_r:.1f} MB/s")
+        except Exception as e:
+            print(f"  bench не выполнен: {e}")
 
     prev = None
     try:
@@ -118,6 +136,8 @@ def main(argv=None):
                  f"WR (запись)=+{dwr:,d}   JOB (задачи)=+{dj:,d}\n"
                  f"  DMA ~{dbeat*8/1e6/(args.interval or 1):8.1f} MB/s   "
                  f"AR_STALL (бэкпрешер)={rwait_p:.3f}%  FIFO_FULL (Δ)=+{dfifo:,d}\n"
+                 f"  DMA РЕАЛЬНАЯ (1 MiB): " + (
+                     f"write={bench_w:.1f} / read={bench_r:.1f} MB/s" if bench_w is not None else "— (запусти с --bench)") + "\n"
                  f"  {('-'*56)}\n"
                  f"  КУМУЛЯТИВНО (с --clear): AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  "
                  f"WR={cur['wr']:,d}  JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"
