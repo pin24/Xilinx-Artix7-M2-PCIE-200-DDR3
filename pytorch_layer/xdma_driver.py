@@ -814,6 +814,14 @@ class TdotScheduler:
         self._reg_w(SCHED_COMP_HI, ((DDR3_BASE + comp_off) >> 32) & 0xFFFFFFFF)
         self._reg_w(SCHED_CTRL, 0)                            # flush самоочистился
         self._reg_w(SCHED_CTRL, 0x1)                      # sched_en=1 (движок планировщика работает)
+        # FIX 2026-10-15 (планировщик, кольцо): после flush синхронизировать
+        # локальный _wptr с ТЕКУЩИМ аппаратным RPTR. Иначе при создании нового
+        # планировщика на «горячей» плате аппаратный RPTR остаётся от прошлых
+        # запусков (напр. 255) при _wptr=0 -> pending ложно зашкаливает, а
+        # submit() падает. Даём движку 1 мс осесть и читаем RPTR.
+        time.sleep(0.001)
+        self._wptr = self._reg_r(SCHED_RPTR) & 0xFF
+        self._rptr_done = self._wptr
 
     # ---- регистры ----
     def _reg_w(self, off: int, val: int) -> None:

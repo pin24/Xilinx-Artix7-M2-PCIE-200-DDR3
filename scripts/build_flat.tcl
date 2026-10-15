@@ -40,8 +40,8 @@ set ARTIFACTS_DIR "${ROOT}/build/artifacts_flat"
 
 set NUM_MAC     32
 set ADDERS      16
-set JOBS        8
-set_param general.maxThreads 8
+set JOBS        4      # низкий параллелизм для машины с малым ОЗУ (было 8)
+set_param general.maxThreads 4
 set SKIP_SYNTH  0
 
 # ----------------------------------------------------------------------------

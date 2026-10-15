@@ -69,7 +69,7 @@ def forward_sched(sb, X, W1, b1, W2, b2, hidden, n_features, batch):
         pairs = [(to48(H[i]), W2b) for i in range(k, k + chunk)]
         rr = sb.dot_batch(pairs)
         for jj, bits in enumerate(rr):
-            out[k + jj] = sigmoid(to_float(bits) + float(b2))
+            out[k + jj] = float(sigmoid(to_float(bits) + float(b2)))
         k += chunk
     return out, H
 
