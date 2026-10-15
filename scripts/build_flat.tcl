@@ -310,7 +310,7 @@ current_run [get_runs impl_1]
 # Vivado не принимает как fileset-generic (проверено). Передаём их в синтез
 # через опцию -generic: set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC запускает
 # synth_design с -generic "NUM_MAC=.. ADDERS=..".
-set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC "NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}" [get_runs impl_1]
+set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC "NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}" [get_runs synth_1]
 catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}
 launch_runs impl_1 -to_step write_bitstream -jobs ${JOBS}
 wait_on_run impl_1

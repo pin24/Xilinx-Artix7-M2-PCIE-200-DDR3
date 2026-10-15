@@ -693,6 +693,14 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
     TraceVerbose(DBG_IO, "%!FUNC!(queue=%p, request=%p, length=%llu)", wdfQueue, Request, length);
 
     XDMA_ENGINE* engine = queue->engine;
+    // FIX 2026-10-15 (BSOD 0x10D): подготовить новую транзакцию — сбросить флаг
+    // завершения (может остаться TRUE, если предыдущий вход EngineProcessTransfer
+    // выскочил по признаку "already done").
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        engine->txnDone = FALSE;
+        WdfSpinLockRelease(engine->engineLock);
+    }
     TraceInfo(DBG_IO, "%s_%u writing %llu bytes to device",
               DirectionToString(engine->dir), engine->channel, length);
 
@@ -762,6 +770,12 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
     TraceVerbose(DBG_IO, "%!FUNC!(queue=%p, request=%p, length=%llu)", wdfQueue, Request, length);
 
     XDMA_ENGINE* engine = queue->engine;
+    // FIX 2026-10-15 (BSOD 0x10D): сброс флага завершения для новой транзакции (см. write-путь)
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        engine->txnDone = FALSE;
+        WdfSpinLockRelease(engine->engineLock);
+    }
     TraceInfo(DBG_IO, "%s_%u reading %llu bytes from device",
               DirectionToString(engine->dir), engine->channel, length);
 

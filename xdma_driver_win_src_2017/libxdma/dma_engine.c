@@ -138,6 +138,23 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
         }
     }
 
+    // FIX 2026-10-15 (BSOD 0x10D): единая защита от ПОВТОРНОГО входа в
+    // EngineProcessTransfer на одной транзакции (параллельный вход: bounded-poll
+    // WaitCompletion + ISR/DPC). Check-and-set txnDone под спинлоком ПОКРЫВАЕТ
+    // все ветки (success и error): второй вход просто выходит раньше, чем успеет
+    // вызвать WdfDmaTransactionDmaCompleted / Release / Complete повторно.
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        BOOLEAN already = engine->txnDone;
+        if (!already) engine->txnDone = TRUE;
+        WdfSpinLockRelease(engine->engineLock);
+        if (already) {
+            TraceError(DBG_DMA, "%s_%u transfer already processed; skip duplicate",
+                       DirectionToString(engine->dir), engine->channel);
+            return;
+        }
+    }
+
     TraceInfo(DBG_DMA, "%s_%u processing transfer completion",
               DirectionToString(engine->dir), engine->channel);
 
@@ -195,6 +212,9 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
     if (engine->engineLock) {
         WdfSpinLockAcquire(engine->engineLock);
         engine->isReqPending = FALSE;
+        // NOTE FIX 2026-10-15: НЕ сбрасываем engine->txnDone здесь — иначе
+        // хвостовой DPC от той же транзакции снова пройдёт guard. txnDone
+        // сбрасывается в начале следующего request (EvtIoWrite/ReadDma).
         WdfSpinLockRelease(engine->engineLock);
     }
 
@@ -397,6 +417,7 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
 
     // spurious-irq protection (mirrors official Xilinx driver)
     engine->isReqPending = FALSE;
+    engine->txnDone = FALSE;   // FIX 2026-10-15 (BSOD 0x10D): явная инициализация
     status = WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &engine->engineLock);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "EngineCreate: WdfSpinLockCreate failed: %!STATUS!", status);

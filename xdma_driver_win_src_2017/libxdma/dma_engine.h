@@ -131,6 +131,14 @@ typedef struct XDMA_ENGINE_T {
     // see whether WDF programs packet 2+ of a >512B multi-packet transaction.
     ULONG progDmaCalls;
 
+    // FIX 2026-10-15 (BSOD 0x10D): flag "DMA transaction completion already
+    // processed". EngineProcessTransfer may be entered from BOTH the bounded
+    // poll (WaitCompletion) and the ISR/DPC path; calling
+    // WdfDmaTransactionDmaCompleted twice on one transaction is a KMDF
+    // Driver-Verifier violation (BugCheck 0x10D). Set TRUE after the first
+    // DmaCompleted, reset in EvtIoWriteDma/EvtIoReadDma before Execute.
+    BOOLEAN txnDone;
+
 } XDMA_ENGINE;
 
 #pragma pack(1)
