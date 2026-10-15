@@ -45,9 +45,10 @@ def main(argv=None):
                     help="обнулить накопленные счётчики OBS перед стартом (иначе показываются "
                          "кумулятивные значения с последнего clear)")
     ap.add_argument("--dev", default=None)
-    ap.add_argument("--bench", action="store_true",
-                    help="прогнать быстрый DMA-бенчмарк (1 МиБ write+read) и показывать "
-                         "реальную пропускную MB/s (а не мгновенный ΔBEAT)")
+    ap.add_argument("--bench", type=int, default=0, metavar="MB",
+                    help="непрерывный DMA-нагрузочный тест с блоком N МБ (write+read через h2c/c2h); "
+                         "НАГРУЖАЕТ плату и показывает живую MB/s в реальном времени (0 = выкл). "
+                         "Пример: --bench 8")
     args = ap.parse_args(argv)
 
     if sys.platform.startswith("win"):
@@ -72,26 +73,33 @@ def main(argv=None):
         print("  OBS-счётчики обнулены (--clear).")
     time.sleep(0.3)
 
-    # DMA-бенчмарк (опционально): реальная пропускная 1 МиБ write+read
-    bench_w = bench_r = None
-    if args.bench:
-        try:
-            size = 1 << 20
-            buf = bytes((i & 255) for i in range(size))
-            off = 0x01000000
-            d = core.dev
-            d.write_dma(off, buf)                     # прогрев
-            t0 = time.time(); d.write_dma(off, buf); bench_w = size / (time.time() - t0) / 1e6
-            t0 = time.time(); d.read_dma(off, size);  bench_r = size / (time.time() - t0) / 1e6
-            print(f"  DMA-бенчмарк (1 MiB): write={bench_w:.1f} MB/s  read={bench_r:.1f} MB/s")
-        except Exception as e:
-            print(f"  bench не выполнен: {e}")
+    # DMA-нагрузочный тест (опционально): блок N МБ write+read через h2c/c2h
+    bench_nbytes = 0
+    bench_buf = None
+    if args.bench > 0:
+        bench_nbytes = args.bench * (1 << 20)
+        bench_buf = bytes((i & 255) for i in range(bench_nbytes))
+        off = 0x01000000
+        d = core.dev
+        d.write_dma(off, bench_buf)                 # прогрев
+        d.read_dma(off, bench_nbytes)
+        print(f"  DMA-нагрузка запущена: блок {args.bench} МБ (write+read через плату)")
 
     prev = None
     try:
         while True:
             t_frame = time.monotonic()   # начало кадра (для реального времени)
-            if args.dot > 0:
+            dma_mb = None                    # MB/s по факту переноса (для bench)
+            if args.bench > 0:
+                # DMA-нагрузка (непрерывный write+read блока N МБ через плату)
+                tb = time.monotonic()
+                d.write_dma(off, bench_buf)
+                d.read_dma(off, bench_nbytes)
+                dtb = time.monotonic() - tb
+                if dtb <= 0.0:
+                    dtb = 1e-6
+                dma_mb = 2 * bench_nbytes / dtb / 1e6   # реальная скорость переноса
+            elif args.dot > 0:
                 # прогнать N задач для создания нагрузки (ядро/AXI-активность)
                 for _ in range(args.dot):
                     core.dot(pairs, list(pairs), data_addr=0x0,
@@ -122,7 +130,10 @@ def main(argv=None):
             dt_real = time.monotonic() - t_frame      # реальная длительность цикла кадра
             if dt_real <= 0.0:
                 dt_real = 1e-6
-            dmamb = dbeat * 8 / dt_real / 1e6         # живая DMA-скорость (по прочитанным словам)
+            if dma_mb is not None:
+                dmamb = dma_mb                       # реальная скорость переноса (--bench)
+            else:
+                dmamb = dbeat * 8 / dt_real / 1e6    # по прочитанным словам (ΔBEAT)
             job_s = (dj / dt_real) if dj > 0 else 0.0
             s = (f"\x1b[2J\x1b[H"
                  f"  tdot OBS console  "
