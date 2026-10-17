@@ -43,6 +43,7 @@ static void EngineGetAlignments(IN OUT XDMA_ENGINE *engine);
 static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine);
 static NTSTATUS EngineCreateRingBuffer(IN OUT XDMA_ENGINE* engine);
 static NTSTATUS EngineCreateDescriptorPool(IN OUT XDMA_ENGINE *engine);
+static NTSTATUS EngineCreateTxPool(IN OUT XDMA_ENGINE *engine);
 static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index);
 static void EngineProcessTransfer(IN XDMA_ENGINE *engine);
 static UINT EngineProcessRing(IN XDMA_ENGINE *engine);
@@ -156,6 +157,111 @@ VOID XDMA_EngineDeleteDescriptorPool(IN XDMA_ENGINE *engine) {
         }
     }
     engine->descPoolFree = 0;
+}
+
+// ==========================================================================================
+// PLAN-3 P2 2026-10-17: transaction POOL (PREP-ONLY).
+// ------------------------------------------------------------------------------------------
+// Mirrors the descriptor-block pool above, but for WDFDMATRANSACTION framework
+// objects. Each WDFDMATRANSACTION is a reusable object created once against the
+// engine's DMA enabler; it is bound to a specific request later by
+// WdfDmaTransactionInitializeUsingRequest() and executed by
+// WdfDmaTransactionExecute() (P3). Having N independent transactions is what
+// allows the P3 pipeliner to overlap completion of one transfer with the setup
+// of the next without re-arming the same shared transaction.
+//   * slot 0 = the legacy engine->dmaTransaction (already created by
+//     WdfDmaTransactionCreate in EngineCreate); it remains the ONLY transaction
+//     every current code path uses -> zero behavior change.
+//   * slots 1..XDMA_DESC_POOL_SIZE-1 are pre-created here and LEFT IDLE: never
+//     initialized/executed, so behaviour with the pool present is identical to
+//     the single-transaction build.
+//   * dmaTxFree is a ULONG free-bitmap (bit i set = slot i grantable). Slot 0 is
+//     marked permanently busy (it is the live transaction). Nothing is handed out
+//     today; XDMA_EngineTxAllocSlot/XDMA_EngineTxFreeSlot are the hand-out
+//     contract for the P3 pipeliner.
+// Pre-created idle WDFDMATRANSACTION objects are harmless framework objects:
+// they cost no resources until initialized. On failure we roll back via
+// XDMA_EngineDeleteTxPool so EngineCreate fails cleanly.
+// HELD at device init, PASSIVE_LEVEL.
+// ==========================================================================================
+static NTSTATUS EngineCreateTxPool(IN OUT XDMA_ENGINE *engine) {
+    if (engine == NULL || engine->parentDevice == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // bitmap: slot 0 is the live engine transaction -> never handed out (bit 0 clear).
+    engine->dmaTxFree = 0;
+
+    for (ULONG i = 1; i < XDMA_DESC_POOL_SIZE; i++) {
+        WDFDMATRANSACTION txn = NULL;
+        NTSTATUS st = WdfDmaTransactionCreate(engine->parentDevice->dmaEnabler,
+                                              WDF_NO_OBJECT_ATTRIBUTES, &txn);
+        if (!NT_SUCCESS(st)) {
+            TraceError(DBG_INIT, "EngineCreateTxPool slot %lu failed: %!STATUS!", i, st);
+            // roll back slots already created so EngineCreate fails cleanly; slot 0
+            // (legacy dmaTransaction) is left to WDF cleanup as before.
+            XDMA_EngineDeleteTxPool(engine);
+            return st;
+        }
+        engine->dmaTxPool[i] = txn;
+        engine->dmaTxFree |= ((ULONG)1u << i);
+    }
+
+    TraceInfo(DBG_INIT, "%s_%u dmaTxPool ready: %u slots (slot0 legacy, free=0x%x)",
+              DirectionToString(engine->dir), engine->channel,
+              XDMA_DESC_POOL_SIZE, engine->dmaTxFree);
+    return STATUS_SUCCESS;
+}
+
+VOID XDMA_EngineDeleteTxPool(IN XDMA_ENGINE *engine) {
+    if (engine == NULL) {
+        return;
+    }
+    // Free the pool slots WE created (1..N-1). Slot 0 is engine->dmaTransaction
+    // and is intentionally NOT deleted here: it has exactly the same lifetime as
+    // the original driver (WDF automatic cleanup, parent = default) and we must
+    // not change how the active transaction is torn down.
+    for (ULONG i = 1; i < XDMA_DESC_POOL_SIZE; i++) {
+        if (engine->dmaTxPool[i] != NULL) {
+            WdfObjectDelete(engine->dmaTxPool[i]);
+            engine->dmaTxPool[i] = NULL;
+        }
+    }
+    engine->dmaTxFree = 0;
+}
+
+ULONG XDMA_EngineTxAllocSlot(IN XDMA_ENGINE *engine) {
+    if (engine == NULL || engine->engineLock == NULL) {
+        return 0;
+    }
+    ULONG slot = 0;
+    WdfSpinLockAcquire(engine->engineLock);
+    // scan for the lowest grantable slot (>0). dmaTxFree bits for slots 1..N-1
+    // are the only ones ever set (slot 0 bit is always clear).
+    ULONG free = engine->dmaTxFree;
+    for (ULONG i = 1; i < XDMA_DESC_POOL_SIZE; i++) {
+        if (free & ((ULONG)1u << i)) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot != 0) {
+        engine->dmaTxFree &= ~((ULONG)1u << slot); // mark busy
+    }
+    WdfSpinLockRelease(engine->engineLock);
+    return slot;
+}
+
+VOID XDMA_EngineTxFreeSlot(IN XDMA_ENGINE *engine, IN ULONG slot) {
+    if (engine == NULL || engine->engineLock == NULL) {
+        return;
+    }
+    if (slot == 0 || slot >= XDMA_DESC_POOL_SIZE) {
+        return; // slot 0 is legacy and never granted; out-of-range is a no-op
+    }
+    WdfSpinLockAcquire(engine->engineLock);
+    engine->dmaTxFree |= ((ULONG)1u << slot); // mark free again
+    WdfSpinLockRelease(engine->engineLock);
 }
 
 static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index) {
@@ -476,6 +582,18 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
                                      &engine->dmaTransaction);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "WdfDmaTransactionCreate() failed: %!STATUS!", status);
+        return status;
+    }
+
+    // PLAN-3 P2 2026-10-17: bind the legacy transaction to pool slot 0 and
+    // pre-create the transaction pool. Pure addition: slot 0 keeps pointing at
+    // engine->dmaTransaction (unchanged behaviour) and slots 1..N-1 are idle
+    // WDFDMATRANSACTION objects parked for the P3 pipeliner. On failure the pool
+    // is rolled back internally and EngineCreate fails gracefully.
+    engine->dmaTxPool[0] = engine->dmaTransaction;
+    status = EngineCreateTxPool(engine);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_INIT, "EngineCreateTxPool() failed: %!STATUS!", status);
         return status;
     }
 

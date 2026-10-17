@@ -128,6 +128,17 @@ typedef struct XDMA_ENGINE_T {
     WDFCOMMONBUFFER descBufferPool[XDMA_DESC_POOL_SIZE];
     ULONG descPoolFree;
 
+    // PLAN-3 P2 2026-10-17: transaction POOL (PREP-ONLY).
+    // Mirrors descBufferPool above. Slot 0 IS engine->dmaTransaction (the legacy
+    // live transaction used by every current code path) -> zero behavior change.
+    // Slots 1..XDMA_DESC_POOL_SIZE-1 are pre-created idle WDFDMATRANSACTION
+    // objects (reusable framework objects, never initialized/executed yet) parked
+    // as capital for the P3 pipeliner. dmaTxFree is a ULONG free-bitmap: bit i set
+    // = slot i may be granted; slot 0 is never granted (bit 0 clear).
+    // Hand-out contract: XDMA_EngineTxAllocSlot / XDMA_EngineTxFreeSlot.
+    WDFDMATRANSACTION dmaTxPool[XDMA_DESC_POOL_SIZE];
+    ULONG dmaTxFree;
+
     // specific to streaming interface
     XDMA_RING ring;
 
@@ -242,6 +253,26 @@ VOID XDMA_EngineResetIdle(IN XDMA_ENGINE* engine);
 /// change how it is torn down. Idempotent (NULL guards), safe at PASSIVE_LEVEL
 /// during device teardown. Call from XDMA_DeviceClose for each enabled engine.
 VOID XDMA_EngineDeleteDescriptorPool(IN XDMA_ENGINE* engine);
+
+/// PLAN-3 P2 2026-10-17: allocate a free transaction-pool slot (>=1) for a new
+/// request, or 0 if none is free / the engine has no pool. The returned slot is
+/// marked busy. Slot 0 (the active legacy transaction) is intentionally never
+/// handed out. GUARDED by engine->engineLock (safe from EvtIoWriteDma/ReadDma).
+/// NOT used by any code path yet (prep for P3); slot 0 / engine->dmaTransaction
+/// remains the only active path.
+ULONG XDMA_EngineTxAllocSlot(IN XDMA_ENGINE* engine);
+
+/// PLAN-3 P2 2026-10-17: return a previously granted transaction-pool slot
+/// (mark it free again). Safe no-op for slot 0 or an out-of-range slot.
+/// GUARDED by engine->engineLock. NOT used yet (prep for P3).
+VOID XDMA_EngineTxFreeSlot(IN XDMA_ENGINE* engine, IN ULONG slot);
+
+/// PLAN-3 P2 2026-10-17: delete the pre-created transaction-pool slots (1..N-1)
+/// of one engine. Slot 0 (engine->dmaTransaction) is left to WDF automatic
+/// cleanup (unchanged lifetime). Idempotent (NULL/zero guards), safe at
+/// PASSIVE_LEVEL during device teardown. Call from XDMA_DeviceClose alongside
+/// XDMA_EngineDeleteDescriptorPool.
+VOID XDMA_EngineDeleteTxPool(IN XDMA_ENGINE* engine);
 
 /// Poll the write-back buffer for DMA transfer completion
 NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine);

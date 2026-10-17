@@ -686,3 +686,14 @@ Stage Summary:
 - [tests 06.10] Прошивка 0e5cb12 + драйвер v1.1.29: loopback 512/1024/2048/1MiB PASS, progDmaCalls=1, WHEA/0x124 за тесты нет. dot/dot_bram: TDOT DONE timeout (ядро не завершает) - отдельная задача ядра.
 - [RTL-fix tdOT] Корень зависания ядра: tfadd_raw phase[2:0] не вмещал PH_DONE=8 -> valid_out не выдавался (ядро вечно в PH_TREE/CS_WAIT). Фикс phase->[3:0], подтверждён симуляцией (не виснет, RESULT=041680000000 при 1.0). Пост-аудит корректен. Прошивка пересобирается с фиксом.
 - [sim/core 06.10] Найден и исправлен корень зависания ядра TDOT: tfadd_raw logic[2:0] phase слишком узок для PH_DONE=8 -> phase<=8 обрезался до IDLE, valid_out не выдавался -> PH_TREE вечный -> CS_WAIT. Фикс: phase[3:0]. Симуляция: не виснет, результат 041680000000 (32x1.0). Пост-аудит подтвердил единственность фикса. Прошивка пересобирается с фиксом.
+
+---
+Task ID: 2026-10-17-plan3-p2
+Agent: MultiTool (+subagents)
+Task: PLAN-3 P2 (пул WDFDMATRANSACTION) + RTL 6-байт (план) + verify fix
+Work Log:
+- Агент-P2: пул WDFDMATRANSACTION (dmaTxPool[4], слот0=легаси-активный, alloc/free, EngineCreateTxPool/DeleteTxPool); все 6 TU компилируются; execution-путь не тронут.
+- Агент-RTL6: план перехода 8->6 байт (barrel, rd_total=ceil(N*6/8), skip, 4KB-clamp, align) БЕЗ внесения в RTL (8-байт сохранён).
+- verify_tdot_axi4: эталон исправлен (RTL-нормализация по знаковому скану) — NUM_MAC=32/16 4/4 PASS.
+- Проверено: RTL-tdot_axi4.sv НЕ изменён (verify 32=0 несовпадений); драйвер P2 компилируется полностью.
+Stage Summary: P1/P2 пула готовы (код+компиляция); RTL 8-байт стабилен; 6-байт — план (отдельный этап).

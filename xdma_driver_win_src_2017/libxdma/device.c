@@ -333,6 +333,10 @@ void XDMA_DeviceClose(PXDMA_DEVICE xdma) {
                 XDMA_ENGINE* eng = &xdma->engines[ch][dir];
                 if (eng != NULL && eng->enabled) {
                     XDMA_EngineDeleteDescriptorPool(eng);
+                    // PLAN-3 P2 2026-10-17: also tear down the transaction pool
+                    // (pre-created slots 1..N-1). Slot 0 (engine->dmaTransaction)
+                    // is left to WDF automatic cleanup as before.
+                    XDMA_EngineDeleteTxPool(eng);
                 }
             }
         }
