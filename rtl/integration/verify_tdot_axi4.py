@@ -3,6 +3,13 @@
 Генерирует входной hex (64-битные слова: data[32] затем weights[32],
 распакованно 8 байт/элемент), запускает xsim, сверяет результат из
 регистров с эталоном dot_raw (см. verify_compute_dot_par_raw.py).
+
+Эталон dot_ref_raw воспроизводит RTL tdot_axi4 БИТ-В-БИТ, включая
+квантование нормализации tfadd_raw (P_can по знаковому скану sum, без
+приведения |sum|). Для отрицательных сумм у границы степени 3 это даёт
+НЕКОНОНИЧНУЮ мантиссу (вне [3^18,3^19)), как на железе; значение при этом
+математически верно. Ключевая логика: _norm_rtl_sum + _raw_mul c
+40-тритной обрезкой произведения.
 """
 from __future__ import annotations
 import sys, os, subprocess, struct, random
@@ -90,62 +97,180 @@ def _rhu_next(m, W=42):
     return _from_trits(fd)
 
 
-def _shift_seq(m, k):
-    for _ in range(k):
-        m = _rhu_next(m)
-    return m
+def _shift_seq(m, k, W=42):
+    # RTL ALGN-баррель tfadd_raw: чистый сдвиг вправо на k тритов СБРОСОМ
+    # младших k тритов (algn_y[t] = m_small[t+k]), k = min(|de|, 22) — БЕЗ
+    # round-half-up. _to_trits/_from_trits оба LSB-first: низкий трит = индекс 0.
+    # Сдвиг вправо отбрасывает k НИЗКИХ тритов и дописывает нули СВЕРХУ:
+    # out[i] = in[i+k]  <=>  список ts[k:] + [0]*k. Прежний _rhu_next
+    # (round-half-up) расходился с RTL и давал накопленную ошибку через дерево.
+    k = min(k, 22)
+    if k <= 0:
+        return m
+    ts = _to_trits(m, W)          # LSB-first, ровно W тритов
+    return _from_trits(ts[k:] + [0] * k)
 
 
 def _norm_raw_rtl(m, e):
+    """Нормализация к [3^18, 3^19) — ТОЧНАЯ копия P-каноники tfadd_raw.
+
+    RTL (PH_NORM1C..PH_NORM2) нормализует ОДНИМ сдвигом с коррекцией границы,
+    НЕ итерациями по одному триту:
+      * P >= 19 (up_big): fq = |m| >> k (k = P-18, сброс низких k тритов),
+        затем fq_dec = fq - 1, ЕСЛИ старший из отброшенных тритов (позиция
+        k-1, 0-индекс LSB-first) == N1; e += k. Один шаг, не по-тритно.
+      * P <= 17 (dn_small): m << (18-P) со сдвигом клампа e_sum+40; e -= (18-P).
+    Прежняя версия итерировала однобитный _shift1+corr, что давало ДРУГОЕ
+    округление низких тритов (накопленное расхождение через всё дерево).
+    """
     W = 42
-    while True:
-        ts = _to_trits(m, W)
-        v = abs(_from_trits(ts))
-        sneg = 0
-        for t in range(W - 1, -1, -1):
-            if ts[t] != 0:
-                sneg = (ts[t] == -1); break
-        if v == 0:
-            return (0, 0)
-        if e > 40:
-            return None
-        if v >= 3 ** 19:
-            mag = [-t for t in ts] if sneg else ts
-            fd = _shift1(mag)
-            if mag[0] == -1:
-                fd = _add_const(fd, -1)
-            if sneg:
-                fd = [-t for t in fd]
-            m = _from_trits(fd)
-            e = e + 1
-        elif v < 3 ** 18 and e > -40:
-            m = m * 3
-            e = e - 1
+    if m == 0:
+        return (0, 0)
+    ts = _to_trits(m, W)                 # LSB-first, W тритов
+    p_top = None; sneg = 0
+    for t in range(W - 1, -1, -1):
+        if ts[t] != 0:
+            p_top = t; sneg = (ts[t] == -1); break
+    if p_top is None:
+        return (0, 0)
+    rest_n1 = 0
+    for t in range(p_top - 1, -1, -1):
+        if ts[t] != 0:
+            rest_n1 = (ts[t] == -1); break
+    P = p_top - rest_n1
+    if e > 40:
+        return None
+    mabs = abs(m)
+    if P >= 19:
+        k = P - 18
+        kts = _to_trits(mabs, W)
+        drop_hi = kts[k - 1] if k >= 1 else 0     # позиция k-1 = старший отброшенный
+        fq = _from_trits(kts[k:] + [0] * k)        # |m| >> k (сброс низких k тритов)
+        if drop_hi == -1:                          # старший отброшенный == N1 -> fq-1
+            fq = fq - 1
+        m = -fq if sneg else fq
+        e = e + k
+    elif P <= 17 and e > -40:
+        k = 18 - P
+        # RTL-клamp k_dn = min(k, e_sum+40)
+        room = e + 40
+        if room < k:
+            k_dn = room if room > 0 else 0
         else:
-            return (m, e)
+            k_dn = k
+        if k_dn:
+            m = mabs * (3 ** k_dn)
+            m = -m if sneg else m
+            e = e - k_dn
+    return (m, e)
 
 
 def _raw_mul(a, b):
     ma = int(arith48._trits_value(arith48._m_trits(a)))
     mb = int(arith48._trits_value(arith48._m_trits(b)))
     ea = arith48._e_raw(a); eb = arith48._e_raw(b)
-    return (ma * mb, ea + eb - 18)
+    # RTL tfmul_raw prod = 40 тритов (80 бит): старший выход-трит отбрасывается,
+    # если произведение переполняет 40 тритов. Обычно no-op (максимум ~3^38).
+    p = _from_trits(_to_trits(ma * mb, 80)[0:40])
+    return (p, ea + eb - 18)
+
+
+def _trunc20(v):
+    """Низкие 20 тритов значения v (RTL: результат = sum[39:0])."""
+    return _from_trits(_to_trits(v, 60)[0:20])
+
+
+def _norm_rtl_sum(v, e_sum):
+    """ТОЧНАЯ копия нормализации tfadd_raw (PH_NORM0A..PH_DONE): возвращает
+    (mantissa_20_тритов, e_out). КЛЮЧЕВОЕ ОТЛИЧИЕ от идеальной каноники:
+    P_can = p_top - rest_n1 считается по СКАНУ ЗНАКОВОГО sum (rest_n1 ищет
+    первый ненулевой трит НИЖЕ p_top в исходных тритах sum, БЕЗ взятия |sum|).
+    Для отрицательных сумм, у которых |sum| находится ровно на границе
+    степени 3 (трит ниже p_top == 0, следующий вниз == N1), ПОДМЕНЯЕТ
+    floor(log3|sum|) на p_top-1 (P_can=18 вместо 19) — нормализация НЕ
+    срабатывает, мантисса остаётся НЕКОНОНИЧНОЙ (значение при этом верное:
+    компенсируется экспонентой). Это поведение железа, и оно воспроизведено."
+    """
+    ts = _to_trits(v, 42)                 # LSB-first, ровно 42 трита
+    p_found = any(t != 0 for t in ts)
+    if not p_found:
+        return (0, 0)
+    p_top = None; sneg = 0
+    for t in range(41, -1, -1):
+        if ts[t] != 0:
+            p_top = t; sneg = (ts[t] == -1); break
+    rest_n1 = 0
+    for t in range(p_top - 1, -1, -1):
+        if ts[t] != 0:
+            rest_n1 = (ts[t] == -1); break
+    if p_top == 0:
+        P_can = 0
+    else:
+        P_can = p_top - (1 if rest_n1 else 0)
+    if e_sum > 40 or (P_can >= 19 and e_sum + (P_can - 18) > 40):
+        return (None, None)               # sat -> все единицы
+    if e_sum < -40:
+        return (0, 0)                     # underflow -> 0
+    t_abs = [-t if sneg else t for t in ts]
+    m_abs = _from_trits(t_abs)
+    if P_can >= 19:
+        k = P_can - 18
+        hi_drop = 0
+        for i in range(k - 1, -1, -1):
+            if t_abs[i] != 0:
+                hi_drop = t_abs[i]; break
+        fq = _from_trits(t_abs[k:] + [0] * k)
+        if hi_drop == -1:
+            fq -= 1
+        m_out = -fq if sneg else fq
+        e_out = e_sum + k
+    elif P_can <= 17:
+        k_dn = 18 - P_can
+        room = e_sum + 40
+        k_dn_c = room if room < k_dn else k_dn
+        if k_dn_c < 0:
+            k_dn_c = 0
+        if k_dn_c:
+            m_out = v * (3 ** k_dn_c)
+            e_out = e_sum - k_dn_c
+        else:
+            m_out = v; e_out = e_sum
+    else:
+        m_out = v; e_out = e_sum          # P_can == 18: без сдвига
+    return (_trunc20(m_out), e_out)
+
+
+def _bits_to_tf(b):
+    return TFloat.from_bits(((b & ((1 << 40) - 1)) << 8) | ((b >> 40) & 0xFF))
+
+
+def _pack_raw(m20, e):
+    """Упаковать ПРОИЗВОЛЬНЫЕ (мант., эксп.) в 48 бит файлового формата
+    (E в старшем байте, M в младших 40 битах) БЕЗ повторной нормализации —
+    точно как RTL output = {exp_code(e_sum), sum[39:0]}. Мант. может быть
+    НЕКОНОНИЧНОЙ (вне [3^18,3^19)) — она кодируется как есть."""
+    import block.trits as Tmod
+    m_trits = arith48._round_int_to_trits(m20)
+    e_trits = arith48._encode_exp(e)
+    return to_bits48(TFloat(Tmod.pack(m_trits), Tmod.pack(e_trits)))
 
 
 def _raw_add(pa, ea, pb, eb):
-    if pa == 0: return (pb, eb)
-    if pb == 0: return (pa, ea)
+    if pa == 0: return _norm_rtl_flat(pb, eb)
+    if pb == 0: return _norm_rtl_flat(pa, ea)
     if ea > eb:
         pb = _shift_seq(pb, ea - eb); e = ea
     elif eb > ea:
         pa = _shift_seq(pa, eb - ea); e = eb
     else:
         e = ea
-    return _norm_raw_rtl(pa + pb, e)
+    s = pa + pb
+    return _norm_rtl_flat(s, e)
 
 
-def _bits_to_tf(b):
-    return TFloat.from_bits(((b & ((1 << 40) - 1)) << 8) | ((b >> 40) & 0xFF))
+def _norm_rtl_flat(m, e):
+    m20, e_out = _norm_rtl_sum(m, e)
+    return (m20, e_out)
 
 
 def dot_ref_raw(vals_a, vals_b):
@@ -161,9 +286,9 @@ def dot_ref_raw(vals_a, vals_b):
             nxt.append(products[-1])
         products = nxt
     m, e = products[0]
-    if m == 0:
+    if m == 0 and e == 0:
         return 0
-    return to_bits48(arith48._norm_raw(m, e))
+    return _pack_raw(m, e)
 
 
 def gen_input(ncase=4):

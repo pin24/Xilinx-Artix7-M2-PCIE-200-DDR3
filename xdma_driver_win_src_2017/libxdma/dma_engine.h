@@ -37,6 +37,14 @@
 #define XDMA_DESC_MAX_BYTES     (512UL)
 #define XDMA_MAX_DESC_COUNT     (XDMA_MAX_TRANSFER_SIZE / XDMA_DESC_MAX_BYTES)
 
+// PLAN-3 P1 2026-10-17: descriptor-block POOL size. Slots 1..N-1 are extra
+// WDFCOMMONBUFFER blocks pre-allocated now so a future increment can give each
+// WDFDMATRANSACTION its own descriptor buffer (no more one shared
+// engine->descBuffer per engine). Slot 0 stays bound to the legacy field below
+// and every current code path keeps using it -> zero behavior change. No
+// consumer of slots 1..N-1 exists yet. Must fit a ULONG free-bitmap.
+#define XDMA_DESC_POOL_SIZE     (4U)
+
 // ========================= forward declarations =================================================
 
 struct XDMA_DEVICE_T; 
@@ -107,6 +115,18 @@ typedef struct XDMA_ENGINE_T {
     WDFCOMMONBUFFER descBuffer;
     WDFDMATRANSACTION dmaTransaction;
     PFN_XDMA_ENGINE_WORK work; // engine work for interrupt processing
+
+    // PLAN-3 P1 2026-10-17: descriptor-block pool (PREP-ONLY).
+    // descBufferPool[0] IS the legacy descBuffer above (same WDFCOMMONBUFFER,
+    // bound in EngineCreateDescriptorBuffer) so all current code paths are
+    // unchanged. Slots 1..XDMA_DESC_POOL_SIZE-1 are allocated in EngineCreate
+    // but NOT handed out yet (no consumer). The grant bookkeeping is a ULONG
+    // free-bitmap: bit i set => slot i is free to be granted. Currently slot 0
+    // is never granted (bit 0 clear) and slots 1..N-1 are all free.
+    // Future increments: grant a slot per WDFDMATRANSACTION, then point
+    // ProgramDma at engine->descBufferPool[slot] instead of engine->descBuffer.
+    WDFCOMMONBUFFER descBufferPool[XDMA_DESC_POOL_SIZE];
+    ULONG descPoolFree;
 
     // specific to streaming interface
     XDMA_RING ring;
@@ -215,6 +235,13 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG timeoutUs);
 /// statusRC and clearing RUN/reset it never completes the next read. Call right
 /// before starting a C2H transfer. Safe for a stopped/idle engine too.
 VOID XDMA_EngineResetIdle(IN XDMA_ENGINE* engine);
+
+/// PLAN-3 P1 2026-10-17: delete the descriptor-block POOL slots (1..N-1) of one
+/// engine. Slot 0 is the legacy engine->descBuffer and is intentionally left to
+/// WDF automatic cleanup (same lifetime as the original) because we must not
+/// change how it is torn down. Idempotent (NULL guards), safe at PASSIVE_LEVEL
+/// during device teardown. Call from XDMA_DeviceClose for each enabled engine.
+VOID XDMA_EngineDeleteDescriptorPool(IN XDMA_ENGINE* engine);
 
 /// Poll the write-back buffer for DMA transfer completion
 NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine);

@@ -41,7 +41,8 @@
 static UINT32 EngineStatus(IN XDMA_ENGINE *engine, IN BOOLEAN clear);
 static void EngineGetAlignments(IN OUT XDMA_ENGINE *engine);
 static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine);
-static NTSTATUS EngineCreateRingBuffer(IN XDMA_ENGINE* engine);
+static NTSTATUS EngineCreateRingBuffer(IN OUT XDMA_ENGINE* engine);
+static NTSTATUS EngineCreateDescriptorPool(IN OUT XDMA_ENGINE *engine);
 static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index);
 static void EngineProcessTransfer(IN XDMA_ENGINE *engine);
 static UINT EngineProcessRing(IN XDMA_ENGINE *engine);
@@ -74,6 +75,13 @@ static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine) {
         return status;
     }
 
+    // PLAN-3 P1 2026-10-17: slot 0 of the pool IS the legacy engine buffer, so
+    // every current code path (ProgramDma / EngineProcessTransfer / ResetIdle /
+    // RingProgramDma via engine->descBuffer) keeps working unchanged.
+    // Only initialise slot 0 here; the free-bitmap and slots 1..N-1 are set up
+    // by EngineCreateDescriptorPool (called right after this in EngineCreate).
+    engine->descBufferPool[0] = engine->descBuffer;
+
     PHYSICAL_ADDRESS descBufferLA = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
     PUCHAR descBufferVA = (PUCHAR)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
     RtlZeroMemory(descBufferVA, bufferSize);
@@ -86,6 +94,68 @@ static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine) {
     TraceVerbose(DBG_INIT, "descriptor buffer at 0x%08x%08x, size=%lld",
                  engine->sgdma->firstDescHi, engine->sgdma->firstDescLo, bufferSize);
     return status;
+}
+
+// ==========================================================================================
+// PLAN-3 P1 2026-10-17: descriptor-block POOL (PREP-ONLY).
+// ------------------------------------------------------------------------------------------
+// Gives the engine N independent WDFCOMMONBUFFER blocks so a future increment can
+// assign one to each WDFDMATRANSACTION instead of sharing a single descBuffer.
+//   * slot 0 = the legacy engine->descBuffer (already created+bound by
+//     EngineCreateDescriptorBuffer); it is the only slot the current code uses.
+//   * slots 1..XDMA_DESC_POOL_SIZE-1 are allocated here and LEFT UNUSED: no code
+//     path consumes them yet, so behaviour with the pool present is identical to
+//     the single-buffer build.
+//   * descPoolFree is a ULONG free-bitmap (bit i set = slot i free). Slot 0 is
+//     marked permanently busy (it is the active engine buffer). Nothing is
+//     granted today; the bitmap is the hand-out contract for the next increments.
+// HELD at device init, PASSIVE_LEVEL.
+// ==========================================================================================
+static NTSTATUS EngineCreateDescriptorPool(IN OUT XDMA_ENGINE *engine) {
+    SIZE_T bufferSize =
+        (SIZE_T)XDMA_MAX_DESC_COUNT * sizeof(DMA_DESCRIPTOR) + sizeof(DMA_DESCRIPTOR);
+    ULONG i;
+
+    // bitmap: slot 0 is the live engine buffer -> never handed out (bit 0 clear).
+    engine->descPoolFree = 0;
+
+    for (i = 1; i < XDMA_DESC_POOL_SIZE; i++) {
+        WDFCOMMONBUFFER buf = NULL;
+        NTSTATUS st = WdfCommonBufferCreate(engine->parentDevice->dmaEnabler, bufferSize,
+                                            WDF_NO_OBJECT_ATTRIBUTES, &buf);
+        if (!NT_SUCCESS(st)) {
+            TraceError(DBG_INIT, "EngineCreateDescriptorPool slot %lu failed: %!STATUS!", i, st);
+            // roll back slots already created so EngineCreate fails cleanly; slot 0
+            // (legacy descBuffer) is left to WDF/WdfDmaEnabler cleanup as before.
+            XDMA_EngineDeleteDescriptorPool(engine);
+            return st;
+        }
+        RtlZeroMemory(WdfCommonBufferGetAlignedVirtualAddress(buf), bufferSize);
+        engine->descBufferPool[i] = buf;
+        engine->descPoolFree |= ((ULONG)1u << i);
+    }
+
+    TraceInfo(DBG_INIT, "%s_%u descBufferPool ready: %u slots (slot0 legacy, free=0x%x)",
+              DirectionToString(engine->dir), engine->channel,
+              XDMA_DESC_POOL_SIZE, engine->descPoolFree);
+    return STATUS_SUCCESS;
+}
+
+VOID XDMA_EngineDeleteDescriptorPool(IN XDMA_ENGINE *engine) {
+    if (engine == NULL) {
+        return;
+    }
+    // Free the pool slots WE created (1..N-1). Slot 0 is engine->descBuffer and
+    // is intentionally NOT deleted here: it has exactly the same lifetime as the
+    // original driver (WDF automatic cleanup, parent = WdfDmaEnabler) and we must
+    // not change how the active engine buffer is torn down.
+    for (ULONG i = 1; i < XDMA_DESC_POOL_SIZE; i++) {
+        if (engine->descBufferPool[i] != NULL) {
+            WdfCommonBufferDelete(engine->descBufferPool[i]);
+            engine->descBufferPool[i] = NULL;
+        }
+    }
+    engine->descPoolFree = 0;
 }
 
 static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index) {
@@ -388,6 +458,16 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "EngineCreateDescriptorBuffer() failed: %!STATUS!",
                    status);
+        return status;
+    }
+
+    // PLAN-3 P1 2026-10-17: pre-allocate the descriptor-block pool. Pure
+    // addition: slot 0 remains the live engine buffer (unchanged behaviour) and
+    // slots 1..N-1 are parked until a future increment consumes them. On failure
+    // the pool is rolled back internally and EngineCreate fails gracefully.
+    status = EngineCreateDescriptorPool(engine);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_INIT, "EngineCreateDescriptorPool() failed: %!STATUS!", status);
         return status;
     }
 

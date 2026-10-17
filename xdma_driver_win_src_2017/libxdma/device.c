@@ -321,6 +321,23 @@ void XDMA_DeviceClose(PXDMA_DEVICE xdma) {
 
     // todo - stop every engine?
 
+    // PLAN-3 P1 2026-10-17: free the descriptor-block POOL of every engine we
+    // created. Runs at PASSIVE_LEVEL (EvtDeviceReleaseHardware / PrepareHardware
+    // error path). Slot 0 (engine->descBuffer) is left to WDF automatic cleanup
+    // exactly as the original driver did; only the pool slots 1..N-1 are freed
+    // here. Idempotent and guarded, so it is safe even though this codebase
+    // never had an explicit engine-destroy function before.
+    if (xdma != NULL) {
+        for (ULONG ch = 0; ch < XDMA_MAX_NUM_CHANNELS; ch++) {
+            for (ULONG dir = H2C; dir < XDMA_NUM_DIRECTIONS; dir++) {
+                XDMA_ENGINE* eng = &xdma->engines[ch][dir];
+                if (eng != NULL && eng->enabled) {
+                    XDMA_EngineDeleteDescriptorPool(eng);
+                }
+            }
+        }
+    }
+
     // reset irq vectors?
     if (xdma && xdma->interruptRegs) {
         xdma->interruptRegs->userVector[0] = 0;
