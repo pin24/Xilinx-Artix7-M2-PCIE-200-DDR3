@@ -867,15 +867,13 @@ VOID EvtIoReadEngineRing(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t 
 VOID EvtCancelDma(IN WDFREQUEST request) {
     PQUEUE_CONTEXT queue = GetQueueContext(WdfRequestGetIoQueue(request));
     XDMA_ENGINE* engine = queue->engine;
-    // FIX 2026-10-17 (BSOD 0x10D_4, EvtCancelDma): если транзакция уже обработана
-    // (DmaCompleted/Release/Complete выполнены EngineProcessTransfer), запрос уже
-    // завершён — повторный WdfDmaTransactionRelease/WdfRequestComplete здесь даст
-    // KMDF Verifier «NULL/двойное завершение» (0x10D Arg1=4). Просто выйти.
-    if (engine->engineLock) {
-        WdfSpinLockAcquire(engine->engineLock);
-        BOOLEAN done = engine->txnDone;
-        WdfSpinLockRelease(engine->engineLock);
-        if (done) return;
+    // FIX 2026-10-17 (BSOD 0x10D_4): драйвер использует ОДИН dmaTransaction на движок.
+    // При перекрытии (параллельные W+R через same queue) следующий запрос уже
+    // перезаписал транзакцию, и cancel старого request не должен трогать
+    // Release/Complete ТЕКУЩЕЙ (чужой) транзакции — иначе NULL/двойное.
+    if (engine->dmaTransaction) {
+        WDFREQUEST active = WdfDmaTransactionGetRequest(engine->dmaTransaction);
+        if (active != NULL && active != request) return;   // текущая транзакция не про этот request
     }
     TraceInfo(DBG_IO, "Request 0x%p from Queue 0x%p", request, queue);
     EngineStop(queue->engine);
