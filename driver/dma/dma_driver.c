@@ -354,7 +354,7 @@ EvtCreateEngineQueues(_In_ WDFDEVICE Device)
 
             // Очередь создаём для каждого hardware-движка. Для disabled-движка
             // узел всё равно не откроется (file_io.c:145 проверяет engine->enabled).
-            WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchParallel);
+            WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchSequential);
             queueConfig.EvtIoRead           = EvtIoReadDma;           // file_io.c
             queueConfig.EvtIoWrite          = EvtIoWriteDma;          // file_io.c
             queueConfig.EvtIoDeviceControl  = EvtIoDeviceControl;     // file_io.c
