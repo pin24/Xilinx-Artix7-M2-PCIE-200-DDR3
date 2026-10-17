@@ -75,6 +75,8 @@ module tdot_axi4 #(
     parameter int C_M_AXI_DATA_WIDTH = 64,
     parameter int BURST_RD_LEN = 32,   // макс. слов в одной read-транзакции (P3b: длиннее burst = выше обмен)
     parameter int BURST_WR_LEN = 8,    // макс. слов в одной write-транзакции
+    parameter int ELEM_FMT = 0,        // 0=легаси tf48 (8 байт/элемент, без конверсии);
+                                       // 1=fp32 вход/выход (4 байта/элемент): F2T на загрузке, T2F на записи
     parameter logic [31:0] BUILD_ID = 32'h0 // git-коммит битстрима (OBS 0x70; 0 = не передан)
 )(
     // ---- AXI-Lite slave (регистры команд/статуса) ----
@@ -147,7 +149,11 @@ module tdot_axi4 #(
     // ---- DIAG-статус (2026-10-03): наблюдение за ядром без доступа внутрь ----
     output logic                                  diag_go,    // внешний GO принят / ядро стартует
     output logic                                  diag_busy,  // busy_q (ядро исполняет)
-    output logic                                  diag_done   // done_q
+    output logic                                  diag_done,  // done_q
+    // ---- DIAG fp32 (ELEM_FMT=1): конвертер F2T на входе ----
+    output logic                                  diag_f2t_sv,  // F2T s_axis_tvalid
+    output logic                                  diag_f2t_mv,  // F2T m_axis_tvalid
+    output logic                                  diag_f2t_dv   // F2T d_valid[DL] (out_v)
 );
 
     localparam int AW    = C_M_AXI_ADDR_WIDTH;
@@ -163,6 +169,15 @@ module tdot_axi4 #(
     // Long-dot: максимум проходов по NUM_MAC пар (сатурация n_total).
     localparam int MAX_PASSES  = 16;
     localparam int MAX_N_TOTAL = MAX_PASSES * NUM_MAC;
+
+    // ---- ELEM_FMT: геометрия элемента ----
+    // 0: легаси tf48, 8 байт/элемент, 1 элемент на 64-бит слово (данные уже tf48).
+    // 1: fp32, 4 байта/элемент, 2 элемента на 64-бит слово, F2T/T2F.
+    localparam logic FP32_MODE = (ELEM_FMT == 1);
+    localparam int  BPE       = FP32_MODE ? 4 : 8;          // байт на элемент (stride)
+    localparam int  ELEMS_PER_BEAT = FP32_MODE ? 2 : 1;     // элемента на 64-бит beat
+    // число слов, читаемых на chunk_n элементов (fp32: ceil(n/2))
+    localparam logic [0:0] FP32_CONV = FP32_MODE;
 
     logic clk, rst_n;
     assign clk   = M_AXI_ACLK;
@@ -215,6 +230,45 @@ module tdot_axi4 #(
         .valid_in(acc_start_q), .a(acc_q), .b(core_result),
         .valid_out(add_valid_w), .result(add_res_w)
     );
+
+    // ==================== конвертеры fp32 (ELEM_FMT=1) ====================
+    // F2T на входе CS_LOAD: fifo_q[31:0] (fp32) -> tf48 (ядро). T2F на выходе
+    // CS_WR: core_result (tf48) -> fp32. Инстанцируются/используются только при
+    // (ELEM_FMT==1); при ELEM_FMT=0 (легаси) все связанные сигналы заведены
+    // константами, а модули конвертеров не входят в дерево компиляции.
+    // ---- сигналы конвертеров (объявлены ДО gen_conv, чтобы порты соединялись) ----
+    logic        f2t_s_valid, f2t_m_valid;
+    logic [31:0] f2t_s_data;
+    logic [47:0] f2t_m_data;
+    logic        f2t_d_valid;    // = F2T out_v (отладка)
+    logic        t2f_s_valid, t2f_m_valid;
+    logic [47:0] t2f_s_data;
+    logic [31:0] t2f_m_data;
+    if (FP32_MODE) begin : gen_conv
+        // конвертеры используют сигналы, объявленные на уровне модуля
+        // (f2t_s_valid/f2t_s_data/f2t_m_valid/f2t_m_data и t2f_*) - они управляются
+        // ниже: входы - feed/результат в контроллере, выходы - из конвертеров.
+        f32_to_tf48_pipe u_f2t (
+            .clk(clk), .rst_n(rst_core_buf),
+            .s_axis_tvalid(f2t_s_valid), .s_axis_tdata(f2t_s_data),
+            .m_axis_tvalid(f2t_m_valid), .m_axis_tdata(f2t_m_data),
+            .diag_d_valid(f2t_d_valid)
+        );
+        tf48_to_f32_pipe u_t2f (
+            .clk(clk), .rst_n(rst_core_buf),
+            .s_axis_tvalid(t2f_s_valid), .s_axis_tdata(t2f_s_data),
+            .m_axis_tvalid(t2f_m_valid), .m_axis_tdata(t2f_m_data)
+        );
+    end
+    if (!FP32_MODE) begin : gen_conv_off
+        // в легаси конвертеры не инстанцированы; выходы держим не-X (мёртвый код)
+        assign f2t_m_valid = 1'b0;
+        assign f2t_m_data  = 48'h0;
+        assign t2f_m_valid = 1'b0;
+        assign t2f_m_data  = 32'h0;
+        // f2t_s_valid/f2t_s_data/t2f_s_valid/t2f_s_data управляются гейтированными
+        // assign ниже (fp_feeding/FP32_MODE константы -> 0 в легаси)
+    end
 
     // ==================== регистры (AXI-Lite) ====================
     logic go_reg;
@@ -461,6 +515,12 @@ module tdot_axi4 #(
     logic fifo_push, fifo_pop;
     logic [47:0] fifo_q;
     logic fifo_clr;   // принудительный сброс указателей при новом запуске (из контроллера)
+    // ---- ELEM_FMT: расширитель beat / данные fifo ----
+    logic [47:0]   fifo_wdata;
+    logic          rd_accept_ok;      // приём beat завершён (1 = байт принят)
+    logic          fp_exp_busy;       // расширяем текущий beat (защёлкнут, hi не выдана)
+    logic [63:0]   fp_beat_q;         // защёлкнутый beat (для второй половинки)
+    logic          rd_fp32_exp_en;    // включать расширитель fp32 (чтение данных/весов)
     // NOTE: fifo_full объявлен для отладки/будущего расширения (backpressure
     // на read-channel при заполнении). В текущей логике не используется, т.к.
     // FIFO_DEPTH = 2*NUM_MAC гарантирует, что все N_IN+NUM_MAC слов помещаются.
@@ -476,8 +536,8 @@ module tdot_axi4 #(
         else if (fifo_clr) fifo_rd <= 0;      // новый запуск: сброс указателя чтения
         else if (fifo_pop) fifo_rd <= fifo_rd + 1;
     end
-    always_ff @(posedge clk) begin
-        if (fifo_push) fifo_mem[fifo_wr[FIFO_PTRW-1:0]] <= M_AXI_RDATA[47:0];
+always_ff @(posedge clk) begin
+        if (fifo_push) fifo_mem[fifo_wr[FIFO_PTRW-1:0]] <= fifo_wdata;
     end
     // синхронное чтение BRAM. Без сброса fifo_q: выходной регистр BRAM
     // аппаратного сброса не имеет, лишний reset сломал бы маппинг в BRAM.
@@ -485,7 +545,15 @@ module tdot_axi4 #(
         fifo_q <= fifo_mem[fifo_rd[FIFO_PTRW-1:0]];
     end
 
-    // ==================== read-мастер (INCR-burst) ====================
+// (см. объявления расширителя выше, у fifo_clr; блок логики ниже).
+    // Легаси: 1 beat (64 бит) = 1 элемент tf48 ([47:0]).
+    // fp32  : 1 beat = 2 fp32 (по 4 байта) -> 2 записи fifo за 2 такта;
+    //         RREADY отжимается на такте приёма, байт считается принятым только
+    //         когда выданы ОБЕ половинки (rd_accept_ok). Расширитель активен
+    //         ТОЛЬКО при чтении данных/весов (rd_fp32_exp_en); дескрипторы
+    //         планировщика всегда читаются по слову (beat = 1 элемент).
+
+// ==================== read-мастер (INCR-burst) ====================
     logic [AW-1:0] ar_addr_r;
     logic [7:0]    ar_len_r;
     logic          ar_valid_r, r_ready_r;
@@ -538,8 +606,8 @@ module tdot_axi4 #(
                         ar_valid_r <= 0;
                         rd_issued <= rd_issued + ar_len_r + 1;
                     end
-                    // приём данных
-                    if (M_AXI_RVALID && r_ready_r) begin
+                    // приём данных (fp32: только когда обе половинки beat выданы)
+                    if (M_AXI_RVALID && r_ready_r && rd_accept_ok) begin
                         rd_recv  <= rd_recv + 1;
                         if (rd_recv + 1 >= rd_total) begin
                             r_ready_r <= 0;
@@ -556,7 +624,6 @@ module tdot_axi4 #(
             endcase
         end
     end
-    assign fifo_push = (rstate == RST_ACT) && M_AXI_RVALID && r_ready_r;
     assign rd_done   = (rstate == RST_DONE);
 
     assign M_AXI_ARID    = '0;
@@ -569,7 +636,7 @@ module tdot_axi4 #(
     assign M_AXI_ARPROT  = 3'b000;
     assign M_AXI_ARQOS   = 4'b0000;
     assign M_AXI_ARVALID = ar_valid_r;
-    assign M_AXI_RREADY  = r_ready_r;
+    assign M_AXI_RREADY  = r_ready_r && rd_accept_ok;
 
     // ==================== write-мастер (1 слово) ====================
     logic [AW-1:0] aw_addr_r;
@@ -660,6 +727,7 @@ module tdot_axi4 #(
     localparam int CS_CMP1        = 11;
     localparam int CS_CMP2        = 12;
     localparam int CS_CMP3        = 13;
+    localparam int CS_T2F_WAIT    = 14;   // ELEM_FMT=1: ждём выход tf48->fp32 (T2F)
 
     logic [3:0] cstate;
     logic go_q;
@@ -700,9 +768,19 @@ module tdot_axi4 #(
 
     // размер текущего прохода
     logic [31:0] chunk_n;
+    logic [31:0] chunk_words;      // 64-бит слов на проход (fp32: ceil(chunk/2))
     always_comb begin
         chunk_n = (n_left_q > NUM_MAC) ? NUM_MAC : n_left_q;
+        chunk_words = FP32_MODE ? ((chunk_n >> 1) + (chunk_n & 32'h1)) : chunk_n;
     end
+    // слова первого прохода (n_left_q ещё не обновлён при старте задачи)
+    wire [31:0] fp_first   = (n_total_legacy > NUM_MAC) ? NUM_MAC : n_total_legacy;
+    wire [31:0] first_words = FP32_MODE ? ((fp_first >> 1) + (fp_first & 32'h1)) : fp_first;
+    wire [31:0] sp_first   = (n_total_sched > NUM_MAC) ? NUM_MAC : n_total_sched;
+    wire [31:0] sched_first_words = FP32_MODE ? ((sp_first >> 1) + (sp_first & 32'h1)) : sp_first;
+    // слова следующего прохода (n_left_q ещё не вычтен здесь — считаем остаток)
+    wire [31:0] next_chunk  = (n_left_q - chunk_n > NUM_MAC) ? NUM_MAC : (n_left_q - chunk_n);
+    wire [31:0] next_words  = FP32_MODE ? ((next_chunk >> 1) + (next_chunk & 32'h1)) : next_chunk;
     // сигнатура CS_LOAD (zero-fill слотов >= chunk_n) — прежняя семантика
     logic [31:0] n_in_eff;
     assign n_in_eff = chunk_n;
@@ -718,6 +796,93 @@ module tdot_axi4 #(
     // Срезает путь n_left_q -> chunk_n/n_in_eff -> сравнение -> D-пины банка core_*.
     logic wr_mask_q;
 
+    // ---- fp32 (ELEM_FMT=1): подача в F2T и очередь ожидающих слотов ----
+    // F2T выдаёт результаты в порядке подачи (1 вход/такт фикс. задержки),
+    // поэтому кольцо индексов слотов сопоставляет каждый выход со своим слотом.
+    // Длина кольца >= 2*NUM_MAC (все слоты одного прохода) с запасом.
+    localparam int PF_DEPTH = 2*NUM_MAC + 16;    // >= 2*NUM_MAC (все слоты прохода)
+    localparam int PF_W     = $clog2(PF_DEPTH);
+    localparam int SLOT_W   = $clog2(2*NUM_MAC);   // бит индекса слота (0..2*NUM_MAC-1)
+    logic [PF_W-1:0] pf_wr, pf_rd;
+    logic [SLOT_W-1:0] pf_slot [0:PF_DEPTH-1];
+    wire pf_full  = ((pf_wr - pf_rd) >= PF_DEPTH);
+    wire pf_empty = (pf_wr == pf_rd);
+    logic fp_feed_done;             // все 2*NUM_MAC элементов поданы в F2T
+    // feed: подаём элемент слота (rd_idx-1) в F2T. Данные берём из fifo_q
+    // (элемент, popped на предыдущем такте — BRAM-задержка 1 такт, учтена как
+    // в легаси 2-стадийном конвейере: стадия 2 потребляет fifo_q слота rd_idx-1).
+    // zero-fill слоты получают fp32 0.0 -> F2T -> tf48 0 (тождественно zero-fill).
+    wire [SLOT_W-1:0] fp_feed_slot = rd_idx - 1;
+    wire fp_slot_real = (fp_feed_slot < NUM_MAC) ?
+                        (fp_feed_slot < n_in_eff) :
+                        ((fp_feed_slot - NUM_MAC) < n_in_eff);
+    wire fp_feeding  = FP32_MODE && (cstate == CS_LOAD) && load_active &&
+                       (rd_idx >= 1) && (rd_idx <= 2*NUM_MAC) && !fp_feed_done;
+    assign f2t_s_valid = fp_feeding;
+    assign f2t_s_data  = FP32_MODE ? (fp_slot_real ? fifo_q[31:0] : 32'h0) : 32'h0;
+    // push: когда элемент подан в F2T; pop: когда F2T выдал результат
+    wire pf_push = fp_feeding;
+    wire pf_pop  = FP32_MODE && (cstate == CS_LOAD) && load_active && f2t_m_valid &&
+                   !pf_empty;
+    logic [15:0] fp_written;    // сколько слотов уже записано (< 2*NUM_MAC)
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pf_wr <= 0; pf_rd <= 0; fp_written <= 0; fp_feed_done <= 0;
+        end else if (fifo_clr) begin
+            pf_wr <= 0; pf_rd <= 0; fp_written <= 0; fp_feed_done <= 0;
+        end else begin
+            if (pf_push) begin
+                pf_slot[pf_wr] <= fp_feed_slot;
+                pf_wr <= pf_wr + 1;
+            end
+            if (pf_pop) begin
+                pf_rd <= pf_rd + 1;
+                fp_written <= fp_written + 1;
+            end
+            // завершение подачи: rd_idx прошёл 2*NUM_MAC (все слоты поданы)
+            if (FP32_MODE && (cstate == CS_LOAD) && load_active &&
+                (rd_idx >= 2*NUM_MAC) && !fp_feed_done)
+                fp_feed_done <= 1'b1;
+        end
+    end
+
+    // ---- fp32 read/fifo: rd_fp32_exp_en, расширитель, fifo_push/wdata/accept ----
+    // (размещено здесь — после объявления RST_ACT/rstate/cstate/состояний)
+    assign rd_fp32_exp_en = FP32_MODE &&
+                            ((cstate == CS_RD_DATA) || (cstate == CS_RD_WEIGHTS));
+    // расширитель (регистры): 1 beat (64 бит) -> 2 fp32 записи в fifo за 2 такта
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fp_exp_busy <= 1'b0;
+            fp_beat_q   <= 64'h0;
+        end else if (!rd_fp32_exp_en) begin
+            fp_exp_busy <= 1'b0;
+        end else if ((rstate == RST_ACT) && M_AXI_RVALID && r_ready_r && !fp_exp_busy) begin
+            fp_beat_q   <= M_AXI_RDATA;      // защёлкиваем beat, hi выдадим на след. такте
+            fp_exp_busy <= 1'b1;
+        end else if ((rstate == RST_ACT) && fp_exp_busy) begin
+            fp_exp_busy <= 1'b0;
+        end
+    end
+
+    generate
+        if (!FP32_MODE) begin : gen_fifo_legacy
+            assign fifo_push    = (rstate == RST_ACT) && M_AXI_RVALID && r_ready_r;
+            assign fifo_wdata   = M_AXI_RDATA[47:0];
+            assign rd_accept_ok = 1'b1;
+        end else begin : gen_fifo_fp32
+            wire fp_push_data = (rstate == RST_ACT) &&
+                                (fp_exp_busy ||
+                                 (M_AXI_RVALID && r_ready_r && !fp_exp_busy));
+            wire fp_push_desc = (rstate == RST_ACT) && M_AXI_RVALID && r_ready_r;
+            assign fifo_push   = rd_fp32_exp_en ? fp_push_data : fp_push_desc;
+            assign fifo_wdata  = rd_fp32_exp_en
+                               ? (fp_exp_busy ? fp_beat_q[63:32] : {16'b0, M_AXI_RDATA[31:0]})
+                               : M_AXI_RDATA[47:0];
+            assign rd_accept_ok = rd_fp32_exp_en ? fp_exp_busy : 1'b1;
+        end
+    endgenerate
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             go_q <= 0;
@@ -729,6 +894,7 @@ module tdot_axi4 #(
             load_idx <= 0; rd_idx <= 0; load_active <= 0; wr_mask_q <= 0;
             core_data <= 0; core_weights <= 0;
             res0_reg <= 0; res1_reg <= 0;
+            t2f_s_valid <= 0; t2f_s_data <= 0;
             busy_q <= 0; done_q <= 0;
             acc_valid_q <= 0; acc_q <= 0; acc_start_q <= 0;
             use_sched_q <= 0;
@@ -745,6 +911,7 @@ module tdot_axi4 #(
             go_q <= go_reg;
             core_valid_in <= 0;
             rd_start <= 0; wr_start <= 0; acc_start_q <= 0;
+            t2f_s_valid <= 0; t2f_s_data <= 0;   // T2F (fp32): импульс запуска по умолчанию снят
             // irq_ack действует в любом состоянии (SCHED_CTRL.bit3)
             if (sched_ack_pulse) irq_pending_q <= 1'b0;
             if (job_start) begin
@@ -758,12 +925,15 @@ module tdot_axi4 #(
                 elems_done_q  <= 0;
                 passes_q      <= 0;
                 sat_q         <= (n_in_reg > MAX_N_TOTAL);
-                align_q       <= ((data_start_reg[2:0] != 3'h0) ||
-                                  (weights_start_reg[2:0] != 3'h0) ||
-                                  (result_addr_reg[2:0] != 3'h0));
+                align_q       <= FP32_MODE ? ((data_start_reg[1:0] != 2'h0) ||
+                                              (weights_start_reg[1:0] != 2'h0) ||
+                                              (result_addr_reg[1:0] != 2'h0))
+                                           : ((data_start_reg[2:0] != 3'h0) ||
+                                              (weights_start_reg[2:0] != 3'h0) ||
+                                              (result_addr_reg[2:0] != 3'h0));
                 cstate <= CS_RD_DATA;
                 rd_addr  <= data_start_reg[AW-1:0];
-                rd_total <= (n_total_legacy > NUM_MAC) ? NUM_MAC : n_total_legacy;
+                rd_total <= first_words;
                 rd_start <= 1;
             end
             case (cstate)
@@ -811,24 +981,26 @@ module tdot_axi4 #(
     elems_done_q  <= 0;
     passes_q      <= 0;
     sat_q         <= (job_n_total_q > MAX_N_TOTAL[15:0]);
-    align_q       <= ((job_data_addr_q[2:0] != 3'h0) ||
-                      (job_weights_addr_q[2:0] != 3'h0) ||
-                      (job_result_addr_q[2:0] != 3'h0));
+    align_q       <= FP32_MODE ? ((job_data_addr_q[1:0] != 2'h0) ||
+                                  (job_weights_addr_q[1:0] != 2'h0) ||
+                                  (job_result_addr_q[1:0] != 2'h0))
+                               : ((job_data_addr_q[2:0] != 3'h0) ||
+                                  (job_weights_addr_q[2:0] != 3'h0) ||
+                                  (job_result_addr_q[2:0] != 3'h0));
     cstate <= CS_RD_DATA;
     rd_addr  <= job_data_addr_q[AW-1:0];
-                    rd_total <= (n_total_sched > NUM_MAC) ? NUM_MAC
-                                                          : n_total_sched;
+                    rd_total <= sched_first_words;
                     rd_start <= 1;
                 end
                 CS_RD_DATA: begin
                     if (align_q) begin
-                        // адрес не кратен 8: burst-первый beat частичный -> данные
-                        // смещены. Пропустить вычисление, завершить со статусом align.
+                        // адрес не кратен 8 (легаси) / 4 (fp32): burst-первый beat
+                        // частичный -> данные смещены. Пропустить, status=align.
                         cstate <= CS_DONE;
                     end else if (rd_done) begin
                         cstate <= CS_RD_WEIGHTS;
-                        rd_addr  <= cur_weights_q[AW-1:0] + elems_done_q * SW;
-                        rd_total <= chunk_n;
+                        rd_addr  <= cur_weights_q[AW-1:0] + elems_done_q * BPE;
+                        rd_total <= chunk_words;
                         rd_start <= 1;
                     end
                 end
@@ -846,29 +1018,46 @@ module tdot_axi4 #(
                 // load_idx = rd_idx-1 (прочитано в такте X-1).
                 CS_LOAD: begin
                     if (load_active) begin
-                        // стадия 1: pop + выдача чтения слова для слота rd_idx;
-                        // предрасчёт zero-fill-маски слота rd_idx -> wr_mask_q
-                        // (стадия 2 в этом же такте потребляет wr_mask_q для слота
-                        // load_idx = rd_idx-1 — маска уже зарегистрирована)
-                        if (rd_idx < 2*NUM_MAC) begin
-                            wr_mask_q <= (rd_idx < NUM_MAC) ?
-                                         (rd_idx < n_in_eff) :
-                                         ((rd_idx - NUM_MAC) < n_in_eff);
-                            rd_idx <= rd_idx + 1;
-                        end
-                        // стадия 2: потребление fifo_q в слот load_idx
-                        if (rd_idx > load_idx) begin
-                            if (load_idx < NUM_MAC)
-                                core_data[48*load_idx +: 48] <=
-                                    wr_mask_q ? fifo_q : 48'h0;
-                            else
-                                core_weights[48*(load_idx-NUM_MAC) +: 48] <=
-                                    wr_mask_q ? fifo_q : 48'h0;
-                            load_idx <= load_idx + 1;
-                        end else if ((rd_idx == 2*NUM_MAC) && (load_idx == 2*NUM_MAC)) begin
-                            // всё выдано и всё потреблено
-                            load_active <= 0;
-                            cstate <= CS_RUN;
+                        if (FP32_MODE) begin
+                            // fp32: загрузка через F2T. Подача идёт из fp_feeding
+                            // (слот rd_idx-1 из fifo_q); результат F2T (f2t_m_valid)
+                            // пишем в слот pf_slot[pf_rd]. zero-fill -> fp32 0 -> tf48 0.
+                            if (rd_idx < 2*NUM_MAC) begin
+                                rd_idx <= rd_idx + 1;
+                            end
+                            // запись результата по мере выхода из F2T
+                            if (f2t_m_valid && !pf_empty) begin
+                                if (pf_slot[pf_rd] < NUM_MAC)
+                                    core_data[48*pf_slot[pf_rd] +: 48] <= f2t_m_data;
+                                else
+                                    core_weights[48*(pf_slot[pf_rd]-NUM_MAC) +: 48] <= f2t_m_data;
+                            end
+                            if (fp_written == 2*NUM_MAC) begin
+                                load_active <= 0;
+                                cstate <= CS_RUN;
+                            end
+                        end else begin
+                            // ---- легаси (двухстадийный конвейер BRAM) ----
+                            // стадия 1: pop + выдача чтения слова для слота rd_idx;
+                            if (rd_idx < 2*NUM_MAC) begin
+                                wr_mask_q <= (rd_idx < NUM_MAC) ?
+                                             (rd_idx < n_in_eff) :
+                                             ((rd_idx - NUM_MAC) < n_in_eff);
+                                rd_idx <= rd_idx + 1;
+                            end
+                            // стадия 2: потребление fifo_q в слот load_idx
+                            if (rd_idx > load_idx) begin
+                                if (load_idx < NUM_MAC)
+                                    core_data[48*load_idx +: 48] <=
+                                        wr_mask_q ? fifo_q : 48'h0;
+                                else
+                                    core_weights[48*(load_idx-NUM_MAC) +: 48] <=
+                                        wr_mask_q ? fifo_q : 48'h0;
+                                load_idx <= load_idx + 1;
+                            end else if ((rd_idx == 2*NUM_MAC) && (load_idx == 2*NUM_MAC)) begin
+                                load_active <= 0;
+                                cstate <= CS_RUN;
+                            end
                         end
                     end
                 end
@@ -884,22 +1073,27 @@ module tdot_axi4 #(
                             acc_q <= core_result;
                             passes_q <= passes_q + 8'd1;
                             if (last_pass) begin
-                                // сразу пишем результат (как в легаси-версии)
-                                res0_reg <= core_result[31:0];
-                                res1_reg <= {16'h0, core_result[47:32]};
-                                cstate <= CS_WR;
-                                wr_addr <= cur_result_q[AW-1:0];
-                                wr_data <= {16'h0, core_result};
-                                wr_start <= 1;
+                                // результат: легаси пишет tf48 напрямую; fp32 -> T2F
+                                if (FP32_MODE) begin
+                                    t2f_s_valid <= 1;
+                                    t2f_s_data  <= core_result;
+                                    cstate <= CS_T2F_WAIT;
+                                end else begin
+                                    res0_reg <= core_result[31:0];
+                                    res1_reg <= {16'h0, core_result[47:32]};
+                                    cstate <= CS_WR;
+                                    wr_addr <= cur_result_q[AW-1:0];
+                                    wr_data <= {16'h0, core_result};
+                                    wr_start <= 1;
+                                end
                             end else begin
                                 // к следующему проходу
                                 n_left_q     <= n_left_q - chunk_n;
                                 elems_done_q <= elems_done_q + chunk_n;
                                 cstate <= CS_RD_DATA;
                                 rd_addr  <= cur_data_q[AW-1:0]
-                                            + (elems_done_q + chunk_n) * SW;
-                                rd_total <= (n_left_q - chunk_n > NUM_MAC) ?
-                                            NUM_MAC : (n_left_q - chunk_n);
+                                            + (elems_done_q + chunk_n) * BPE;
+                                rd_total <= next_words;
                                 rd_start <= 1;
                             end
                         end else begin
@@ -914,22 +1108,38 @@ module tdot_axi4 #(
                         acc_q <= add_res_w;
                         passes_q <= passes_q + 8'd1;
                         if (last_pass) begin
-                            res0_reg <= add_res_w[31:0];
-                            res1_reg <= {16'h0, add_res_w[47:32]};
-                            cstate <= CS_WR;
-                            wr_addr <= cur_result_q[AW-1:0];
-                            wr_data <= {16'h0, add_res_w};
-                            wr_start <= 1;
+                            if (FP32_MODE) begin
+                                t2f_s_valid <= 1;
+                                t2f_s_data  <= add_res_w;
+                                cstate <= CS_T2F_WAIT;
+                            end else begin
+                                res0_reg <= add_res_w[31:0];
+                                res1_reg <= {16'h0, add_res_w[47:32]};
+                                cstate <= CS_WR;
+                                wr_addr <= cur_result_q[AW-1:0];
+                                wr_data <= {16'h0, add_res_w};
+                                wr_start <= 1;
+                            end
                         end else begin
                             n_left_q     <= n_left_q - chunk_n;
                             elems_done_q <= elems_done_q + chunk_n;
                             cstate <= CS_RD_DATA;
                             rd_addr  <= cur_data_q[AW-1:0]
-                                        + (elems_done_q + chunk_n) * SW;
-                            rd_total <= (n_left_q - chunk_n > NUM_MAC) ?
-                                        NUM_MAC : (n_left_q - chunk_n);
+                                        + (elems_done_q + chunk_n) * BPE;
+                            rd_total <= next_words;
                             rd_start <= 1;
                         end
+                    end
+                end
+                CS_T2F_WAIT: begin
+                    // ELEM_FMT=1: ждём выход tf48->fp32, затем пишем 4 байта
+                    if (t2f_m_valid) begin
+                        res0_reg <= t2f_m_data;
+                        res1_reg <= 32'h0;                 // результат — 32-бит fp32
+                        cstate <= CS_WR;
+                        wr_addr <= cur_result_q[AW-1:0];
+                        wr_data <= {32'h0, t2f_m_data};    // fp32 в младшем слове
+                        wr_start <= 1;
                     end
                 end
                 CS_WR: begin
@@ -984,6 +1194,9 @@ module tdot_axi4 #(
 assign diag_go   = go_reg;
 assign diag_busy = busy_q;
 assign diag_done = done_q;
+assign diag_f2t_sv = FP32_MODE ? f2t_s_valid : 1'b0;
+assign diag_f2t_mv = FP32_MODE ? f2t_m_valid : 1'b0;
+assign diag_f2t_dv = FP32_MODE ? f2t_d_valid : 1'b0;
 
 
     // fifo_pop в фазе загрузки: pop ТОЛЬКО в такт выдачи BRAM-чтения
