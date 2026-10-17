@@ -81,3 +81,18 @@
   `XDMA_EngineDeleteDescriptorPool` в teardown (device.c). Поведение идентично
   одно-буферной сборке (слот0). Полная компиляция драйвера OK (связи P1 целы).
   Следующие инкременты P2+: пул WDFDMATRANSACTION + SetTransferCompleteCallback + спинлок HW firstDesc.
+## 10. Финальное состояние сессии (подготовка к новой)
+Правила пользователя сохранены в память проекта (см. worklog).
+Главное: НЕ трогать плату в PCI-слоте (только код/эмуляция/компиляция); тесты с риском BSOD и
+перезагрузки — только с согласия; максимум действий без reboot; делегировать субагентам; мало ОЗУ.
+
+Состояние main (HEAD 5ced3f6):
+- Драйвер v1.1.32 установлен (1.1.32.0), НЕ активирован в памяти (нужен reboot с согласия).
+- Фиксы BSOD 0x10D (EngineProcessTransfer txnDone, EvtCancelDma по request, очереди Sequential).
+- PLAN-3 P1 (descBufferPool)/P2 (dmaTxPool) в коде; P3 отложен до активации.
+- verify_tdot_axi4 (эталон) починен; NUM_MAC 32/16 4/4 PASS; RTL 8-байт не тронут.
+- RTL 6-байт спроектирован (barrel, BRAM dual-write риск), НЕ внесён.
+- Инструменты: obs_smi.py, bench_dma_serial.py, nn_fpga_mlp.py (epoch-cap).
+
+План след. сессии: 1) активация v1.1.32 (reboot) + PLAN-3 P3 со стендовой верификацией;
+2) RTL 6-байт (xsim barrel-стенд + решение BRAM dual-write); 3) полные аудиты/сборка (малое ОЗУ).
