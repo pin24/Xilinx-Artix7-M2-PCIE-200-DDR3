@@ -83,7 +83,7 @@ def make_sched(mode, num_mac):
         dev = XdmaLinux()
     return dev, TdotScheduler(dev, num_mac=num_mac)
 
-def train(sched_or_none, use_fpga, X, y, hidden, n_features, lr, time_budget, print_every, batch):
+def train(sched_or_none, use_fpga, X, y, hidden, n_features, lr, time_budget, print_every, batch, epoch_cap=0):
     tr_X, te_X, tr_y, te_y = X[:1500], X[1500:], y[:1500], y[1500:]
     W1 = np.random.default_rng(0).normal(0, 0.3, (hidden, n_features)).astype(np.float32)
     b1 = np.zeros(hidden, dtype=np.float32)
@@ -123,6 +123,8 @@ def train(sched_or_none, use_fpga, X, y, hidden, n_features, lr, time_budget, pr
             next_print += print_every
         if elapsed >= time_budget:
             break
+        if epoch_cap > 0 and epoch >= epoch_cap:
+            break
     if use_fpga:
         te_out, _ = forward_sched(sched_or_none, te_X, W1, b1, W2, b2, hidden, n_features, batch)
     else:
@@ -144,6 +146,8 @@ def main(argv=None):
     ap.add_argument("--dot-print", type=float, default=5.0)
     ap.add_argument("--batch", type=int, default=128,
                     help="задач в одном пакете планировщика (строго < depth=256, иначе кольцо обворачивается)")
+    ap.add_argument("--epoch-cap", type=int, default=0,
+                    help="ограничить число эпох (0 = по времени --max-seconds)")
     ap.add_argument("--model", default="nn_mlp_batch.npz")
     args = ap.parse_args(argv)
 
@@ -156,7 +160,7 @@ def main(argv=None):
           f"samples={args.samples} batch={args.batch} (max {args.max_seconds}с)")
     t0 = time.time()
     W1, b1, W2, b2 = train(sched, use_fpga, X, y, args.hidden, args.features,
-                           args.lr, args.max_seconds, args.dot_print, args.batch)
+                           args.lr, args.max_seconds, args.dot_print, args.batch, args.epoch_cap)
     print(f"обучение завершено за {time.time()-t0:.1f}с")
     if use_fpga:
         np.savez(args.model, W1=W1, b1=b1, W2=W2, b2=b2, features=args.features,
