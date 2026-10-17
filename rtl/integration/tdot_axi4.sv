@@ -825,10 +825,24 @@ always_ff @(posedge clk) begin
     wire pf_pop  = FP32_MODE && (cstate == CS_LOAD) && load_active && f2t_m_valid &&
                    !pf_empty;
     logic [15:0] fp_written;    // сколько слотов уже записано (< 2*NUM_MAC)
+    // REVIEW-FIX 2026-10-18 (BUG-2): сброс кольца pf_slot в начале КАЖДОГО
+    // прохода (не только в job_start). pf_wr/pf_rd адресуют массив pf_slot
+    // размером PF_DEPTH=2*NUM_MAC+16 (PF_W=clog2(...) бит, т.е. индекс 0..2^PF_W-1,
+    // что > PF_DEPTH). Без сброса между проходами указатели растут из прохода
+    // в проход; на 2+ проходе попадают в диапазон [PF_DEPTH, 2^PF_W-1] — вне
+    // массива -> порча слота/зависание (long-dot n>NUM_MAC). Кольцо гарантированно
+    // пусто на границе проходов (все 2*NUM_MAC записей поданы и выданы F2T,
+    // pf_wr==pf_rd), поэтому сброс здесь безопасен. Точка сброса — переход
+    // CS_RD_WEIGHTS->CS_LOAD (начало каждого прохода), fp_feeding в этот момент
+    // неактивен (не CS_LOAD) — конфликта с pf_push/pf_pop нет. В легаси
+    // (FP32_MODE=0) pf_reset всегда 0 — поведение не меняется.
+    wire pf_reset = FP32_MODE && (cstate == CS_RD_WEIGHTS) && rd_done;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pf_wr <= 0; pf_rd <= 0; fp_written <= 0; fp_feed_done <= 0;
         end else if (fifo_clr) begin
+            pf_wr <= 0; pf_rd <= 0; fp_written <= 0; fp_feed_done <= 0;
+        end else if (pf_reset) begin
             pf_wr <= 0; pf_rd <= 0; fp_written <= 0; fp_feed_done <= 0;
         end else begin
             if (pf_push) begin
@@ -1205,13 +1219,22 @@ assign diag_f2t_dv = FP32_MODE ? f2t_d_valid : 1'b0;
     // иначе fifo_rd уходит за пределы загруженных данных и weights
     // читаются со смещением (мусор). См. фикс CS_LOAD (commit a86ef65)
     // и модель check_tdot_load.py.
+    // REVIEW-FIX 2026-10-18 (BUG-1): число FIFO-записей, вычитываемых на группу
+    // (данные/веса) в CS_LOAD. fp32-расширитель кладёт по 2 записи на 64-бит beat,
+    // группа = chunk_words*2 записей (chunk_words = ceil(n/2)). Для НЕЧЁТНОГО chunk
+    // это n_in_eff+1 — лишняя pad-«половинка» слова: если её не вычитать, она
+    // остаётся в FIFO, веса читаются со сдвигом (slot0=0, slot i=b[i-1],
+    // последний вес теряется). Вычитываем именно chunk_words*2. В легаси
+    // (FP32_MODE=0) chunk_words==n_in_eff, поэтому pop_lim==n_in_eff — поведение
+    // тождественно старому.
+    wire [31:0] pop_lim = FP32_MODE ? (chunk_words << 1) : n_in_eff;
     always_comb begin
         fifo_pop = 1'b0;
         if (cstate == CS_LOAD && load_active && (rd_idx < 2*NUM_MAC)) begin
             if (rd_idx < NUM_MAC)
-                fifo_pop = (rd_idx < n_in_eff);              // data-фаза
+                fifo_pop = (rd_idx < pop_lim);              // data-фаза
             else
-                fifo_pop = ((rd_idx - NUM_MAC) < n_in_eff);  // weights-фаза
+                fifo_pop = ((rd_idx - NUM_MAC) < pop_lim);  // weights-фаза
         end
     end
 
