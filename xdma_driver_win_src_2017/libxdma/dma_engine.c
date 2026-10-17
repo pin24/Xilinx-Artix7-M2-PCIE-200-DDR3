@@ -47,6 +47,7 @@ static NTSTATUS EngineCreateTxPool(IN OUT XDMA_ENGINE *engine);
 static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index);
 static void EngineProcessTransfer(IN XDMA_ENGINE *engine);
 static UINT EngineProcessRing(IN XDMA_ENGINE *engine);
+static VOID EvtDmaWatchdogTimer(IN WDFTIMER Timer);   // REDUCED-ASYNC 2026-10-17
 static void EngineRingAdvance(UINT* index);
 static NTSTATUS EngineCreatePollWriteBackBuffer(IN OUT XDMA_ENGINE *engine);
 
@@ -152,7 +153,7 @@ VOID XDMA_EngineDeleteDescriptorPool(IN XDMA_ENGINE *engine) {
     // not change how the active engine buffer is torn down.
     for (ULONG i = 1; i < XDMA_DESC_POOL_SIZE; i++) {
         if (engine->descBufferPool[i] != NULL) {
-            WdfCommonBufferDelete(engine->descBufferPool[i]);
+            WdfObjectDelete(engine->descBufferPool[i]);
             engine->descBufferPool[i] = NULL;
         }
     }
@@ -348,6 +349,12 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
     switch (engineStatus & XDMA_STAT_EXPECTED_ZERO) {
     case XDMA_ENGINE_STOPPED_OK: // engine not busy and no errors?
     {
+        // REDUCED-ASYNC 2026-10-17: DmaCompleted returning TRUE is the signal to
+        // KMDF to invoke the registered transfer-complete callback
+        // (EvtTransferCompleteCb). That callback performs the request retirement
+        // (UnmarkCancelable -> C2H reset -> Release -> CompleteWithInformation),
+        // so it is REMOVED from here. DmaCompleted may be called by both the
+        // ISR/DPC path and the watchdog; txnDone keeps it single-shot.
         BOOLEAN completed = WdfDmaTransactionDmaCompleted(engine->dmaTransaction, &status);
         size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(engine->dmaTransaction);
 
@@ -355,17 +362,9 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
                   DirectionToString(engine->dir), engine->channel,
                   completed ? " " : " in", bytesTransferred);
 
-        if (completed) {
-            status = WdfRequestUnmarkCancelable(request);
-            if (!NT_SUCCESS(status)) {
-                TraceError(DBG_DMA, "WdfRequestUnmarkCancelable failed: %!STATUS!", status);
-            }
-            status = WdfDmaTransactionRelease(engine->dmaTransaction);
-            if (!NT_SUCCESS(status)) {
-                TraceError(DBG_DMA, "WdfDmaTransactionRelease failed: %!STATUS!", status);
-            }
-            WdfRequestCompleteWithInformation(request, status, bytesTransferred);
-        }
+        // NOTE REDUCED-ASYNC: request завершается в EvtTransferCompleteCb (async) —
+        // KMDF вызывает его, когда DmaCompleted вернул TRUE. Никаких
+        // UnmarkCancelable / Release / Complete здесь больше нет.
         break;
     }
     case XDMA_BUSY_BIT: // engine is still busy without sign of errors?
@@ -405,6 +404,143 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
         size_t wbBufferLength = WdfCommonBufferGetLength(engine->pollWbBuffer);
         RtlZeroMemory(wbBuffer, wbBufferLength);
     }
+}
+
+// REDUCED-ASYNC 2026-10-17: async transfer-completion callback. KMDF invokes
+// this when EngineProcessTransfer's WdfDmaTransactionDmaCompleted() returns TRUE
+// (last WDF packet of the transaction). Because the queue thread no longer blocks
+// in EvtIoWriteDma/ReadDma, this callback is what retires the pending request.
+// ORDER IS LOCKED (must not be reordered):
+//   1) UnmarkCancelable FIRST: if a cancel routine already owns the request
+//      (STATUS_CANCELLED), bail and hand it to the cancel path — do NOT touch
+//      Release/Complete on it.
+//   2) ResetIdle for C2H BEFORE Complete, otherwise the next read starts BUSY.
+//   3) WdfDmaTransactionRelease, then WdfRequestCompleteWithInformation.
+// Nothing below may be read AFTER WdfDmaTransactionRelease (the transaction is
+// freed by the framework at that point).
+VOID EvtTransferCompleteCb(IN WDFDMATRANSACTION Transaction,
+                           IN WDFDEVICE Device,
+                           IN WDFCONTEXT Context,
+                           IN WDF_DMA_DIRECTION Direction,
+                           IN DMA_COMPLETION_STATUS Status) {
+    UNREFERENCED_PARAMETER(Device);
+    UNREFERENCED_PARAMETER(Direction);
+    XDMA_ENGINE* engine = (XDMA_ENGINE*)Context;
+    if (engine == NULL || Transaction == NULL) {
+        return;
+    }
+    WDFREQUEST request = WdfDmaTransactionGetRequest(Transaction);
+    if (request == NULL) {
+        return;
+    }
+
+    // read the bytes BEFORE Release (transaction is freed by Release)
+    size_t bytes = WdfDmaTransactionGetBytesTransferred(Transaction);
+
+    // UnmarkCancelable FIRST: if a concurrent cancel already owns the request,
+    // it will complete it; do not touch it here.
+    NTSTATUS st = WdfRequestUnmarkCancelable(request);
+    if (st == STATUS_CANCELLED) {
+        return; // отдать cancel-пути
+    }
+
+    // C2H reset before Complete (иначе следующий read начнёт BUSY).
+    if (engine->dir == C2H) {
+        XDMA_EngineResetIdle(engine);
+    }
+
+    WdfDmaTransactionRelease(Transaction);
+
+    // NOTE: engine->txnDone / isReqPending остаются под управлением
+    // EngineProcessTransfer (флаг pending сброшен там); здесь только retire.
+    WdfRequestCompleteWithInformation(request, (NTSTATUS)Status, bytes);
+}
+
+// REDUCED-ASYNC 2026-10-17: per-engine watchdog. Armed (started) in
+// EvtIoWriteDma/EvtIoReadDma after WdfDmaTransactionExecute and re-armed from
+// this callback every 10 ms. Two exits:
+//   * HW-transfer detected done (BUSY cleared + completedDescCount reached):
+//       -> EngineProcessTransfer (DmaCompleted=TRUE) -> KMDF calls
+//          EvtTransferCompleteCb -> request completed. timer NOT re-armed.
+//   * watchdogCount exhausted (no MSI-X, dead FPGA): EngineStop + set
+//       txnDone/isReqPending FALSE + UnmarkCancelable + Release + Complete(code)
+//         STATUS_TIMEOUT. timer NOT re-armed.
+// Otherwise (still in flight) re-arms itself for the next tick.
+static VOID EvtDmaWatchdogTimer(IN WDFTIMER Timer) {
+    DMA_WATCHDOG_CTX* wd = GetDmaWatchdogContext(Timer);
+    if (wd == NULL || wd->engine == NULL) {
+        return;
+    }
+    XDMA_ENGINE* engine = wd->engine;
+
+    // если прерывание уже победило (txnDone TRUE) или нет активного запроса —
+    // выход, не пере-армируем.
+    BOOLEAN done = FALSE, pending = FALSE;
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        done = engine->txnDone;
+        pending = engine->isReqPending;
+        WdfSpinLockRelease(engine->engineLock);
+    }
+    if (done || !pending) {
+        return;
+    }
+
+    // проверить hwDone КАК XDMA_EngineWaitCompletion: прочитать statusRC
+    // (read-clear, снимает BUSY) + completedDescCount.
+    ULONG actual = engine->regs->completedDescCount;
+    UINT32 st = engine->regs->statusRC;
+    BOOLEAN hwDone = (st & XDMA_BUSY_BIT) == 0;
+    if (hwDone && actual >= engine->numDescriptors) {
+        EngineProcessTransfer(engine);   // -> DmaCompleted=TRUE -> CB -> request завершается
+        return;                          // не пере-армируем
+    }
+
+    if (engine->watchdogCount-- == 0) {  // timeout
+        // REVIEW-FIX 2026-10-17: ре-проверка ПОСЛЕ декремента. Охрана в начале
+        // функции считывает done/pending в отдельной критической секции, а до
+        // этой точки DPC/EvtCancelDma могли уже завершить транзакцию. Поэтому
+        // именно здесь атомарно захватываем единоличное право на освобождение:
+        // если txnDone уже TRUE или запрос не активен — выходим, НЕ трогая
+        // Release/Complete (иначе двойное освобождение -> 0x10D/0xE6).
+        BOOLEAN alreadyDone = FALSE;
+        if (engine->engineLock) {
+            WdfSpinLockAcquire(engine->engineLock);
+            alreadyDone = engine->txnDone || !engine->isReqPending;
+            if (!alreadyDone) {
+                engine->isReqPending = FALSE;
+                engine->txnDone = TRUE; // claim: этот watchdog — единственный владелец освобождения
+            }
+            WdfSpinLockRelease(engine->engineLock);
+        }
+        if (alreadyDone) {
+            return; // завершил кто-то другой (DPC/cancel) — не освобождаем повторно
+        }
+
+        TraceError(DBG_DMA, "%s_%u watchdog TIMEOUT (descs completed=%u/%u)",
+                   DirectionToString(engine->dir), engine->channel,
+                   actual, engine->numDescriptors);
+        EngineStop(engine);
+        WDFREQUEST request = WdfDmaTransactionGetRequest(engine->dmaTransaction);
+        if (request != NULL) {
+            // REVIEW-FIX: если cancel-рутина уже перехватила request, отдаём ей
+            // завершение — НЕ делаем здесь Release/Complete (иначе двойное).
+            NTSTATUS uc = WdfRequestUnmarkCancelable(request);
+            if (uc == STATUS_CANCELLED) {
+                return;
+            }
+        }
+        WdfDmaTransactionRelease(engine->dmaTransaction);
+        if (request != NULL) {
+            WdfRequestComplete(request, STATUS_TIMEOUT);
+        }
+        return;
+    }
+
+    // пере-армировать на следующий тик (10 мс)
+    LARGE_INTEGER period;
+    period.QuadPart = -100000; // 10 мс
+    WdfTimerStart(engine->watchdogTimer, period.QuadPart);
 }
 
 static void DumpDescriptor(IN const DMA_DESCRIPTOR* const desc) {
@@ -621,6 +757,26 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
         TraceError(DBG_INIT, "EngineCreate: WdfSpinLockCreate failed: %!STATUS!", status);
         return status;
     }
+
+    // REDUCED-ASYNC 2026-10-17: per-engine watchdog timer (async completion
+    // fallback for a lost MSI-X). Period is set at WdfTimerStart time (10 ms);
+    // the timer is NOT auto-repeating — each callback re-arms itself manually.
+    // Parent is the WDFDEVICE so the timer lives exactly as long as the device.
+    {
+        WDF_TIMER_CONFIG timerCfg;
+        WDF_TIMER_CONFIG_INIT(&timerCfg, EvtDmaWatchdogTimer);
+        WDF_OBJECT_ATTRIBUTES timerAttr;
+        WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&timerAttr, DMA_WATCHDOG_CTX);
+        timerAttr.ParentObject = engine->parentDevice->wdfDevice;
+        status = WdfTimerCreate(&timerCfg, &timerAttr, &engine->watchdogTimer);
+        if (!NT_SUCCESS(status)) {
+            TraceError(DBG_INIT, "EngineCreate: WdfTimerCreate failed: %!STATUS!", status);
+            return status;
+        }
+        GetDmaWatchdogContext(engine->watchdogTimer)->engine = engine;
+    }
+    engine->watchdogBudget = 1000; // 1000 тиков x 10 мс = 10 с (как прежний WaitCompletion)
+    engine->watchdogCount = 0;
 
     return status;
 }

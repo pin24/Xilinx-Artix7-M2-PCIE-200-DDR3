@@ -721,6 +721,11 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
     // NOTE: reverting to large transactions may bring back the ROF/0x124 risk
     // (that is why 512 was introduced); measure on the bench (see DIAG §6).
     WdfDmaTransactionSetMaximumLength(queue->engine->dmaTransaction, XDMA_MAX_TRANSFER_SIZE);
+    // REDUCED-ASYNC 2026-10-17: register the transfer-complete callback so the
+    // request is retired asynchronously by KMDF (via EvtTransferCompleteCb) once
+    // DmaCompleted returns TRUE. The queue thread no longer blocks below.
+    WdfDmaTransactionSetTransferCompleteCallback(queue->engine->dmaTransaction,
+                                                 EvtTransferCompleteCb, queue->engine);
     queue->engine->progDmaCalls = 0; // DIAG 2026-10-04 (E-19): reset ProgramDma call counter
     status = WdfRequestMarkCancelableEx(Request, EvtCancelDma);
     if (!NT_SUCCESS(status)) {
@@ -735,25 +740,19 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
         goto ErrExit;
     }
 
-    // Bounded completion poll as a robust fallback: even when the channel
-    // interrupt does not reach the host (MSI-X/line unreliable on this board),
-    // we complete the transaction by polling the engine's completedDescCount
-    // register. Bounded iterations (~10s worst case at 50us/stall) prevent a
-    // dead FPGA from hanging the request (KeStallExecutionProcessor polls).
-    status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max
-    if (!NT_SUCCESS(status)) {
-        TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed: %!STATUS!", status);
-        // FIX-HANG 2026-09-28: a timed-out transfer MUST still complete the
-        // request, else the host IRP waits forever and the loop test hangs
-        // (no bugcheck -> never reaches the dump). Release the recycleDEF
-        // transaction and fail the request explicitly.
-        WdfRequestUnmarkCancelable(Request);
-        WdfDmaTransactionRelease(queue->engine->dmaTransaction);
-        WdfRequestComplete(Request, status);
-        return;
+    // REDUCED-ASYNC 2026-10-17: async completion. Return immediately after
+    // Execute — the request is completed later either by the channel interrupt
+    // (DPC -> EngineProcessTransfer -> EvtTransferCompleteCb) or, if the MSI-X
+    // is lost/dead, by the per-engine watchdog (EvtDmaWatchdogTimer, ~10s).
+    // The watchdog is armed here (must happen AFTER Execute succeeded) and
+    // re-arms itself from its own callback until the transfer settles.
+    {
+        LARGE_INTEGER period;
+        period.QuadPart = -100000; // 10 ms
+        engine->watchdogCount = engine->watchdogBudget;
+        WdfTimerStart(engine->watchdogTimer, period.QuadPart);
     }
-
-    return; // success
+    return; // поток очереди не блокируется; завершение придёт по прерыванию (CB) ИЛИ watchdog
 ErrExit:
     WdfDmaTransactionRelease(queue->engine->dmaTransaction);
     WdfRequestComplete(Request, status);
@@ -790,6 +789,10 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
     }
     // FIX 2026-10-04 (E-19 / BUG-053, option B): single packet per request (see write path).
     WdfDmaTransactionSetMaximumLength(queue->engine->dmaTransaction, XDMA_MAX_TRANSFER_SIZE);
+    // REDUCED-ASYNC 2026-10-17: register the transfer-complete callback so the
+    // request is retired asynchronously by KMDF (see EvtIoWriteDma).
+    WdfDmaTransactionSetTransferCompleteCallback(queue->engine->dmaTransaction,
+                                                 EvtTransferCompleteCb, queue->engine);
     queue->engine->progDmaCalls = 0; // DIAG 2026-10-04 (E-19): reset ProgramDma call counter
     status = WdfRequestMarkCancelableEx(Request, EvtCancelDma);
     if (!NT_SUCCESS(status)) {
@@ -810,29 +813,16 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
         goto ErrExit;
     }
 
-    // Bounded completion poll as a robust fallback: even when the channel
-    // interrupt does not reach the host (MSI-X/line unreliable on this board),
-    // we complete the transaction by polling the engine's completedDescCount
-    // register. Bounded iterations (~10s worst case at 50us/stall) prevent a
-    // dead FPGA from hanging the request (KeStallExecutionProcessor polls).
-    status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max
-    if (!NT_SUCCESS(status)) {
-        TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed: %!STATUS!", status);
-        // FIX-HANG 2026-09-28: see EvtIoWriteDma — always complete the
-        // request on timeout to avoid an endless host IRP wait (hang, no dump).
-        WdfRequestUnmarkCancelable(Request);
-        WdfDmaTransactionRelease(queue->engine->dmaTransaction);
-        WdfRequestComplete(Request, status);
-        return;
+    // REDUCED-ASYNC 2026-10-17: async completion (see EvtIoWriteDma). The C2H
+    // ResetIdle that used to run after WaitCompletion now happens inside
+    // EvtTransferCompleteCb (dir==C2H), right before WdfRequestCompleteWithInformation.
+    {
+        LARGE_INTEGER period;
+        period.QuadPart = -100000; // 10 ms
+        engine->watchdogCount = engine->watchdogBudget;
+        WdfTimerStart(engine->watchdogTimer, period.QuadPart);
     }
-
-    // After completion, reset C2H again so the next read starts from idle
-    // (not from a stale BUSY that would otherwise hang the following transfer).
-    if (queue->engine->dir == C2H) {
-        XDMA_EngineResetIdle(queue->engine);
-    }
-
-    return; // success
+    return; // поток очереди не блокируется; завершение придёт по прерыванию (CB) ИЛИ watchdog
 ErrExit:
     WdfDmaTransactionRelease(queue->engine->dmaTransaction);
     WdfRequestComplete(Request, status);

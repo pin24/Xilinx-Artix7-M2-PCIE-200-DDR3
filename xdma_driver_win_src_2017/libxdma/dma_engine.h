@@ -116,6 +116,16 @@ typedef struct XDMA_ENGINE_T {
     WDFDMATRANSACTION dmaTransaction;
     PFN_XDMA_ENGINE_WORK work; // engine work for interrupt processing
 
+    // REDUCED-ASYNC 2026-10-17: per-engine watchdog timer used as an async
+    // completion fallback. The queue thread no longer blocks polling for
+    // completion (EvtIoWriteDma/ReadDma return right after WdfDmaTransactionExecute).
+    // When the channel interrupt (MSI-X) is lost, EvtDmaWatchdogTimer retires the
+    // transfer after watchdogBudget x 10ms (~10s, matching the old
+    // XDMA_EngineWaitCompletion bound).
+    WDFTIMER watchdogTimer;     // per-engine watchdog (завершение при потерянном MSI-X)
+    ULONG     watchdogCount;    // счётчик оставшихся тиков до timeout
+    ULONG     watchdogBudget;   // const: количество тиков (установить в EngineCreate)
+
     // PLAN-3 P1 2026-10-17: descriptor-block pool (PREP-ONLY).
     // descBufferPool[0] IS the legacy descBuffer above (same WDFCOMMONBUFFER,
     // bound in EngineCreateDescriptorBuffer) so all current code paths are
@@ -171,6 +181,15 @@ typedef struct XDMA_ENGINE_T {
     BOOLEAN txnDone;
 
 } XDMA_ENGINE;
+
+// REDUCED-ASYNC 2026-10-17: per-timer object context so EvtDmaWatchdogTimer can
+// recover the owning XDMA_ENGINE. The timer's WDF parent is the WDFDEVICE (so it
+// is torn down with the device), not the engine, hence the engine pointer must be
+// carried in the timer object's context.
+typedef struct _DMA_WATCHDOG_CTX {
+    XDMA_ENGINE* engine;
+} DMA_WATCHDOG_CTX;
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DMA_WATCHDOG_CTX, GetDmaWatchdogContext)
 
 #pragma pack(1)
 
@@ -246,6 +265,16 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG timeoutUs);
 /// statusRC and clearing RUN/reset it never completes the next read. Call right
 /// before starting a C2H transfer. Safe for a stopped/idle engine too.
 VOID XDMA_EngineResetIdle(IN XDMA_ENGINE* engine);
+
+/// REDUCED-ASYNC 2026-10-17: async transfer-completion callback.
+/// KMDF invokes it when WdfDmaTransactionDmaCompleted() returns TRUE (i.e. every
+/// WDF packet of the transaction finished). It RETIRES the request that the
+/// queue thread left pending after WdfDmaTransactionExecute: UnmarkCancelable ->
+/// (C2H ResetIdle) -> Release -> CompleteWithInformation. Must NOT be read after
+/// Release. Also registered for H2C and C2H write/read paths.
+VOID EvtTransferCompleteCb(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Device,
+                           IN WDFCONTEXT Context, IN WDF_DMA_DIRECTION Direction,
+                           IN DMA_COMPLETION_STATUS Status);
 
 /// PLAN-3 P1 2026-10-17: delete the descriptor-block POOL slots (1..N-1) of one
 /// engine. Slot 0 is the legacy engine->descBuffer and is intentionally left to
