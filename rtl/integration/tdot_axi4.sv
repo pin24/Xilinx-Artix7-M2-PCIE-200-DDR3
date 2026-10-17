@@ -736,6 +736,7 @@ module tdot_axi4 #(
             n_left_q <= 0; elems_done_q <= 0; passes_q <= 0;
             sat_q <= 0; align_q <= 0;
             sched_rptr_q <= 0; done_cnt_q <= 0; irq_pending_q <= 0;
+            sched_busy_q <= 1'b0;   // REVIEW-FIX/REDUCED 2026-10-17: флаг занятости планировщика (SCHED_STATUS bit0) — сброс при reset
             fetch_active <= 0; fetch_cnt <= 0;
             for (int i = 0; i < 4; i++) desc_w[i] <= 64'h0;
             job_data_addr_q <= 0; job_weights_addr_q <= 0;
@@ -802,6 +803,7 @@ module tdot_axi4 #(
                     busy_q <= 1; done_q <= 0;
                     acc_valid_q <= 0;
                     use_sched_q <= 1'b1;
+                    sched_busy_q <= 1'b1;   // REVIEW-FIX/REDUCED 2026-10-17: движок взял задачу из очереди -> планировщик занят
                     cur_data_q    <= {16'h0, job_data_addr_q};
                     cur_weights_q <= {16'h0, job_weights_addr_q};
                     cur_result_q  <= {16'h0, job_result_addr_q};
@@ -962,9 +964,12 @@ module tdot_axi4 #(
                         sched_rptr_q <= sched_rptr_q + 8'd1;
                         done_cnt_q   <= done_cnt_q + 16'd1;
                         // опустошение очереди -> IRQ (уровень, до irq_ack)
-                        if (sched_irq_en_q &&
-                            (sched_rptr_q + 8'd1 == sched_wptr_q))
-                            irq_pending_q <= 1'b1;
+                        if (sched_rptr_q + 8'd1 == sched_wptr_q) begin
+                            // очередь опустела: снимаем флаг занятости планировщика
+                            sched_busy_q <= 1'b0;  // REVIEW-FIX/REDUCED 2026-10-17: sched_busy_q диагностика (SCHED_STATUS bit0)
+                            if (sched_irq_en_q)
+                                irq_pending_q <= 1'b1;
+                        end
                         cstate <= CS_IDLE;
                     end
                 end
