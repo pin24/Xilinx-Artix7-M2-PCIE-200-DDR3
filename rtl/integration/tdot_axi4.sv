@@ -544,6 +544,14 @@ module tdot_axi4 #(
     // ---- ELEM_FMT: расширитель beat / данные fifo ----
     logic [47:0]   fifo_wdata;
     logic          rd_accept_ok;      // приём beat завершён (1 = байт принят)
+    // REVIEW-FIX 2026-10-18 (registered RREADY / timing): rd_ready_gate — это
+    // «гейт» M_AXI_RREADY (= r_ready_r && rd_ready_gate), формируемый ЗАРЕГИСТРИРОВАННО
+    // в PACKED6 (rbuf_room_q — место во входном staging-буфере rbuf), чтобы
+    // разомкнуть комбинационный путь barrel(n_left/nbytes/emitted) -> M_AXI_RREADY
+    // (WNS -4.25ns @125МГц). Для fp32 gate = rd_accept_ok (= fp_exp_busy, уже
+    // регистр), для легаси = 1 — поведение этих режимов НЕ изменяется. Управляется
+    // внутри gen_fifo_*.
+    logic          rd_ready_gate;
     logic          fp_exp_busy;       // расширяем текущий beat (защёлкнут, hi не выдана)
     logic [63:0]   fp_beat_q;         // защёлкнутый beat (для второй половинки)
     logic          rd_fp32_exp_en;    // включать расширитель fp32 (чтение данных/весов)
@@ -633,7 +641,11 @@ always_ff @(posedge clk) begin
                         rd_issued <= rd_issued + ar_len_r + 1;
                     end
                     // приём данных (fp32: только когда обе половинки beat выданы)
-                    if (M_AXI_RVALID && r_ready_r && rd_accept_ok) begin
+                    // REVIEW-FIX 2026-10-18: счёт по РЕАЛЬНОМУ рукопожатию M_AXI_RREADY
+                    // (зарегистрирован в PACKED6), а не по комбинационному rd_accept_ok,
+                    // чтобы rd_recv рос ровно на том такте, где beat фактически принят
+                    // (для легаси/fp32 ≡ прежнее условие: rd_accept_ok=1/fp_exp_busy).
+                    if (M_AXI_RVALID && M_AXI_RREADY) begin
                         rd_recv  <= rd_recv + 1;
                         if (rd_recv + 1 >= rd_total) begin
                             r_ready_r <= 0;
@@ -662,7 +674,20 @@ always_ff @(posedge clk) begin
     assign M_AXI_ARPROT  = 3'b000;
     assign M_AXI_ARQOS   = 4'b0000;
     assign M_AXI_ARVALID = ar_valid_r;
-    assign M_AXI_RREADY  = r_ready_r && rd_accept_ok;
+    // REVIEW-FIX 2026-10-18 (timing): M_AXI_RREADY выходит как AND двух РЕГИСТРОВ
+    // (r_ready_r и rd_ready_gate) -> barrel->порт комбинационный путь разомкнут.
+    // В PACKED6 rd_ready_gate = rbuf_room_q (регистр «есть место во входном буфере
+    // rbuf», см. gen_fifo_p6): путь сокращён до 3-бит счётчик rbuf_cnt -> компаратор
+    // -> flop -> AND -> порт (короткий, ~2 регистра + комбинационный AND). rbuf —
+    // 4-словный staging-буфер между AXI-slave и баррелем 6->8: slave-рукопожатие
+    // идёт в rbuf, баррель потребляет из него по своей живой p6_wready, поэтому
+    // beat, пришедший на такте эмита барреля, удерживается в rbuf без потери, а
+    // backpressure на slave — через RREADY (AXI-легально: slave держит RVALID, пока
+    // RREADY низкий). rbuf_room_q имеет 1 слот запаса -> регистр смотрит на такт
+    // вперёд и rbuf никогда не переполняется (макс cnt<=2 < глубина 4), указатели
+    // не сталкиваются, порядок сохраняется. Вне rd-фаз (desc-fetch) gate=1 ->
+    // RREADY = r_ready_r (как в легаси). fp32/легаси gate — по прежней схеме.
+    assign M_AXI_RREADY  = r_ready_r && rd_ready_gate;
 
     // ==================== write-мастер (1 слово) ====================
     logic [AW-1:0] aw_addr_r;
@@ -918,10 +943,33 @@ always_ff @(posedge clk) begin
     logic        p6_en;          // фаза чтения данных/весов (баррель активен)
     logic        p6_arm;         // перевооружить баррель на очередное чтение (импульс)
     logic [2:0]  p6_skip_q;      // байтовое смещение 1-го элемента в 1-м слове (0,2,4,6)
-    logic        p6_wready;      // баррель заявляет слово (M_AXI_RREADY-гейт)
+    logic        p6_wready;      // баррель заявляет слово (запрос слова из вх. буфера)
     logic [47:0] p6_elem;        // 48-бит элемент (например, в fifo)
     logic        p6_elem_valid;  // 1 элемент/такт -> fifo_push
     logic        p6_drained;     // все элементы текущего чтения выданы
+    // REVIEW-FIX 2026-10-18 (timing): РЕГИСТРИРОВАННЫЙ RREADY для PACKED6 через
+    // входной staging-буфер rbuf (4 слова) между AXI-slave и баррелем 6->8.
+    // Проблема позади плоской регистрации p6_wready: после ПРИЁМА слова баррель
+    // уходит в эмит элементов на след. такт (nbytes становится >=6), т.е. «обещание»
+    // RREADY, сделанное на такт раньше, протухает ровно на такте после приёма ->
+    // потеря beat. Решение: slave-рукопожатие идёт В rbuf (RREADY = r_ready_r &&
+    // rbuf_room_q, оба регистры -> barrel->порт путь разомкнут), а баррель
+    // потребляет слова из rbuf по своей живой p6_wready. rbuf даёт эластичность:
+    // даже если slave пришлёт beat на такте, где баррель ещё эмитирует, beat
+    // удерживается в rbuf без потери; backpressure на slave — через RREADY.
+    // Глубина 4 (не 2): при малой глубине 50%-ный счётчик и 1-бит пойнтеры в
+    // круговом буфере дают коллизию wptr==rptr на заполнении -> дубль-чтение
+    // устаревшего слова (observed на прогоне n=15/16). rbuf_room_q (запас 1,
+    // RREADY=1 пока cnt<=1 на прошлом такте) гарантирует, что cnt никогда не
+    // превысит 2 < 4 — указатели не сталкиваются, порядок сохраняется.
+    // rd_ready_gate = p6_rd_phase ? rbuf_room_q : 1 (вне rd-фаз desc-fetch по слову).
+    logic [63:0] rbuf_mem [0:3];      // входной буфер: 4 слова (запас от pointer-коллизий)
+    logic [1:0]  rbuf_wptr, rbuf_rptr; // индексы записи/чтения (mod 4)
+    logic [2:0]  rbuf_cnt;                // 0..4 записи в буфере
+    logic        rbuf_room_q;             // зарегистрированное «есть место» (для RREADY)
+    wire         rbuf_not_empty = (rbuf_cnt != 3'd0);
+    wire         rbuf_room      = (rbuf_cnt <= 3'd1);   // 1 слот запаса -> регистр смотрит вперёд
+    wire [63:0]  rbuf_head      = rbuf_mem[rbuf_rptr]; // слово головы (комбинационно из регов)
     assign p6_en = PACKED6_MODE && ((cstate == CS_RD_DATA) || (cstate == CS_RD_WEIGHTS));
 
     // ---- PACKED6 write: 48-бит результат -> AXI-слово с WSTRB ----
@@ -930,11 +978,12 @@ always_ff @(posedge clk) begin
 
     generate
         if (PACKED6_MODE) begin : gen_fifo_p6
-            // баррель 6->8: rd-фазы через barrel, всё остальное (desc-fetch/CMP) - по слову
+            // баррель 6->8: rd-фазы через barrel + входной буфер rbuf.
+            // wvalid приходит из rbuf (наличие слова), wdata - головное слово rbuf.
             packed6_rd #(.BPE(BPE), .WORD_B(SW)) u_p6rd (
                 .clk(clk), .rst_n(rst_n),
                 .enable(p6_en),
-                .wdata(M_AXI_RDATA), .wvalid(M_AXI_RVALID), .wready(p6_wready),
+                .wdata(rbuf_head), .wvalid(rbuf_not_empty), .wready(p6_wready),
                 .n_elem(chunk_n[15:0]), .start_skip(p6_skip_q), .start(p6_arm),
                 .elem(p6_elem), .elem_valid(p6_elem_valid), .drained(p6_drained)
             );
@@ -943,6 +992,46 @@ always_ff @(posedge clk) begin
                                               : ((rstate == RST_ACT) && M_AXI_RVALID && r_ready_r);
             assign fifo_wdata   = p6_rd_phase ? p6_elem : M_AXI_RDATA[47:0];
             assign rd_accept_ok = p6_rd_phase ? p6_wready : 1'b1;
+
+            // ---- REVIEW-FIX 2026-10-18 (timing): входной буфер + зарегистрированный RREADY ----
+            // slave-заполнение: на реальном рукопожатии M_AXI_RREADY защёлкиваем RDATA в rbuf.
+            // (вне p6-фазы, напр. desc-fetch, баррель/buf не активны -> заполнения нет)
+            wire rbuf_push = p6_rd_phase && M_AXI_RVALID && M_AXI_RREADY;
+            // потребление баррелем: слово из rbuf отдаётся баррелю по его живой p6_wready
+            wire rbuf_pop  = p6_rd_phase && rbuf_not_empty && p6_wready && !p6_arm;
+            // RREADY-гейт (регистр): rbuf_room_q = «на прошлом такте было >=1 свободного
+            // слота». С глубиной 4 и запасом 1 даже при движении вперёд на такт буфер
+            // НЕ переполняется (макс cnt<=2 < 4), а протухание «обещания» не теряет бит —
+            // beat, пришедший на такте эмита барреля, просто ждёт в rbuf.
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    rbuf_room_q <= 1'b0;
+                end else begin
+                    rbuf_room_q <= rbuf_room;
+                end
+            end
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    rbuf_wptr <= 2'd0; rbuf_rptr <= 2'd0; rbuf_cnt <= 3'd0;
+                end else if (p6_arm) begin
+                    // перевооружение на новое чтение: буфер гарантированно пуст
+                    // (предыдущий проход ждал p6_drained) — сброс индексов на всякий случай
+                    rbuf_wptr <= 2'd0; rbuf_rptr <= 2'd0; rbuf_cnt <= 3'd0;
+                end else begin
+                    if (rbuf_push) begin
+                        rbuf_mem[rbuf_wptr] <= M_AXI_RDATA;
+                        rbuf_wptr <= rbuf_wptr + 2'd1;
+                    end
+                    if (rbuf_pop) begin
+                        rbuf_rptr <= rbuf_rptr + 2'd1;
+                    end
+                    // cnt: push(+1), pop(-1), оба(0)
+                    if (rbuf_push && rbuf_pop)      rbuf_cnt <= rbuf_cnt;
+                    else if (rbuf_push)             rbuf_cnt <= rbuf_cnt + 3'd1;
+                    else if (rbuf_pop)              rbuf_cnt <= rbuf_cnt - 3'd1;
+                end
+            end
+            assign rd_ready_gate = p6_rd_phase ? rbuf_room_q : 1'b1;
             // write: 6-байт результат по слову (word-выровненный result_addr)
             packed6_wr #(.SW(SW), .BPE(BPE)) u_p6wr (
                 .res((cstate == CS_ACCUM_WAIT) ? add_res_w : core_result),
@@ -960,12 +1049,19 @@ always_ff @(posedge clk) begin
             assign rd_accept_ok = rd_fp32_exp_en ? fp_exp_busy : 1'b1;
             assign p6_wready    = 1'b1;
             assign p6_drained   = 1'b1;
+            // REVIEW-FIX 2026-10-18: fp32 RREADY-гейт = rd_accept_ok (= fp_exp_busy,
+            // РЕГИСТР) — поведение fp32 РОВНО прежнее (M_AXI_RREADY = r_ready_r &&
+            // fp_exp_busy), комбинационного barrel-пути нет.
+            assign rd_ready_gate = rd_accept_ok;
         end else begin : gen_fifo_legacy
             assign fifo_push    = (rstate == RST_ACT) && M_AXI_RVALID && r_ready_r;
             assign fifo_wdata   = M_AXI_RDATA[47:0];
             assign rd_accept_ok = 1'b1;
             assign p6_wready    = 1'b1;
             assign p6_drained   = 1'b1;
+            // REVIEW-FIX 2026-10-18: легаси RREADY-гейт = 1 (RREADY = r_ready_r) —
+            // без изменений.
+            assign rd_ready_gate = 1'b1;
         end
         // п6-баррель не инстанцирован в не-PACKED6 режимах, но write-мастер всегда
         // использует wr_strb_q: в не-PACKED6 это {SW{1'b1}} (см. PACKED6_MODE ? p6_wstrb ниже).
