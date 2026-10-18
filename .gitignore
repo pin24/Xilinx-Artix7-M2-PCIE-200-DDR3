@@ -88,3 +88,6 @@ dfx_runtime.txt
 tb_tdot_axi4_in.hex
 tb_tdot_axi4_out.hex
 tb_tdot_axi4_expected.hex
+
+# ---- tdot_axi4 synthesis output ----
+rtl/integration/synth_out_*
