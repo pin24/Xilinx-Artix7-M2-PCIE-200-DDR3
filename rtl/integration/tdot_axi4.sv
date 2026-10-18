@@ -839,7 +839,22 @@ always_ff @(posedge clk) begin
     // слова следующего прохода (n_left_q ещё не вычтен здесь — считаем остаток)
     // GAP-1-FIX: skip следующего чтения = ((elems_done_q + chunk_n)*6)%8.
     wire [31:0] next_chunk  = (n_left_q - chunk_n > NUM_MAC) ? NUM_MAC : (n_left_q - chunk_n);
-    wire [31:0] next_words  = words_skip_fn((elems_done_q + chunk_n) * 6 % 8, next_chunk);
+    wire [31:0] next_skip   = (elems_done_q + chunk_n) * 6 % 8;
+    // ---- PIPELINE-FIX 2026-10-18: предвычисление rd_total следующего прохода ----
+    // Критический путь синтеза (NUM_MAC=32, PACKED6, 125МГц): переходы
+    // CS_WAIT/CS_ACCUM_WAIT -> CS_RD_DATA строили цепочку
+    // `n_left_q -> chunk_n/next_chunk -> words_skip_fn -> rd_total_reg/D` комбинационно
+    // в такт перехода (23 уровня, включая u_p6rd/u_acc/u_add carry-chain; WNS до
+    // -1.711ns). Решение без изменения функции и формата words_skip_fn: слова
+    // следующего прохода считаются ЗАРАНЕЕ 2-стадийным конвейером, пока проход
+    // крутит ядро (в CS_WAIT/CS_ACCUM_WAIT/CS_RD_* n_left_q и elems_done_q стабильны
+    // и равны значениям текущего прохода => next_words корректен), а в такт перехода
+    // копируется готовый регистр: rd_total <= next_words_q (reg->reg, цепочка разбита
+    // на 2 ступени: стадия A ловит next_chunk_q/next_skip_q, стадия B гонит
+    // words_skip_fn из регистров стадии A). rd_issued/rd_recv считают с нуля на том
+    // же такте rd_start (сэмплируют rd_total на 1 такт позже в RST_ACT), поэтому
+    // перенос вычисления на 2 такта раньше на тайминг счёта чтения не влияет.
+    logic [31:0] next_chunk_q, next_skip_q, next_words_q;
     // сигнатура CS_LOAD (zero-fill слотов >= chunk_n) — прежняя семантика
     logic [31:0] n_in_eff;
     assign n_in_eff = chunk_n;
@@ -1104,6 +1119,7 @@ always_ff @(posedge clk) begin
             use_sched_q <= 0;
             cur_data_q <= 0; cur_weights_q <= 0; cur_result_q <= 0;
             n_left_q <= 0; elems_done_q <= 0; passes_q <= 0;
+            next_chunk_q <= 0; next_skip_q <= 0; next_words_q <= 0;
             sat_q <= 0; align_q <= 0;
             sched_rptr_q <= 0; done_cnt_q <= 0; irq_pending_q <= 0;
             sched_busy_q <= 1'b0;   // REVIEW-FIX/REDUCED 2026-10-17: флаг занятости планировщика (SCHED_STATUS bit0) — сброс при reset
@@ -1120,6 +1136,15 @@ always_ff @(posedge clk) begin
             rd_done_q <= rd_done_q;   // держим защёлку завершения чтения по умолчанию
             if (rd_done) rd_done_q <= 1'b1;   // чтение завершилось (импульс RST_DONE)
             t2f_s_valid <= 0; t2f_s_data <= 0;   // T2F (fp32): импульс запуска по умолчанию снят
+            // PIPELINE-FIX: свободный (потактовый) апдейт предвычисленных слов
+            // следующего прохода. Стадия A фиксирует next_chunk_q/next_skip_q из
+            // текущих (стабильных в проходе) n_left_q/elems_done_q, стадия B
+            // считает words_skip_fn из регистров стадии A -> next_words_q. В переходе
+            // CS_WAIT/CS_ACCUM_WAIT -> CS_RD_DATA берётся готовый регистр, а не
+            // строится длинная комбинационная цепь.
+            next_chunk_q <= next_chunk;
+            next_skip_q  <= next_skip;
+            next_words_q <= words_skip_fn(next_skip_q, next_chunk_q);
             // irq_ack действует в любом состоянии (SCHED_CTRL.bit3)
             if (sched_ack_pulse) irq_pending_q <= 1'b0;
             if (job_start) begin
@@ -1320,7 +1345,7 @@ p6_arm   <= PACKED6_MODE;
                                              + ((elems_done_q + chunk_n) * 6 / 8) * 8)
                                           : (cur_data_q[AW-1:0]
                                              + (elems_done_q + chunk_n) * BPE);
-                                rd_total <= next_words;
+                                rd_total <= next_words_q;
                                 rd_start <= 1;
                                 p6_arm   <= PACKED6_MODE;
                                 p6_skip_q<= PACKED6_MODE
@@ -1362,7 +1387,7 @@ p6_arm   <= PACKED6_MODE;
                                          + ((elems_done_q + chunk_n) * 6 / 8) * 8)
                                       : (cur_data_q[AW-1:0]
                                          + (elems_done_q + chunk_n) * BPE);
-                            rd_total <= next_words;
+                            rd_total <= next_words_q;
                             rd_start <= 1;
                             p6_arm   <= PACKED6_MODE;
                             p6_skip_q<= PACKED6_MODE
