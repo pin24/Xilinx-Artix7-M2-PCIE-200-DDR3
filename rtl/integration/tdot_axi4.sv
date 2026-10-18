@@ -76,7 +76,8 @@ module tdot_axi4 #(
     parameter int BURST_RD_LEN = 32,   // макс. слов в одной read-транзакции (P3b: длиннее burst = выше обмен)
     parameter int BURST_WR_LEN = 8,    // макс. слов в одной write-транзакции
     parameter int ELEM_FMT = 0,        // 0=легаси tf48 (8 байт/элемент, без конверсии);
-                                       // 1=fp32 вход/выход (4 байта/элемент): F2T на загрузке, T2F на записи
+                                       // 1=fp32 вход/выход (4 байта/элемент): F2T на загрузке, T2F на записи;
+                                       // 2=PACKED6 tf48 (6 байт/элемент плотно): barrel 6<->8, конвертеры ВЫКЛ
     parameter logic [31:0] BUILD_ID = 32'h0 // git-коммит битстрима (OBS 0x70; 0 = не передан)
 )(
     // ---- AXI-Lite slave (регистры команд/статуса) ----
@@ -173,11 +174,36 @@ module tdot_axi4 #(
     // ---- ELEM_FMT: геометрия элемента ----
     // 0: легаси tf48, 8 байт/элемент, 1 элемент на 64-бит слово (данные уже tf48).
     // 1: fp32, 4 байта/элемент, 2 элемента на 64-бит слово, F2T/T2F.
-    localparam logic FP32_MODE = (ELEM_FMT == 1);
-    localparam int  BPE       = FP32_MODE ? 4 : 8;          // байт на элемент (stride)
+    // 2: PACKED6 tf48, 6 байт/элемент плотно, barrel 6<->8 (конвертеры выкл).
+    localparam logic FP32_MODE   = (ELEM_FMT == 1);
+    localparam logic PACKED6_MODE = (ELEM_FMT == 2);
+    localparam int  BPE       = PACKED6_MODE ? 6 : (FP32_MODE ? 4 : 8);
+                                                                          // байт на элемент (stride)
     localparam int  ELEMS_PER_BEAT = FP32_MODE ? 2 : 1;     // элемента на 64-бит beat
-    // число слов, читаемых на chunk_n элементов (fp32: ceil(n/2))
+    // число слов, читаемых на chunk_n элементов (fp32: ceil(n/2), PACKED6: ceil(n*6/8), легаси: n)
     localparam logic [0:0] FP32_CONV = FP32_MODE;
+    function automatic [31:0] words_fn(input [31:0] cnt);
+        if (PACKED6_MODE)
+            words_fn = (cnt * 6 + 7) >> 3;         // ceil(cnt*6/8)
+        else if (FP32_MODE)
+            words_fn = (cnt + 1) >> 1;             // ceil(cnt/2)
+        else
+            words_fn = cnt;
+    endfunction
+    // GAP-1 RTL-FIX: число слов чтения, начинающегося с байтового смещения `skip`
+    // (start_skip != 0 на проходах k>0). PACKED6-проход k начинается с байта
+    // elems*6: слово-адрес = floor(elems*6/8)*8, внутри 1-го слова смещение
+    // (elems*6)%8; чанк занимает ceil((skip + cnt*6)/8) слов (на 1 больше, чем без
+    // skip, если (skip + cnt*6) переваливает через границу 8). Для fp32/легаси
+    // skip не используется -> эквивалентно words_fn.
+    function automatic [31:0] words_skip_fn(input [31:0] skip_b, input [31:0] cnt);
+        if (PACKED6_MODE)
+            words_skip_fn = (skip_b + cnt * 6 + 7) >> 3;   // ceil((skip + cnt*6)/8)
+        else if (FP32_MODE)
+            words_skip_fn = (cnt + 1) >> 1;                // ceil(cnt/2)
+        else
+            words_skip_fn = cnt;
+    endfunction
 
     logic clk, rst_n;
     assign clk   = M_AXI_ACLK;
@@ -651,6 +677,11 @@ always_ff @(posedge clk) begin
     logic        wr_start;
     logic [AW-1:0] wr_addr;
     logic [DW-1:0] wr_data;
+    logic [SW-1:0] wr_strb_q;    // GAP-2-FIX: WSTRB, зарегистрированный в КОНТРОЛЛЕРЕ на такте
+                                 // запуска записи. Прежний комбинационный wr_strb_ctl (= f(cstate))
+                                 // сэмплировался write-мастером на СЛЕДУЮЩЕМ такте, когда cstate уже
+                                 // ушёл из CS_WAIT/CS_ACCUM_WAIT в CS_WR -> WSTRB=0x3F НИКОГДА не
+                                 // доходил до AXI, писались все 8 байт.
     logic          wr_done;
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -664,7 +695,7 @@ always_ff @(posedge clk) begin
                     if (wr_start) begin
                         aw_addr_r <= wr_addr;
                         w_data_r  <= wr_data;
-                        w_strb_r  <= {SW{1'b1}};
+                        w_strb_r  <= wr_strb_q;
                         aw_valid_r <= 1;
                         w_valid_r  <= 1;
                         w_last_r   <= 1;
@@ -768,19 +799,22 @@ always_ff @(posedge clk) begin
 
     // размер текущего прохода
     logic [31:0] chunk_n;
-    logic [31:0] chunk_words;      // 64-бит слов на проход (fp32: ceil(chunk/2))
+    logic [31:0] chunk_words;      // GAP-1-FIX: 64-бит слов чтения ВЕСОВ прохода.
+    //                            // проход k: начало с байта elems_done_q*6, смещение
+    //                            // start_skip=(elems_done_q*6)%8 => слов=ceil((skip+chunk*6)/8).
     always_comb begin
         chunk_n = (n_left_q > NUM_MAC) ? NUM_MAC : n_left_q;
-        chunk_words = FP32_MODE ? ((chunk_n >> 1) + (chunk_n & 32'h1)) : chunk_n;
+        chunk_words = words_skip_fn(elems_done_q * 6 % 8, chunk_n);
     end
-    // слова первого прохода (n_left_q ещё не обновлён при старте задачи)
+    // слова первого прохода (n_left_q ещё не обновлён при старте задачи; skip=0)
     wire [31:0] fp_first   = (n_total_legacy > NUM_MAC) ? NUM_MAC : n_total_legacy;
-    wire [31:0] first_words = FP32_MODE ? ((fp_first >> 1) + (fp_first & 32'h1)) : fp_first;
+    wire [31:0] first_words = words_fn(fp_first);
     wire [31:0] sp_first   = (n_total_sched > NUM_MAC) ? NUM_MAC : n_total_sched;
-    wire [31:0] sched_first_words = FP32_MODE ? ((sp_first >> 1) + (sp_first & 32'h1)) : sp_first;
+    wire [31:0] sched_first_words = words_fn(sp_first);
     // слова следующего прохода (n_left_q ещё не вычтен здесь — считаем остаток)
+    // GAP-1-FIX: skip следующего чтения = ((elems_done_q + chunk_n)*6)%8.
     wire [31:0] next_chunk  = (n_left_q - chunk_n > NUM_MAC) ? NUM_MAC : (n_left_q - chunk_n);
-    wire [31:0] next_words  = FP32_MODE ? ((next_chunk >> 1) + (next_chunk & 32'h1)) : next_chunk;
+    wire [31:0] next_words  = words_skip_fn((elems_done_q + chunk_n) * 6 % 8, next_chunk);
     // сигнатура CS_LOAD (zero-fill слотов >= chunk_n) — прежняя семантика
     logic [31:0] n_in_eff;
     assign n_in_eff = chunk_n;
@@ -879,12 +913,42 @@ always_ff @(posedge clk) begin
         end
     end
 
+    // ---- PACKED6 (ELEM_FMT=2) read/fifo: barrel 6->8 между AXI-RDATA и FIFO ----
+    // Сигналы объявлены на уровне модуля (соединяются с баррелем в gen_fifo_p6).
+    logic        p6_en;          // фаза чтения данных/весов (баррель активен)
+    logic        p6_arm;         // перевооружить баррель на очередное чтение (импульс)
+    logic [2:0]  p6_skip_q;      // байтовое смещение 1-го элемента в 1-м слове (0,2,4,6)
+    logic        p6_wready;      // баррель заявляет слово (M_AXI_RREADY-гейт)
+    logic [47:0] p6_elem;        // 48-бит элемент (например, в fifo)
+    logic        p6_elem_valid;  // 1 элемент/такт -> fifo_push
+    logic        p6_drained;     // все элементы текущего чтения выданы
+    assign p6_en = PACKED6_MODE && ((cstate == CS_RD_DATA) || (cstate == CS_RD_WEIGHTS));
+
+    // ---- PACKED6 write: 48-бит результат -> AXI-слово с WSTRB ----
+    logic [63:0]   p6_wdata;
+    logic [SW-1:0] p6_wstrb;
+
     generate
-        if (!FP32_MODE) begin : gen_fifo_legacy
-            assign fifo_push    = (rstate == RST_ACT) && M_AXI_RVALID && r_ready_r;
-            assign fifo_wdata   = M_AXI_RDATA[47:0];
-            assign rd_accept_ok = 1'b1;
-        end else begin : gen_fifo_fp32
+        if (PACKED6_MODE) begin : gen_fifo_p6
+            // баррель 6->8: rd-фазы через barrel, всё остальное (desc-fetch/CMP) - по слову
+            packed6_rd #(.BPE(BPE), .WORD_B(SW)) u_p6rd (
+                .clk(clk), .rst_n(rst_n),
+                .enable(p6_en),
+                .wdata(M_AXI_RDATA), .wvalid(M_AXI_RVALID), .wready(p6_wready),
+                .n_elem(chunk_n[15:0]), .start_skip(p6_skip_q), .start(p6_arm),
+                .elem(p6_elem), .elem_valid(p6_elem_valid), .drained(p6_drained)
+            );
+            wire p6_rd_phase = p6_en;
+            assign fifo_push    = p6_rd_phase ? p6_elem_valid
+                                              : ((rstate == RST_ACT) && M_AXI_RVALID && r_ready_r);
+            assign fifo_wdata   = p6_rd_phase ? p6_elem : M_AXI_RDATA[47:0];
+            assign rd_accept_ok = p6_rd_phase ? p6_wready : 1'b1;
+            // write: 6-байт результат по слову (word-выровненный result_addr)
+            packed6_wr #(.SW(SW), .BPE(BPE)) u_p6wr (
+                .res((cstate == CS_ACCUM_WAIT) ? add_res_w : core_result),
+                .woff(3'd0), .wdata(p6_wdata), .wstrb(p6_wstrb)
+            );
+        end else if (FP32_MODE) begin : gen_fifo_fp32
             wire fp_push_data = (rstate == RST_ACT) &&
                                 (fp_exp_busy ||
                                  (M_AXI_RVALID && r_ready_r && !fp_exp_busy));
@@ -894,8 +958,37 @@ always_ff @(posedge clk) begin
                                ? (fp_exp_busy ? fp_beat_q[63:32] : {16'b0, M_AXI_RDATA[31:0]})
                                : M_AXI_RDATA[47:0];
             assign rd_accept_ok = rd_fp32_exp_en ? fp_exp_busy : 1'b1;
+            assign p6_wready    = 1'b1;
+            assign p6_drained   = 1'b1;
+        end else begin : gen_fifo_legacy
+            assign fifo_push    = (rstate == RST_ACT) && M_AXI_RVALID && r_ready_r;
+            assign fifo_wdata   = M_AXI_RDATA[47:0];
+            assign rd_accept_ok = 1'b1;
+            assign p6_wready    = 1'b1;
+            assign p6_drained   = 1'b1;
+        end
+        // п6-баррель не инстанцирован в не-PACKED6 режимах, но write-мастер всегда
+        // использует wr_strb_q: в не-PACKED6 это {SW{1'b1}} (см. PACKED6_MODE ? p6_wstrb ниже).
+        if (!PACKED6_MODE) begin : gen_p6wr_off
+            assign p6_wdata = 64'h0;
+            assign p6_wstrb = {SW{1'b1}};
         end
     endgenerate
+    // rd_done_q: липкая защёлка завершения чтения (rd_done — импульс на 1 такт
+    // RST_DONE). Для PACKED6 баррель докачивает последний элемент ЧЕРЕЗ такт
+    // после rd_done, поэтому переходы чтений gирируются на rd_done_q && drained.
+    // Сбрасывается в КОНТРОЛЛЕРЕ синхронно с каждым read-стартом (иначе при
+    // переходе CS_RD_DATA->CS_RD_WEIGHTS застale 1 от данных ложно бы вывело
+    // CS_RD_WEIGHTS за 1 такт, без исполнения чтения весов).
+    logic rd_done_q;
+    // rd_phase_done: для PACKED6 требуем, чтобы баррель выдал все элементы
+    // текущего чтения (rd_done_q опережает последний эмит на такт); для
+    // легаси/fp32 p6_drained=1 всегда -> rd_done_q (без изменения поведения).
+    wire rd_phase_done = rd_done_q && (PACKED6_MODE ? p6_drained : 1'b1);
+    // WSTRB: для результата (CS_WAIT/CS_ACCUM_WAIT last-pass) PACKED6 пишет 6 байт
+    // (0x3F); все прочие записи (вкл. completion планировщика, fp32/легаси) - все 8.
+    // Зарегистрирован в контроллере НА ТАКТЕ запуска записи (wr_strb_q), т.к.
+    // прежний комбинационный вариант ловил уже ушедший в CS_WR cstate (GAP-2-FIX).
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -904,8 +997,9 @@ always_ff @(posedge clk) begin
             core_valid_in <= 0;
             rd_start <= 0; wr_start <= 0;
             rd_addr <= 0; rd_total <= 0;
-            wr_addr <= 0; wr_data <= 0;
+            wr_addr <= 0; wr_data <= 0; wr_strb_q <= {SW{1'b1}};
             load_idx <= 0; rd_idx <= 0; load_active <= 0; wr_mask_q <= 0;
+            p6_arm <= 0; p6_skip_q <= 0; rd_done_q <= 0;
             core_data <= 0; core_weights <= 0;
             res0_reg <= 0; res1_reg <= 0;
             t2f_s_valid <= 0; t2f_s_data <= 0;
@@ -925,6 +1019,10 @@ always_ff @(posedge clk) begin
             go_q <= go_reg;
             core_valid_in <= 0;
             rd_start <= 0; wr_start <= 0; acc_start_q <= 0;
+            wr_strb_q <= {SW{1'b1}};   // GAP-2-FIX: default WSTRB = все байты; переопределяется на 0x3F ниже
+            p6_arm <= 0;   // PACKED6: перевооружение барреля (импульс на каждый read-старт)
+            rd_done_q <= rd_done_q;   // держим защёлку завершения чтения по умолчанию
+            if (rd_done) rd_done_q <= 1'b1;   // чтение завершилось (импульс RST_DONE)
             t2f_s_valid <= 0; t2f_s_data <= 0;   // T2F (fp32): импульс запуска по умолчанию снят
             // irq_ack действует в любом состоянии (SCHED_CTRL.bit3)
             if (sched_ack_pulse) irq_pending_q <= 1'b0;
@@ -949,8 +1047,11 @@ always_ff @(posedge clk) begin
                 rd_addr  <= data_start_reg[AW-1:0];
                 rd_total <= first_words;
                 rd_start <= 1;
+p6_arm   <= PACKED6_MODE;
+                p6_skip_q<= 3'b0;   // первое чтение: смещение первого элемента = 0
+                rd_done_q<= 1'b0;
             end
-            case (cstate)
+        case (cstate)
                 CS_IDLE: begin
                     if (sched_flush_q) begin
                         sched_rptr_q <= 8'h0;            // flush очереди
@@ -961,6 +1062,7 @@ always_ff @(posedge clk) begin
                         rd_addr  <= desc_base_q[AW-1:0] + {19'h0, sched_rptr_q, 5'b0};
                         rd_total <= 32'd4;
                         rd_start <= 1;
+                        rd_done_q<= 1'b0;
                         cstate <= CS_FETCH_DESC;
                     end
                 end
@@ -1005,21 +1107,32 @@ always_ff @(posedge clk) begin
     rd_addr  <= job_data_addr_q[AW-1:0];
                     rd_total <= sched_first_words;
                     rd_start <= 1;
+                    p6_arm   <= PACKED6_MODE;
+                    p6_skip_q<= 3'b0;
+                    rd_done_q<= 1'b0;
                 end
                 CS_RD_DATA: begin
                     if (align_q) begin
-                        // адрес не кратен 8 (легаси) / 4 (fp32): burst-первый beat
-                        // частичный -> данные смещены. Пропустить, status=align.
+                        // адрес не кратен 8 (легаси) / 4 (fp32) / (PACKED6 - то же 8):
+                        // burst-первый beat частичный -> данные смещены. Пропустить.
                         cstate <= CS_DONE;
-                    end else if (rd_done) begin
+                    end else if (rd_phase_done) begin
                         cstate <= CS_RD_WEIGHTS;
-                        rd_addr  <= cur_weights_q[AW-1:0] + elems_done_q * BPE;
+                        rd_addr  <= PACKED6_MODE
+                                  ? (cur_weights_q[AW-1:0]
+                                     + (elems_done_q * 6 / 8) * 8)   // floor(elems_done*6/8)*8
+                                  : (cur_weights_q[AW-1:0] + elems_done_q * BPE);
                         rd_total <= chunk_words;
                         rd_start <= 1;
+                        p6_arm   <= PACKED6_MODE;
+                        p6_skip_q<= PACKED6_MODE
+                                  ? (elems_done_q * 6) % 8          // байт-сдвиг элементов в слове
+                                  : 3'b0;
+                        rd_done_q<= 1'b0;
                     end
                 end
                 CS_RD_WEIGHTS: begin
-                    if (rd_done) begin
+                    if (rd_phase_done) begin
                         cstate <= CS_LOAD;
                         load_idx <= 0;
                         rd_idx <= 0;
@@ -1098,6 +1211,7 @@ always_ff @(posedge clk) begin
                                     cstate <= CS_WR;
                                     wr_addr <= cur_result_q[AW-1:0];
                                     wr_data <= {16'h0, core_result};
+                                    wr_strb_q <= PACKED6_MODE ? p6_wstrb : {SW{1'b1}};  // GAP-2-FIX: 0x3F для результата
                                     wr_start <= 1;
                                 end
                             end else begin
@@ -1105,10 +1219,18 @@ always_ff @(posedge clk) begin
                                 n_left_q     <= n_left_q - chunk_n;
                                 elems_done_q <= elems_done_q + chunk_n;
                                 cstate <= CS_RD_DATA;
-                                rd_addr  <= cur_data_q[AW-1:0]
-                                            + (elems_done_q + chunk_n) * BPE;
+                                rd_addr  <= PACKED6_MODE
+                                          ? (cur_data_q[AW-1:0]
+                                             + ((elems_done_q + chunk_n) * 6 / 8) * 8)
+                                          : (cur_data_q[AW-1:0]
+                                             + (elems_done_q + chunk_n) * BPE);
                                 rd_total <= next_words;
                                 rd_start <= 1;
+                                p6_arm   <= PACKED6_MODE;
+                                p6_skip_q<= PACKED6_MODE
+                                          ? ((elems_done_q + chunk_n) * 6) % 8
+                                          : 3'b0;
+                                rd_done_q<= 1'b0;
                             end
                         end else begin
                             // pass k>0: сложение в аккумуляторе
@@ -1132,16 +1254,25 @@ always_ff @(posedge clk) begin
                                 cstate <= CS_WR;
                                 wr_addr <= cur_result_q[AW-1:0];
                                 wr_data <= {16'h0, add_res_w};
+                                wr_strb_q <= PACKED6_MODE ? p6_wstrb : {SW{1'b1}};  // GAP-2-FIX: 0x3F для результата
                                 wr_start <= 1;
                             end
                         end else begin
                             n_left_q     <= n_left_q - chunk_n;
                             elems_done_q <= elems_done_q + chunk_n;
                             cstate <= CS_RD_DATA;
-                            rd_addr  <= cur_data_q[AW-1:0]
-                                        + (elems_done_q + chunk_n) * BPE;
+                            rd_addr  <= PACKED6_MODE
+                                      ? (cur_data_q[AW-1:0]
+                                         + ((elems_done_q + chunk_n) * 6 / 8) * 8)
+                                      : (cur_data_q[AW-1:0]
+                                         + (elems_done_q + chunk_n) * BPE);
                             rd_total <= next_words;
                             rd_start <= 1;
+                            p6_arm   <= PACKED6_MODE;
+                            p6_skip_q<= PACKED6_MODE
+                                      ? ((elems_done_q + chunk_n) * 6) % 8
+                                      : 3'b0;
+                            rd_done_q<= 1'b0;
                         end
                     end
                 end

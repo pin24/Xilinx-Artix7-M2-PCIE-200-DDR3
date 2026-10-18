@@ -70,3 +70,21 @@ _backup_*/
 *.bit
 xsim.dir/
 .taskqueue/
+
+# ---- verify_*.py ТЕМПОРАЛЬНЫЕ АРТЕФАКТЫ (регенерируются при каждом запуске) ----
+# PACKED6 / fp32x / fp32-legacy / f2t-t2f pipe / barrel unit-test output.
+# НЕ трекаем: содержимое меняется от прогона к прогону (мусор в git status).
+packed6x_*
+fp32x_*
+packed6rd_*
+tb_tdot_axi4_fp32_*
+f2t48p_*
+t2f48p_*
+dfx_runtime.txt
+
+# ---- устаревшие гастинтервал-лекала legacy verify_tdot_axi4.py (трекались, но
+# перезаписываются каждым прогоном). Убрать из индекса: git rm --cached и перекоммит.
+# Остальные *_{in,expected,out}.hex в rtl/sim, block/sim являются эталонными и трекаются.
+tb_tdot_axi4_in.hex
+tb_tdot_axi4_out.hex
+tb_tdot_axi4_expected.hex
