@@ -855,6 +855,29 @@ always_ff @(posedge clk) begin
     // же такте rd_start (сэмплируют rd_total на 1 такт позже в RST_ACT), поэтому
     // перенос вычисления на 2 такта раньше на тайминг счёта чтения не влияет.
     logic [31:0] next_chunk_q, next_skip_q, next_words_q;
+    // ---- PIPELINE-FIX 2026-10-19: prefetch АДРЕСА следующего прохода ----
+    // Дефект полного flat P&R @125МГц (NUM_MAC=32/ADDERS=4 PACKED6):
+    // `u_tdot/n_left_q_reg[18]/C -> u_tdot/rd_addr_reg[2]/CE` (slack -0.049ns).
+    // Переходы CS_WAIT/CS_ACCUM_WAIT -> CS_RD_DATA строили комбинационную цепь
+    // `n_left_q -> chunk_n -> (elems_done_q+chunk_n)*BPE / (*6/8)*8 + cur_data_q
+    // -> rd_addr_reg/CE` (множитель/делитель/сдвиг = много LUT/CARRY, и CE-путь
+    // хуже D-пути). Решение как для rd_total: адрес следующего прохода считается
+    // ЗАРАНЕЕ 2-стадийным конвейером, пока проход крутит ядро:
+    //   стадия A: next_elems_q  = elems_done_q + chunk_n
+    //             (n_left_q -> chunk_n -> add -> next_elems_q/D, полтакта);
+    //   стадия B: next_addr_q    = cur_data_q + offset(next_elems_q)
+    //             из зарегистрированного next_elems_q (множитель/делитель вне
+    //             конуса от n_left_q, цепочка разорвана на 2 ступени).
+    // В такт перехода: rd_addr <= next_addr_q (reg->reg), p6_skip_q <= next_skip_q.
+    // Корректность: cur_data_q стабилен ВСЮ задачу, elems_done_q/n_left_q стабильны
+    // в течение прохода (обновляются только в переходах), поэтому свободный
+    // потактовый апдейт корректен и успевает стабилизироваться (проход длится >>2
+    // тактов). Первый проход (job_start/CS_SCHED_KICK) использует data_start_reg/
+    // job_data_addr_q напрямую — его адрес НЕ предвычисляется, поведение не меняется.
+    // next_skip_q уже содержит (elems_done_q+chunk_n)*6%8 = p6_skip следующего
+    // прохода (см. выше), поэтому переиспользуется единый регистр.
+    logic [31:0]   next_elems_q;     // стадия A: elems_done_q + chunk_n (новый счётчик прохода)
+    logic [AW-1:0] next_addr_q;      // стадия B: адрес следующего прохода (готовый reg->reg)
     // сигнатура CS_LOAD (zero-fill слотов >= chunk_n) — прежняя семантика
     logic [31:0] n_in_eff;
     assign n_in_eff = chunk_n;
@@ -1120,6 +1143,7 @@ always_ff @(posedge clk) begin
             cur_data_q <= 0; cur_weights_q <= 0; cur_result_q <= 0;
             n_left_q <= 0; elems_done_q <= 0; passes_q <= 0;
             next_chunk_q <= 0; next_skip_q <= 0; next_words_q <= 0;
+            next_elems_q <= 0; next_addr_q <= 0;   // PIPELINE-FIX 2026-10-19: prefetch адреса следующего прохода
             sat_q <= 0; align_q <= 0;
             sched_rptr_q <= 0; done_cnt_q <= 0; irq_pending_q <= 0;
             sched_busy_q <= 1'b0;   // REVIEW-FIX/REDUCED 2026-10-17: флаг занятости планировщика (SCHED_STATUS bit0) — сброс при reset
@@ -1145,6 +1169,15 @@ always_ff @(posedge clk) begin
             next_chunk_q <= next_chunk;
             next_skip_q  <= next_skip;
             next_words_q <= words_skip_fn(next_skip_q, next_chunk_q);
+            // PIPELINE-FIX 2026-10-19: свободное потактовое предвычисление АДРЕСА
+            // следующего прохода (стадии A next_elems_q -> B next_addr_q). Стадия B
+            // гонит offset из зарегистрированного next_elems_q, разрывая длинную
+            // цепь n_left_q->chunk_n->(умножитель/делитель)->+cur_data_q на 2 такта.
+            next_elems_q <= elems_done_q + chunk_n;
+            next_addr_q  <= cur_data_q[AW-1:0]
+                            + (PACKED6_MODE
+                               ? (next_elems_q * 6 / 8) * 8
+                               : next_elems_q * BPE);
             // irq_ack действует в любом состоянии (SCHED_CTRL.bit3)
             if (sched_ack_pulse) irq_pending_q <= 1'b0;
             if (job_start) begin
@@ -1340,17 +1373,11 @@ p6_arm   <= PACKED6_MODE;
                                 n_left_q     <= n_left_q - chunk_n;
                                 elems_done_q <= elems_done_q + chunk_n;
                                 cstate <= CS_RD_DATA;
-                                rd_addr  <= PACKED6_MODE
-                                          ? (cur_data_q[AW-1:0]
-                                             + ((elems_done_q + chunk_n) * 6 / 8) * 8)
-                                          : (cur_data_q[AW-1:0]
-                                             + (elems_done_q + chunk_n) * BPE);
+                                rd_addr  <= next_addr_q[AW-1:0];   // PIPELINE-FIX 2026-10-19: prefetch (reg->reg)
                                 rd_total <= next_words_q;
                                 rd_start <= 1;
                                 p6_arm   <= PACKED6_MODE;
-                                p6_skip_q<= PACKED6_MODE
-                                          ? ((elems_done_q + chunk_n) * 6) % 8
-                                          : 3'b0;
+                                p6_skip_q<= PACKED6_MODE ? next_skip_q[2:0] : 3'b0;   // prefetch (reg->reg)
                                 rd_done_q<= 1'b0;
                             end
                         end else begin
@@ -1382,17 +1409,11 @@ p6_arm   <= PACKED6_MODE;
                             n_left_q     <= n_left_q - chunk_n;
                             elems_done_q <= elems_done_q + chunk_n;
                             cstate <= CS_RD_DATA;
-                            rd_addr  <= PACKED6_MODE
-                                      ? (cur_data_q[AW-1:0]
-                                         + ((elems_done_q + chunk_n) * 6 / 8) * 8)
-                                      : (cur_data_q[AW-1:0]
-                                         + (elems_done_q + chunk_n) * BPE);
+                            rd_addr  <= next_addr_q[AW-1:0];   // PIPELINE-FIX 2026-10-19: prefetch (reg->reg)
                             rd_total <= next_words_q;
                             rd_start <= 1;
                             p6_arm   <= PACKED6_MODE;
-                            p6_skip_q<= PACKED6_MODE
-                                      ? ((elems_done_q + chunk_n) * 6) % 8
-                                      : 3'b0;
+                            p6_skip_q<= PACKED6_MODE ? next_skip_q[2:0] : 3'b0;   // prefetch (reg->reg)
                             rd_done_q<= 1'b0;
                         end
                     end
