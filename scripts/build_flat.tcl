@@ -11,6 +11,7 @@
 # Optional args (via -tclargs):
 #   NUM_MAC=<16|32|64>   (default 16)
 #   ADDERS=<N>           (default 4)
+#   ELEM_FMT=<0|1|2>     (default 0; 0=legacy tf48, 1=fp32, 2=PACKED6)
 #   JOBS=<N>             (default 8)
 #   SKIP_SYNTH=1         (only create the project, no build)
 #
@@ -40,24 +41,26 @@ set ARTIFACTS_DIR "${ROOT}/build/artifacts_flat"
 
 set NUM_MAC     32
 set ADDERS      16
-set JOBS        4      # низкий параллелизм для машины с малым ОЗУ (было 8)
+set ELEM_FMT    0
+set JOBS        4
+# низкий параллелизм для машины с малым ОЗУ (было 8)
 set_param general.maxThreads 4
 set SKIP_SYNTH  0
 
 # ----------------------------------------------------------------------------
 # Argument parsing, robust to shell '=' stripping (BUG-033).
-# Supports: KEY=VALUE | KEY VALUE | -KEY VALUE (NUM_MAC/ADDERS/JOBS/SKIP_SYNTH).
+# Supports: KEY=VALUE | KEY VALUE | -KEY VALUE (NUM_MAC/ADDERS/ELEM_FMT/JOBS/SKIP_SYNTH).
 # ----------------------------------------------------------------------------
 set _nargs [llength $argv]
 for {set _i 0} {$_i < $_nargs} {incr _i} {
     set _arg  [lindex $argv $_i]
     set _argn [string trimleft $_arg -]
     set _next [lindex $argv [expr {$_i + 1}]]
-    if {[regexp {^(NUM_MAC|ADDERS|JOBS|SKIP_SYNTH)=(\d+)$} $_argn -> _k _v]} {
+    if {[regexp {^(NUM_MAC|ADDERS|ELEM_FMT|JOBS|SKIP_SYNTH)=(\d+)$} $_argn -> _k _v]} {
         set $_k $_v
         continue
     }
-    if {[lsearch -exact {NUM_MAC ADDERS JOBS SKIP_SYNTH} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
+    if {[lsearch -exact {NUM_MAC ADDERS ELEM_FMT JOBS SKIP_SYNTH} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
         set $_argn $_next
         incr _i
         continue
@@ -74,6 +77,7 @@ puts " TOP        : ${TOP_NAME}"
 puts " ARGS (raw) : ${argv}"
 puts " NUM_MAC    : ${NUM_MAC}"
 puts " ADDERS     : ${ADDERS}"
+puts " ELEM_FMT   : ${ELEM_FMT}"
 puts " JOBS       : ${JOBS}"
 puts " SKIP_SYNTH : ${SKIP_SYNTH}"
 puts "============================================================"
@@ -198,6 +202,15 @@ add_files -norecurse \
     ${ROOT}/rtl/block/tfadd48.sv \
     ${ROOT}/rtl/block/tfmul_raw.sv \
     ${ROOT}/rtl/block/compute_dot_par_raw.sv \
+    ${ROOT}/rtl/block/packed6_rd.sv \
+    ${ROOT}/rtl/block/packed6_wr.sv \
+    ${ROOT}/rtl/rtl/tf48_pkg.sv \
+    ${ROOT}/rtl/rtl/int_to_trits.sv \
+    ${ROOT}/rtl/rtl/f32_to_tf48.sv \
+    ${ROOT}/rtl/rtl/f32_to_tf48_pipe.sv \
+    ${ROOT}/rtl/rtl/tf48_to_f32.sv \
+    ${ROOT}/rtl/rtl/tf48_to_f32_pipe.sv \
+    ${ROOT}/rtl/rtl/tf48_div_pipe.sv \
     ${ROOT}/rtl/integration/tdot_axi4.sv \
     ${ROOT}/rtl/integration/xadc_temp.sv \
     ${ROOT}/rtl/integration/xadc_prim.sv \
@@ -279,7 +292,34 @@ if {${SKIP_SYNTH}} {
 puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
-set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+# TIMING 2026-10-18: deprecated STEPS.SYNTH_DESIGN.ARGS.RETIMING заменён на
+# каноничный STEPS.SYNTH_DESIGN.ARGS.GLOBAL_RETIMING (2025.2).
+# ЗНАЧЕНИЕ OFF (не on!): АУДИТ показал, что в последнем flat p6_a4 глобальный
+# ретайминг синтеза переставил/слил в конус комбинационную логику из РУЧНОЙ
+# 2-стадийной предвыборки (next_words_q/next_addr_q, PIPELINE-FIX c3bf3ee/
+# bec5a42), из-за чего критический путь `n_left_q_reg -> rd_total_reg[7]/D`
+# стал длинным (WNS=-0.145). Выключение global_retiming возвращает нетлист к
+# намеренной RTL-конвейеризации (reg->reg, короткие пути). auto на 7-серии
+# может разрешиться в on и снова сломать нетлист, поэтому ставим явно off.
+set_property STEPS.SYNTH_DESIGN.ARGS.GLOBAL_RETIMING off [get_runs synth_1]
+# TIMING 2026-10-18: физическая оптимизация implementation. EXPLORE-размещение
+# даёт больше попыток. После выкл. global_retiming критический путь стал
+# внутренней цепью аккумулятора `gen_ad[3].u_add/corr_n1_q -> fq_dec_lo_q`
+# (WNS=-0.043). Alternately: phys_opt AlternateFlowWithRetiming = агрессивные
+# проходы + РЕ-ТАЙМИНГ регистров (разбивает carry-chain на части), а затем
+# второй post-route phys_opt AddRetime (ретайм по реальной маршрутизации).
+set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
+set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AlternateFlowWithRetiming [get_runs impl_1]
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED 1 [get_runs impl_1]
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AddRetime [get_runs impl_1]
+# FIX 2026-10-18 (build_flat): передаём NUM_MAC/ADDERS/ELEM_FMT в synth через
+# файлset-generic (как в build_dfx). Свойство STEPS.SYNTH_DESIGN.ARGS.GENERIC
+# НЕ существует в Vivado 2025.2 (list_property run не содержит таких свойств) —
+# использованный ранее синтаксис падал 'run does not have property'.
+# ВАЖНО (audit 2026-10-18): каждый set_property generic ПЕРЕЗАПИСЫВАЕТ предыдущий
+# (get_property generic [current_fileset] показывает только последний), поэтому
+# ВСЕ параметры задаём ОДНОЙ строкой: "NUM_MAC=.. ADDERS=.. ELEM_FMT=..".
+set_property generic "NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} ELEM_FMT=${ELEM_FMT}" [current_fileset]
 # BUG-047: apply set_clock_groups in PLACE_DESIGN.TCL.PRE (clocks exist in DCP).
 set_property STEPS.PLACE_DESIGN.TCL.PRE ${ROOT}/scripts/timing_exceptions_post.tcl [get_runs impl_1]
 
@@ -292,6 +332,20 @@ if {[string first "complete" [string tolower $st]] == -1} {
     close_project
     exit 1
 }
+
+# AUDIT-GATE 2026-10-18 (проверка передачи параметров): печатаем НАСТОЯЩИЕ generic,
+# которые синтез реально применил к top-модулю. Если NUM_MAC/ADDERS/ELEM_FMT не
+# совпали с запрошенными — сборка ФАТАЛЬНА (иначе молча идёт дефолт #(16,4,0)).
+set _g [get_property generic [current_fileset]]
+puts "=== AUDIT-GATE: fileset generic (requested ${NUM_MAC}/${ADDERS}/${ELEM_FMT}) -> ${_g} ==="
+if {[string first "NUM_MAC=${NUM_MAC}" ${_g}] == -1 ||
+    [string first "ADDERS=${ADDERS}"  ${_g}] == -1 ||
+    [string first "ELEM_FMT=${ELEM_FMT}" ${_g}] == -1} {
+    puts "=== AUDIT-GATE FAIL: NUM_MAC/ADDERS/ELEM_FMT NOT applied (would build default) ==="
+    close_project
+    exit 1
+}
+puts "=== AUDIT-GATE PASS: параметры применяются ==="
 
 # PCIe IP XDC demotion post-synth + GT LOC disable (BUG-051)
 set pcie_ip_xdc [get_files -all -quiet *PCIE_X0Y0.xdc]
@@ -306,11 +360,8 @@ if {$pcie_ip_xdc ne ""} {
 # ---------- 8. Implementation + Bitstream ----------
 puts "=== 8. IMPLEMENTATION + BITSTREAM ==="
 current_run [get_runs impl_1]
-# FIX 2026-10-14 (вариант б): NUM_MAC/ADDERS — параметры типа `int`, которые
-# Vivado не принимает как fileset-generic (проверено). Передаём их в синтез
-# через опцию -generic: set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC запускает
-# synth_design с -generic "NUM_MAC=.. ADDERS=..".
-set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC "NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}" [get_runs synth_1]
+# NOTE: NUM_MAC/ADDERS/ELEM_FMT переданы в synth через файлset-generic
+# (set_property generic = current_fileset) в разделе 7 перед launch_runs synth_1.
 catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}
 launch_runs impl_1 -to_step write_bitstream -jobs ${JOBS}
 wait_on_run impl_1
