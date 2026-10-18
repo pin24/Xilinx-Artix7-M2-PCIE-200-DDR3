@@ -10,6 +10,8 @@
 #
 # Опциональные аргументы (через -tclargs):
 #   NUM_MAC=<16|32|64>   (по умолчанию 16)
+#   ADDERS=<N>           (по умолчанию 4)
+#   ELEM_FMT=<0|1|2>     (по умолчанию 0; 0=легаси tf48, 1=fp32, 2=PACKED6)
 #   JOBS=<N>             (по умолчанию 8)
 #   SKIP_SYNTH=1         (только создать проект, без сборки)
 #
@@ -43,6 +45,7 @@ set TOP_NAME   "xdma_ddr3_core_top"
 
 set NUM_MAC     16
 set ADDERS      4
+set ELEM_FMT    0
 set JOBS        8
 set SKIP_SYNTH  0
 
@@ -55,7 +58,7 @@ set SKIP_SYNTH  0
 # с дефолтом NUM_MAC=32 (обе сборки Run1/Run2 получались NUM_MAC=32 —
 # утилизация совпадала до статистического шума в ~100 LUT).
 #
-# Поддерживаемые формы (для NUM_MAC / JOBS / SKIP_SYNTH):
+# Поддерживаемые формы (для NUM_MAC / ADDERS / ELEM_FMT / JOBS / SKIP_SYNTH):
 #   1) KEY=VALUE       — каноническая, одним аргументом;
 #   2) KEY VALUE       — позиционный fallback: ключ отдельным словом,
 #                        числовое значение — следующим аргументом;
@@ -68,12 +71,12 @@ for {set _i 0} {$_i < $_nargs} {incr _i} {
     set _argn [string trimleft $_arg -]
     set _next [lindex $argv [expr {$_i + 1}]]
     # 1) каноническая форма KEY=VALUE одним словом (дефис перед KEY допустим)
-    if {[regexp {^(NUM_MAC|JOBS|SKIP_SYNTH|ADDERS)=(\d+)$} $_argn -> _k _v]} {
+    if {[regexp {^(NUM_MAC|ADDERS|ELEM_FMT|JOBS|SKIP_SYNTH)=(\d+)$} $_argn -> _k _v]} {
         set $_k $_v
         continue
     }
     # 2)+3) позиционный fallback: ключ отдельным словом, значение следом
-    if {[lsearch -exact {NUM_MAC JOBS SKIP_SYNTH ADDERS} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
+    if {[lsearch -exact {NUM_MAC ADDERS ELEM_FMT JOBS SKIP_SYNTH} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
         set $_argn $_next
         incr _i
         continue
@@ -90,6 +93,7 @@ puts " TOP        : ${TOP_NAME}"
 puts " ARGS (raw) : ${argv}"
 puts " NUM_MAC    : ${NUM_MAC}"
 puts " ADDERS     : ${ADDERS}"
+puts " ELEM_FMT   : ${ELEM_FMT}"
 puts " JOBS       : ${JOBS}"
 puts " SKIP_SYNTH : ${SKIP_SYNTH}"
 puts "============================================================"
@@ -313,6 +317,15 @@ add_files -norecurse \
     ${ROOT}/rtl/block/tfadd48.sv \
     ${ROOT}/rtl/block/tfmul_raw.sv \
     ${ROOT}/rtl/block/compute_dot_par_raw.sv \
+    ${ROOT}/rtl/block/packed6_rd.sv \
+    ${ROOT}/rtl/block/packed6_wr.sv \
+    ${ROOT}/rtl/rtl/tf48_pkg.sv \
+    ${ROOT}/rtl/rtl/int_to_trits.sv \
+    ${ROOT}/rtl/rtl/f32_to_tf48.sv \
+    ${ROOT}/rtl/rtl/f32_to_tf48_pipe.sv \
+    ${ROOT}/rtl/rtl/tf48_to_f32.sv \
+    ${ROOT}/rtl/rtl/tf48_to_f32_pipe.sv \
+    ${ROOT}/rtl/rtl/tf48_div_pipe.sv \
     ${ROOT}/rtl/integration/tdot_axi4.sv \
     ${ROOT}/rtl/integration/icap_ctrl.sv \
     ${ROOT}/rtl/integration/xadc_temp.sv \
@@ -321,6 +334,7 @@ add_files -norecurse \
     ${ROOT}/rtl/diag/diag_axi_sniffer.sv
 set_property generic NUM_MAC=${NUM_MAC} [current_fileset]
 set_property generic ADDERS=${ADDERS} [current_fileset]
+set_property generic ELEM_FMT=${ELEM_FMT} [current_fileset]
 
 # ---------- 0-b. BUILD_ID (Task 35; за образец — openTPU BUILD_ID) ----------
 # Первые 8 hex git-коммита попадают в регистр tdot BUILD_ID (0x70 в main-карте).

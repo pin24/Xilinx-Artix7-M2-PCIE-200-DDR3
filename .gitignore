@@ -91,3 +91,13 @@ tb_tdot_axi4_expected.hex
 
 # ---- tdot_axi4 synthesis output ----
 rtl/integration/synth_out_*
+
+# ---- flat/dfx build artifacts (branch 2ch-pipeline) ----
+build/logs_flat/
+build/logs/
+build/artifacts_flat/
+build/artifacts_dfx/
+build/dfx_proj/
+C:/build_flat_loop/
+C:/build_flat/
+C:/build_dfx/

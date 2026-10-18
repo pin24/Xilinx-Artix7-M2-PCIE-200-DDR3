@@ -59,11 +59,19 @@ set_property top tdot_synth_wrap [current_fileset]
 update_compile_order -fileset sources_1
 
 # --- тайминг @125 МГц (через XDC-файл; create_clock требуют открытый design) ---
+# Обвязка для ЧЕСТНОЙ оценки ВНУТРЕННЕГО reg-to-reg запаса ядра в standalone-синтезе.
+#  - output_delay/input_delay = 1.0ns: ядро AXI-мастер/слайв выдаёт выходы комбинационно с
+#    регистрового конца; 1ns внешнего setup/hold реалистичен для downstream (не 2ns пессимизм).
+#  - S_AXI_ARESETN/M_AXI_ARESETN -> async reset (CLR/PR пины через 2-ступенчатый синхронизатор
+#    rst_core_b0/rst_core_buf). Маскируем recovery/removal ОТ порта сброса: assert async,
+#    deassert идёт через синхронизатор относительно clk -> стандартный set_false_path.
+#    data-пути между регистрами не затрагиваются (reset_port ведёт только в CLR/PR/SET пины).
 set xdc_file ${proj_dir}/tdot_synth.xdc
 set fx [open ${xdc_file} w]
 puts $fx "create_clock -period 8.000 -name clk \[get_ports {S_AXI_ACLK}\]"
-puts $fx "set_input_delay  -clock clk 2 \[get_ports {S_AXI_AWADDR S_AXI_AWVALID S_AXI_WDATA S_AXI_WVALID S_AXI_ARADDR S_AXI_ARVALID M_AXI_AWREADY M_AXI_WREADY M_AXI_BID M_AXI_BRESP M_AXI_BVALID M_AXI_ARREADY M_AXI_RID M_AXI_RDATA M_AXI_RRESP M_AXI_RLAST M_AXI_RVALID}\]"
-puts $fx "set_output_delay -clock clk 2 \[get_ports {S_AXI_AWREADY S_AXI_WREADY S_AXI_BRESP S_AXI_BVALID S_AXI_ARREADY S_AXI_RDATA S_AXI_RRESP S_AXI_RVALID M_AXI_AWID M_AXI_AWADDR M_AXI_AWLEN M_AXI_AWSIZE M_AXI_AWBURST M_AXI_AWLOCK M_AXI_AWCACHE M_AXI_AWPROT M_AXI_AWQOS M_AXI_AWVALID M_AXI_WDATA M_AXI_WSTRB M_AXI_WLAST M_AXI_WVALID M_AXI_BREADY M_AXI_ARID M_AXI_ARADDR M_AXI_ARLEN M_AXI_ARSIZE M_AXI_ARBURST M_AXI_ARLOCK M_AXI_ARCACHE M_AXI_ARPROT M_AXI_ARQOS M_AXI_ARVALID M_AXI_RREADY sched_irq}\]"
+puts $fx "set_input_delay  -clock clk 1.0 \[get_ports {S_AXI_AWADDR S_AXI_AWPROT S_AXI_AWVALID S_AXI_WDATA S_AXI_WSTRB S_AXI_WVALID S_AXI_BREADY S_AXI_ARADDR S_AXI_ARPROT S_AXI_ARVALID S_AXI_RREADY M_AXI_AWREADY M_AXI_WREADY M_AXI_BID M_AXI_BRESP M_AXI_BVALID M_AXI_ARREADY M_AXI_RID M_AXI_RDATA M_AXI_RRESP M_AXI_RLAST M_AXI_RVALID}\]"
+puts $fx "set_output_delay -clock clk 1.0 \[get_ports {S_AXI_AWREADY S_AXI_WREADY S_AXI_BRESP S_AXI_BVALID S_AXI_ARREADY S_AXI_RDATA S_AXI_RRESP S_AXI_RVALID M_AXI_AWID M_AXI_AWADDR M_AXI_AWLEN M_AXI_AWSIZE M_AXI_AWBURST M_AXI_AWLOCK M_AXI_AWCACHE M_AXI_AWPROT M_AXI_AWQOS M_AXI_AWVALID M_AXI_WDATA M_AXI_WSTRB M_AXI_WLAST M_AXI_WVALID M_AXI_BREADY M_AXI_ARID M_AXI_ARADDR M_AXI_ARLEN M_AXI_ARSIZE M_AXI_ARBURST M_AXI_ARLOCK M_AXI_ARCACHE M_AXI_ARPROT M_AXI_ARQOS M_AXI_ARVALID M_AXI_RREADY sched_irq diag_go diag_busy diag_done diag_f2t_sv diag_f2t_mv diag_f2t_dv}\]"
+puts $fx "set_false_path -setup -hold -from \[get_ports {S_AXI_ARESETN M_AXI_ARESETN}\]"
 close $fx
 add_files -fileset constrs_1 -norecurse ${xdc_file}
 

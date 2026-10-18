@@ -311,6 +311,7 @@ module tdot_axi4 #(
     localparam logic [3:0] CAPS_L2BURST = $clog2(BURST_RD_LEN);
     localparam logic [3:0] CAPS_ADDERS  = (ADDERS > 15) ? 4'd15 : ADDERS[3:0];
     localparam logic [7:0] CAPS_NUMMAC  = NUM_MAC[7:0];
+    localparam logic [2:0] CAPS_ELEMFMT = ELEM_FMT[2:0];
     logic        obs_freeze_q;   // OBS_CTRL.bit1: пауза событийного счёта
     logic        obs_clear_q;    // OBS_CTRL.bit0: импульс обнуления
     logic        obs_snap;       // SNAP: импульс защёлкивания теней
@@ -483,8 +484,8 @@ module tdot_axi4 #(
             // ---- наблюдаемость (OBS; WORD = BAJТЫ: 6'd27=0x6C, ... 6'd56=0xE0) ----
             6'd27: rdata = {30'b0, obs_freeze_q, 1'b0};          // OBS_CTRL (RO-статус)
             6'd28: rdata = BUILD_ID;                             // BUILD_ID
-            6'd29: rdata = {8'(OBS_REGMAP_V), 7'b0, 1'b1,
-                            CAPS_L2BURST, CAPS_ADDERS, CAPS_NUMMAC}; // CAPS
+            6'd29: rdata = {8'(OBS_REGMAP_V), 4'b0, CAPS_ELEMFMT, 1'b1,
+                            CAPS_L2BURST, CAPS_ADDERS, CAPS_NUMMAC}; // CAPS (0x74; ELEM_FMT[22:20])
             6'd30: rdata = cnt_cycles[31:0];                     // CYCLES_LO
             6'd31: rdata = cnt_cycles[63:32];                    // CYCLES_HI
             6'd32: rdata = cnt_busy;                             // BUSY_CYCLES
