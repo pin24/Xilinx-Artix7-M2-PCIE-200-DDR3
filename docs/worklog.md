@@ -707,3 +707,17 @@ Work Log:
 - РЕШЕНИЕ: чтобы не сломать 8-байт (verify 4/4) и не внести риск синтеза, РЕАЛИЗАЦИЯ 6-байт в RTL НЕ внесена сейчас; 8-байт сохранён (verify_tdot_axi4 32 = 0/4 PASS).
 - Проверено: tdot_axi4.sv не изменён, verify 4/4 PASS; драйвер P2 компилируется.
 Stage Summary: RTL 6-байт — спроектирован, внедрение отложено (отдельный этап: xsim barrel-стенд + решение BRAM dual-write); 8-байт стабилен. Установлен v1.1.32. PLAN-3 P2 в репо.
+
+---
+Task ID: 2026-10-19-session-end
+Agent: MultiTool
+Task: Сессия 2026-10-19 — DFX removal, fp32 нереализуем, финальные flat-MET прошивки, qwen-review
+Work Log:
+- УДАЛЁН DFX полностью; flat-only primary (HEAD f7e412b, ветка 2ch-pipeline). Makefile/project_config/gitignore -> flat.
+- Хоverification: flat собирается, RTL/bench/make READY. build_flat.tcl = master build.
+- fp32 (ELEM_FMT=1) В ЯДРЕ НЕРЕАЛИЗУЕМ: 998% LUT (1.34M LUT из-за конвертеров, делят на LUT не DSP). Решение: host-конверсия fp32->tf48 (bench --input fp32), ядро 0/2.
+- Двоичное fp32-ядро исследовано (docs/DESIGN_FP32_BINARY_CORE_2026-10-19.md): DSP-путь побеждает bit-serial; строить НЕ нужно (tf48 достаточно).
+- Гипотеза 'automatic int g' в tf48_div_pipe.sv — кандидат на устранение fp32 LUT-взрыва, НЕ верифицирован, откачен (в памяти).
+- Финальные flat-MET прошивки: legacy_a4 WNS+0.185, legacy_a8 +0.043, p6_a4 (PACKED6) +0.010 — все write_bitstream Complete. Артефакты p6_a4 в build/artifacts_flat/ (bit 5.68MB, bin, mcs, prm, rbt).
+- qwen3-coder-30b review скриптов+драйвера: docs/REVIEW_qwen_scripts_driver_2026-10-19.md. Найдены минорные: obs_smi div-0 потен., TraceError text 'ToBuffer' in IoctlSetAddrMode. Большинство 'критических' замечаний модели-ложные (проверено мной).
+Stage Summary: Готово к стенду (только с согласия): прошивка p6_a4 (PACKED6 6Б) + bench_tdot_auto.py (--input fp32). Планируемые задачи на след. сессию: (1) стендовая проверка, (2) проверить automatic int g гипотезу, (3) возможно доработать obs_smi/TraceError.
