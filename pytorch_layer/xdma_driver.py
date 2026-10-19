@@ -68,6 +68,9 @@ def _tf48_to_bits(t) -> int:
     """TFloat48 -> 48-битное целое (совпадает с to_bits48 в verify)."""
     return ((t.e_int & 0xFF) << 40) | (t.m_int & ((1 << 40) - 1))
 
+# 48-битная маска TFloat48 (RF48: E в бит[47:40], M в бит[39:0])
+TF48_MASK = (1 << 48) - 1
+
 
 class XdmaError(RuntimeError):
     """Ошибка взаимодействия с XDMA-устройством."""
@@ -541,12 +544,57 @@ class XdmaWinUpstream(XdmaDevice):
         return bytes(out)
 
 class TdotCore:
-    """Управление ядром tdot_axi4 через XDMA."""
+    """Управление ядром tdot_axi4 через XDMA.
 
-    def __init__(self, dev: XdmaDevice, num_mac: int = 32, ddr_base: int = DDR_BASE):
+    Автодетект формата: при auto_detect=True конструктор читает CAPS (0x74) и
+    CORE_PARAMS (0x64) и по ним сам выбирает num_mac / elem_fmt. Если чтение
+    недоступно (mock, отсутствие железа) или CAPS==0 — остаются переданные /
+    значения по умолчанию (graceful fallback).
+    """
+
+    # допустимые значения ELEM_FMT ядра (см. tdot_axi4.sv):
+    ELEM_FMT_LEGACY = 0   # tf48, 8 байт/элемент
+    ELEM_FMT_FP32   = 1   # raw fp32, 4 байта/элемент (ядро конвертирует в tf48)
+    ELEM_FMT_PACKED6 = 2  # tf48, 6 байт/элемент плотно
+
+    def __init__(self, dev: XdmaDevice, num_mac: int = 32, ddr_base: int = DDR_BASE,
+                 elem_fmt: int | None = None, auto_detect: bool = True):
         self.dev = dev
         self.num_mac = num_mac
         self.ddr = ddr_base
+        self.elem_fmt = elem_fmt
+        self.caps = None
+        self.core_params = None
+        self.build_id = None
+        self.magic = None
+        if auto_detect:
+            self._auto_detect(default_fmt=elem_fmt, default_mac=num_mac)
+
+    def _auto_detect(self, default_fmt=None, default_mac=32) -> None:
+        """Прочитать CAPS/CORE_PARAMS/MAGIC/BUILD_ID; заполнить num_mac/elem_fmt.
+
+        Переопределяет параметры ТОЛЬКО если железо вернуло правдоподобные
+        значения (num_mac>0, elem_fmt в {0,1,2}); иначе — оставляет default.
+        """
+        try:
+            caps = self.read_caps()
+            params = self.read_core_params()
+            self.caps = caps
+            self.core_params = params
+            self.magic = self.read_magic()
+            self.build_id = self.read_build_id()
+            if (params["num_mac"] or caps["num_mac"]) and caps["num_mac"]:
+                self.num_mac = caps["num_mac"]
+            elif params["num_mac"]:
+                self.num_mac = params["num_mac"]
+            if caps["elem_fmt"] in (0, 1, 2) and self.elem_fmt is None:
+                self.elem_fmt = caps["elem_fmt"]
+        except Exception:
+            # нет живого CORE_PARAMS/CAPS (mock/нет железа) — оставить defaults
+            if self.elem_fmt is None:
+                self.elem_fmt = default_fmt if default_fmt is not None else self.ELEM_FMT_LEGACY
+            if self.num_mac == 0:
+                self.num_mac = default_mac
 
     # ---- регистры ----
     def _reg_w(self, off: int, val: int) -> None:
@@ -554,6 +602,53 @@ class TdotCore:
 
     def _reg_r(self, off: int) -> int:
         return struct.unpack("<I", self.dev.read(REG_BASE + off, 4))[0]
+
+    # ---- формат-зависимая упаковка данных (по ELEM_FMT) ----
+    def pack_input(self, values, elem_fmt: int | None = None, as_fp32: bool = False) -> bytes:
+        """Упаковать входной вектор (data ИЛИ weights) в байтовый картовый формат.
+
+        values — список tf48-битов (для ELEM_FMT 0/2) ЛИБО список float
+        (as_fp32=True или ELEM_FMT==1). Возвращает байтовый буфер для h2c DMA.
+        """
+        fmt = self.elem_fmt if elem_fmt is None else elem_fmt
+        if as_fp32 or fmt == self.ELEM_FMT_FP32:
+            return _pack_fp32_raw(values)
+        if fmt == self.ELEM_FMT_PACKED6:
+            return _pack_tf48_packed6(values)
+        return _pack_tf48(values)
+
+    def bpe(self, elem_fmt: int | None = None) -> int:
+        """Байт на элемент входного/выходного потока по формату."""
+        fmt = self.elem_fmt if elem_fmt is None else elem_fmt
+        return 4 if fmt == self.ELEM_FMT_FP32 else (6 if fmt == self.ELEM_FMT_PACKED6 else 8)
+
+    def write_input(self, ddr_off: int, values, elem_fmt: int | None = None,
+                    as_fp32: bool = False, align: bool = True) -> None:
+        """Записать входной вектор через h2c в указанный формат.
+
+        align=True — дописать нули до кратности 8 байт (RTL-потребность
+        8-выровненного конца burst; для fp32 вещественный поток N*4).
+        """
+        data = self.pack_input(values, elem_fmt, as_fp32)
+        if align:
+            pad = (-len(data)) % 8
+            if pad:
+                data += b"\x00" * pad
+        self.dev.write_dma(ddr_off, data)
+
+    def read_result(self, ddr_off: int, elem_fmt: int | None = None):
+        """Прочитать результат dot по result_addr в формате ядра.
+
+        ELEM_FMT 0/2 -> int (48-бит tf48); ELEM_FMT 1 -> float (fp32).
+        """
+        fmt = self.elem_fmt if elem_fmt is None else elem_fmt
+        if fmt == self.ELEM_FMT_FP32:
+            raw = self.dev.read_dma(ddr_off, 4)
+            return struct.unpack("<f", raw)[0]
+        # legacy/packed6: результат в первых 6 байтах (8-байт legacy или 6-байт packed6)
+        bpe = self.bpe(fmt)
+        raw = self.dev.read_dma(ddr_off, min(bpe, 8))
+        return _unpack_tf48_bytes(raw, 0)
 
     def set_addrs(self, data_addr: int, weights_addr: int, result_addr: int) -> None:
         """Программирует data/weights/result адреса в RTL.
@@ -633,8 +728,12 @@ class TdotCore:
     OBS_CTRL         = 0x6C   # W: bit0 CLEAR (импульс), bit1 FREEZE (уровень)
     OBS_BUILD_ID     = 0x70   # RO: git-коммит битстрима (32'h0 = не передан)
     OBS_CAPS         = 0x74   # RO: [7:0] NUM_MAC, [11:8] ADDERS,
-                              #     [15:12] log2(BURST_RD_LEN), [16] SCHED,
+                              #     [15:12] log2(BURST_RD_LEN), [16] = 1,
+                              #     [19:17] ELEM_FMT (0=legacy tf48 8Б, 1=fp32 4Б,
+                              #               2=PACKED6 tf48 6Б),
                               #     [31:24] версия REGMAP
+    CORE_PARAMS      = 0x64   # RO: [7:0] NUM_MAC, [15:8] ADDERS (дубль из CAPS)
+    MAGIC            = 0x68   # RO: 0x54444F54 ('TDOT')
     OBS_CYCLES_LO    = 0x78   # RO, 64-бит free-running
     OBS_CYCLES_HI    = 0x7C
     OBS_BUSY         = 0x80   # RO тактов busy_q=1
@@ -659,15 +758,35 @@ class TdotCore:
         return self._reg_r(self.OBS_BUILD_ID)
 
     def read_caps(self) -> dict:
-        """CAPS: конфигурация битстрима, читаемая из железа."""
+        """CAPS: конфигурация битстрима, читаемая из железа.
+
+        Битовый расклад 0x74 (сверить с rtl/integration/tdot_axi4.sv:487-488):
+          [31:24] regmap_version
+          [23:20] 0 (резерв)
+          [19:17] ELEM_FMT (0=legacy tf48/8Б, 1=fp32/4Б, 2=PACKED6 tf48/6Б)
+          [16]    = 1 (зарезервирован)
+          [15:12] log2(BURST_RD_LEN)
+          [11:8]  ADDERS
+          [7:0]   NUM_MAC
+        """
         v = self._reg_r(self.OBS_CAPS)
         return {
             "regmap_version": (v >> 24) & 0xFF,
             "sched":          bool((v >> 16) & 1),
+            "elem_fmt":       (v >> 17) & 0b111,
             "log2_burst":     (v >> 12) & 0xF,
             "adders":         (v >> 8) & 0xF,
             "num_mac":        v & 0xFF,
         }
+
+    def read_core_params(self) -> dict:
+        """CORE_PARAMS 0x64: [7:0] NUM_MAC, [15:8] ADDERS (RO)."""
+        v = self._reg_r(self.CORE_PARAMS)
+        return {"num_mac": v & 0xFF, "adders": (v >> 8) & 0xFF}
+
+    def read_magic(self) -> int:
+        """MAGIC 0x68: должно быть 0x54444F54 ('TDOT')."""
+        return self._reg_r(self.MAGIC)
 
     def obs_clear(self) -> None:
         """Обнулить все OBS-счётчики (импульс CLEAR)."""
@@ -747,21 +866,54 @@ class TdotCore:
 
     # ---- высокоуровневый вызов ----
     def dot(self, data_bits, weights_bits, data_addr: int = 0x0,
-            weights_addr: int = 0x1000, result_addr: int = 0x2000) -> int:
+            weights_addr: int = 0x1000, result_addr: int = 0x2000,
+            elem_fmt: int | None = None) -> int:
         """Записывает data/weights в DDR3, запускает ядро, возвращает результат.
 
         data_addr/weights_addr/result_addr — СМЕЩЕНИЯ внутри DDR3 (от DDR3_BASE).
+        data_bits/weights_bits — списки 48-битных TFloat48 (НЕ fp32!).
+        elem_fmt — по умолчанию само-определённый формат ядра (self.elem_fmt).
+                  Для ELEM_FMT=1 (fp32) этот метод НЕдля использования —
+                  вызывайте dot_fp32() (bits не являются raw fp32).
+        Возвращает int (48-бит tf48) для ELEM_FMT 0/2.
         """
+        fmt = self.elem_fmt if elem_fmt is None else elem_fmt
+        if fmt == self.ELEM_FMT_FP32:
+            raise ValueError(
+                "ELEM_FMT=1 (fp32): используйте TdotCore.dot_fp32() с raw float, "
+                "а не 48-бит tf48 bits")
         n = len(data_bits)
         if n == 0 or len(weights_bits) != n or n > self.num_mac:
             raise ValueError(f"ожидается 1..{self.num_mac} пар, получено {n}")
-        self.write_tf48(data_addr, data_bits)
-        self.write_tf48(weights_addr, weights_bits)
+        self.write_input(data_addr, data_bits, elem_fmt=fmt)
+        self.write_input(weights_addr, weights_bits, elem_fmt=fmt)
         self.set_addrs(data_addr, weights_addr, result_addr)
         self.set_n(n)
         self.start()
         self.wait_done()
-        return self.read_tf48(result_addr)
+        return self.read_result(result_addr, elem_fmt=fmt)
+
+    def dot_fp32(self, data, weights, data_addr: int = 0x0,
+                 weights_addr: int = 0x1000, result_addr: int = 0x2000,
+                 elem_fmt: int | None = None) -> float:
+        """dot для ELEM_FMT=1 (fp32): raw float32 вход, float32 результат.
+
+        data/weights — итерируемые float (длины n). Возвращает float.
+        """
+        fmt = self.ELEM_FMT_FP32 if elem_fmt is None else elem_fmt
+        if fmt != self.ELEM_FMT_FP32:
+            raise ValueError(f"dot_fp32 для ELEM_FMT={fmt} некорректен "
+                             f"(ожидается fp32=1)")
+        n = len(data)
+        if n == 0 or len(weights) != n or n > self.num_mac:
+            raise ValueError(f"ожидается 1..{self.num_mac} пар, получено {n}")
+        self.write_input(data_addr, data, elem_fmt=fmt, as_fp32=True)
+        self.write_input(weights_addr, weights, elem_fmt=fmt, as_fp32=True)
+        self.set_addrs(data_addr, weights_addr, result_addr)
+        self.set_n(n)
+        self.start()
+        self.wait_done()
+        return self.read_result(result_addr, elem_fmt=fmt)
 
 
 # ---------------------------------------------------------------------------
@@ -981,6 +1133,44 @@ def _pack_tf48(bits_list) -> bytes:
     for b in bits_list:
         buf += struct.pack("<Q", b & 0xFFFFFFFFFFFF)
     return bytes(buf)
+
+
+# ============================================================================
+# Формат-зависимая упаковка входных данных (по ELEM_FMT ядра, см. CAPS 0x74).
+#   ELEM_FMT=0 (legacy) : tf48, 8 байт/элемент (мл. 48 бит значимы)  -> _pack_tf48
+#   ELEM_FMT=1 (fp32)   : raw fp32, 4 байта/элемент, 2 на 64-бит слово (ядро
+#                        само конвертирует fp32->tf48 через F2T)     -> _pack_fp32_raw
+#   ELEM_FMT=2 (PACKED6): tf48 плотно, 6 байт/элемент (barrel 6<->8 в ядре)
+#                                                                    -> _pack_tf48_packed6
+# Результат во всех режимах кладётся ядром по result_addr:
+#   ELEM_FMT=0 : 8 байт, мл. 48 бит = tf48 (tdot_axi4.sv:1368 wr_data {16'h0,res})
+#   ELEM_FMT=1 : 8 байт, мл. 32 бита = fp32 (tdot_axi4.sv:1429 wr_data {32'h0,fp32})
+#   ELEM_FMT=2 : 6 байт, WSTRB=0x3F (tdot_axi4.sv:1369 + packed6_wr woff=0)
+# ============================================================================
+def _pack_tf48_packed6(bits_list) -> bytes:
+    """tf48 (48 бит) -> плотные 6 байт/элемент (E в 6-м байте, как в слове)."""
+    buf = bytearray()
+    for b in bits_list:
+        buf += struct.pack("<Q", b & TF48_MASK)[:6]
+    return bytes(buf)
+
+
+def _pack_fp32_raw(vals) -> bytes:
+    """Список float -> raw fp32, 4 байта/элемент, 2 на 64-бит слово.
+
+    RTL (tdot_axi4.sv, fp32 read) берёт 2 fp32 из каждого 64-бит beat:
+    элемент чётный в мл. слове [31:0], элемент нечётный в [63:32].
+    struct.pack("<Nf") даёт именно это чередование без доп. забот.
+    """
+    return struct.pack("<%df" % len(vals), *(float(v) for v in vals))
+
+
+def _unpack_tf48_bytes(buf: bytes, offset: int = 0) -> int:
+    """Из буфера результата (8-байт legacy или 6-байт PACKED6) -> 48-бит tf48.
+
+    В обоих режимах результат в первых 6 байтах (мл. 6 байт 8-байт слова).
+    """
+    return int.from_bytes(buf[offset:offset + 6], "little") & TF48_MASK
 
 
 # ---------------------------------------------------------------------------

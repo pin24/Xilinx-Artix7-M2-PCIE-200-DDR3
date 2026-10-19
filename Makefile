@@ -1,18 +1,19 @@
 # ============================================================================
-# Makefile — обёртки над Vivado/TCL-скриптами DFX-сборки
+# Makefile — обёртки над Vivado/TCL-скриптами flat-сборки
 # ============================================================================
-# Основной поток сборки — TCL-скрипты (build_dfx.tcl и др.), этот Makefile
-# лишь даёт короткие цели. Vivado должен быть в PATH либо задан через
+# Основной поток сборки — TCL-скрипт build_flat.tcl (полный цикл BD+synth+
+# impl+bitstream+экспорт артефактов), этот Makefile лишь даёт короткие цели.
+# Vivado должен быть в PATH либо задан через
 # VIVADO=/path/to/vivado.bat (Windows) / VIVADO=vivado (Linux).
 #
 # Примеры:
-#   make build            # полная DFX-сборка (synth+impl+bitstream+partials)
+#   make build            # полная flat-сборка (BD+synth+impl+bitstream)
 #   make proj             # только создать проект (SKIP_SYNTH=1)
 #   make num_mac=16 build # собрать с NUM_MAC=16 (и NUM_MAC=16 — эквивалент)
 #   make adders=4 build   # собрать с ADDERS=4 (и ADDERS=4 — эквивалент;
 #                         #   нижний регистр разрешён через алиасы ниже)
 #   make elem_fmt=2 build # собрать с ELEM_FMT=2 (PACKED6); 0=легаси (дефолт)
-#   make artifacts        # .bin/.mcs из готового impl_1 (без пересинтеза)
+#   make bitstream        # полный цикл сборки + экспорт артефактов
 #   make clean            # удалить каталог проекта и артефакты
 # ============================================================================
 
@@ -57,41 +58,35 @@ ifeq ($(OS),Windows_NT)
   endif
 endif
 
-BUILD_DFX      := scripts/build_dfx.tcl
-GEN_BITSTREAM  := scripts/build_dfx.tcl   # full refresh (BD+synth+impl+bitstream) = master build
-GEN_BIN_MCS    := scripts/gen_bin_mcs.tcl
+BUILD_FLAT    := scripts/build_flat.tcl   # master build: BD+synth+impl+bitstream+artifacts
 
-.PHONY: build proj artifacts bitstream clean help
+.PHONY: build proj bitstream clean help
 
 help:
-	@echo "Targets: build | proj | artifacts | bitstream | clean"
+	@echo "Targets: build | proj | bitstream | clean"
 
-# Полная сборка DFX (проект создаётся заново, затем synth+impl+bitstream)
+# Полная flat-сборка (проект создаётся заново, затем synth+impl+bitstream+артефакты)
 build:
-	"$(VIVADO)" -mode batch -source $(BUILD_DFX) -tclargs NUM_MAC=$(NUM_MAC) ADDERS=$(ADDERS) ELEM_FMT=$(ELEM_FMT) JOBS=$(JOBS)
+	"$(VIVADO)" -mode batch -source $(BUILD_FLAT) -tclargs NUM_MAC=$(NUM_MAC) ADDERS=$(ADDERS) ELEM_FMT=$(ELEM_FMT) JOBS=$(JOBS)
 
 # Только создать проект без синтеза
 proj:
-	"$(VIVADO)" -mode batch -source $(BUILD_DFX) -tclargs SKIP_SYNTH=1
+	"$(VIVADO)" -mode batch -source $(BUILD_FLAT) -tclargs SKIP_SYNTH=1
 
-# Экспорт .bin/.mcs/partial из существующего impl_1 (без пересинтеза)
-artifacts:
-	"$(VIVADO)" -mode batch -source $(GEN_BIN_MCS)
-
-# Полный цикл для существующего проекта: synth+impl+bitstream+экспорт
+# Полный цикл сборки + экспорт артефактов (build_flat экспортирует .bit/.mcs сам)
 bitstream:
-	"$(VIVADO)" -mode batch -source $(GEN_BITSTREAM) -tclargs NUM_MAC=$(NUM_MAC) ADDERS=$(ADDERS) ELEM_FMT=$(ELEM_FMT) JOBS=$(JOBS)
+	"$(VIVADO)" -mode batch -source $(BUILD_FLAT) -tclargs NUM_MAC=$(NUM_MAC) ADDERS=$(ADDERS) ELEM_FMT=$(ELEM_FMT) JOBS=$(JOBS)
 
 clean:
 ifeq ($(OS),Windows_NT)
-	-if exist C:\build_dfx rd /s /q C:\build_dfx
-	-if exist build\dfx_proj rd /s /q build\dfx_proj
-	-if exist build\dfx_proj.cache rd /s /q build\dfx_proj.cache
-	-if exist build\dfx_proj.gen  rd /s /q build\dfx_proj.gen
-	-if exist build\artifacts_dfx rd /s /q build\artifacts_dfx
+	-if exist C:\build_flat rd /s /q C:\build_flat
+	-if exist build\flat_proj rd /s /q build\flat_proj
+	-if exist build\flat_proj.cache rd /s /q build\flat_proj.cache
+	-if exist build\flat_proj.gen  rd /s /q build\flat_proj.gen
+	-if exist build\artifacts_flat rd /s /q build\artifacts_flat
 else
-	rm -rf build/dfx_proj build/dfx_proj.cache build/dfx_proj.gen \
-	       build/dfx_proj.hw build/dfx_proj.ip_user_files build/dfx_proj.sim \
-	       build/dfx_proj.srcs build/dfx_proj.runs build/dfx_proj.xpr \
-	       build/artifacts_dfx
+	rm -rf build/flat_proj build/flat_proj.cache build/flat_proj.gen \
+	       build/flat_proj.hw build/flat_proj.ip_user_files build/flat_proj.sim \
+	       build/flat_proj.srcs build/flat_proj.runs build/flat_proj.xpr \
+	       build/artifacts_flat
 endif

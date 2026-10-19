@@ -98,11 +98,21 @@ class FpgaBackend:
                 self.device = XdmaWindows()
         core = TdotCore(self.device, num_mac=self.num_mac)
 
+        # Автодетект формата прошивки (CAPS 0x74 -> ELEM_FMT):
+        #   0 (legacy) / 2 (PACKED6): конвертируем входные fp32 в tf48-биты
+        #   1 (fp32):                шлём RAW fp32, ядро само конвертирует
+        fmt = core.elem_fmt if core.elem_fmt is not None else 0
+        if fmt == 1:
+            res = core.dot_fp32(a[0].tolist(), b[0].tolist(),
+                                data_addr=DDR_DATA, weights_addr=DDR_WEIGHTS,
+                                result_addr=DDR_RESULT)
+            return np.array([res], dtype=np.float32)
+
         data_bits = self._batch_to_bits(a)[0]
         weights_bits = self._batch_to_bits(b)[0]
         res = core.dot(data_bits, weights_bits,
                        data_addr=DDR_DATA, weights_addr=DDR_WEIGHTS,
-                       result_addr=DDR_RESULT)
+                       result_addr=DDR_RESULT, elem_fmt=fmt)
         return np.array([self._bits_to_float(res)], dtype=np.float32)
 
     def throughput_gflops(self, freq_hz: float = 125e6) -> float:

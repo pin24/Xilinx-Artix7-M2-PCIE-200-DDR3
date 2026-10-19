@@ -485,7 +485,7 @@ module tdot_axi4 #(
             6'd27: rdata = {30'b0, obs_freeze_q, 1'b0};          // OBS_CTRL (RO-статус)
             6'd28: rdata = BUILD_ID;                             // BUILD_ID
             6'd29: rdata = {8'(OBS_REGMAP_V), 4'b0, CAPS_ELEMFMT, 1'b1,
-                            CAPS_L2BURST, CAPS_ADDERS, CAPS_NUMMAC}; // CAPS (0x74; ELEM_FMT[22:20])
+                            CAPS_L2BURST, CAPS_ADDERS, CAPS_NUMMAC}; // CAPS (0x74; ELEM_FMT[19:17], 1 in [16])
             6'd30: rdata = cnt_cycles[31:0];                     // CYCLES_LO
             6'd31: rdata = cnt_cycles[63:32];                    // CYCLES_HI
             6'd32: rdata = cnt_busy;                             // BUSY_CYCLES

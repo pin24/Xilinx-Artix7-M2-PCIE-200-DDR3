@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # flash_program.tcl - program the on-board SPI flash (W25Q128JV) with a .bin/.mcs
 # ----------------------------------------------------------------------------
 # Usage:
@@ -6,10 +6,10 @@
 #
 # Reproduces the flash sequence (open_hw_manager -> connect_hw_server ->
 # open_hw_target -> xc7a200t_0 -> create_hw_cfgmem w25q128jvq-spi-x1_x2_x4 ->
-# Program/Verify). Prefer a full .mcs (build/artifacts_dfx/*.mcs, SPIX4) over
+# Program/Verify). Prefer a full .mcs (build/artifacts_flat/*.mcs, SPIX4) over
 # the raw .bin (use_file also valid; raw size must fit flash).
 #
-# ⚠️ HW NOTE (verified 2026-09-27): Labtools 27-3347 "Failure to set flash
+# вљ пёЏ HW NOTE (verified 2026-09-27): Labtools 27-3347 "Failure to set flash
 # parameters" on this board is CAUSED BY THE BITSTREAM, not this script: the
 # R-14 spi_over_pcie design assigns the QSPI flash pins (FCS_B=T19, D00=P22,
 # D01=R22, D02=P21, D03=R21) as USER fabric IO (xdma_ddr3_pins.xdc:101-105).
@@ -21,7 +21,7 @@
 #
 # NOTE: executed 2026-09-27 against real board (JTAG). Script + part name +
 # property set are now correct; the remaining 27-3347 is caused by the loaded
-# bitstream claiming the flash pins (see ⚠️ HW NOTE above), not by this file.
+# bitstream claiming the flash pins (see вљ пёЏ HW NOTE above), not by this file.
 # FIX 2026-09-27: part matched resiliently (jvq is the valid name); dropped
 # set_property calls on non-existent PROGRAM.* fields (CHECKSUM, ADDRESS_RANGE,
 # PRM_FILE, UNUSED_PIN_TERMINATION) that themselves rejected -> 27-3347.
