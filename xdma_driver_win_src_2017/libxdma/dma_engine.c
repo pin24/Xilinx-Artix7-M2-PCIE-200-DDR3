@@ -570,9 +570,16 @@ static BOOLEAN DescriptorIsAligned(IN XDMA_ENGINE *engine, IN DMA_DESCRIPTOR *de
         // todo length alignment requirement??
 
     } else { // AddressMode_Contiguous (i.e. incremental mode)
-        BOOLEAN dstAddrMisaligned = (desc->dstAddrLo % engine->alignAddr) != 0;
-        BOOLEAN lengthMisaligned = (desc->numBytes % engine->alignLength) != 0;
-        BOOLEAN srcAddrMisaligned = (desc->srcAddrLo % engine->alignAddr) != 0;
+        // AUDIT R14 (2026-10-19): защита от деления на 0. alignAddr/alignLength
+        // приходят из регистра alignments (EngineGetAlignments); при ненулевом
+        // `alignments` поля могут оказаться нулевыми -> % 0 = #DE (divide error
+        // в контексте DPC -> IRQL_NOT_LESS_OR_EQUAL). Подстраховываемся 256B
+        // (значение по умолчанию, XDMA_MPS_BYTES), как и в EngineGetAlignments.
+        const UINT32 aAddr = (engine->alignAddr == 0) ? XDMA_MPS_BYTES : engine->alignAddr;
+        const UINT32 aLen  = (engine->alignLength == 0) ? XDMA_MPS_BYTES : engine->alignLength;
+        BOOLEAN dstAddrMisaligned = (desc->dstAddrLo % aAddr) != 0;
+        BOOLEAN lengthMisaligned = (desc->numBytes % aLen) != 0;
+        BOOLEAN srcAddrMisaligned = (desc->srcAddrLo % aAddr) != 0;
 
         if (dstAddrMisaligned || lengthMisaligned || srcAddrMisaligned) {
             TraceVerbose(DBG_DESC, "descriptor alignments: src=0x%08llx, dst=0x%08llx, bytes=%llu",
@@ -926,11 +933,17 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     // safety clamp: never write past the allocated double-freeze bank
     SIZE_T descBankLens = WdfCommonBufferGetLength(engine->descBuffer) / sizeof(DMA_DESCRIPTOR);
     if ((ULONG)descBankLens < XDMA_MAX_DESC_COUNT) { /* buffer is at least that big */ }
+    // AUDIT R2 (2026-10-19): ранее при нехватке дескрипторного банка код молча
+    // клампил `total = descBankLens` и продолжал — хвост SG-буфера пользователя
+    // НЕ переносился в дескрипторы, но запрос завершался "успешно" (потери данных
+    // без кода ошибки). Теперь отказываем запрос (return FALSE -> KMDF завершит
+    // его с ошибкой), т.к. частичная передача опаснее явного отказа.
     if (total > (ULONG)descBankLens) {
-        TraceError(DBG_DMA, "FIX-ROF: %llu bytes need %u descs, buffer holds %Iu - clamping", 
+        TraceError(DBG_DMA, "AUDIT-R2: %llu bytes need %u descs, buffer holds %Iu - "
+                   "REQUEST REJECTED (silent truncation removed)",
                    (ULONGLONG)WdfDmaTransactionGetBytesTransferred(Transaction),
                    total, descBankLens);
-        total = (ULONG)descBankLens;
+        return FALSE;
     }
 
     PHYSICAL_ADDRESS descBase = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
@@ -1564,6 +1577,14 @@ void EngineStartPerf(IN XDMA_ENGINE* engine) {
     // Automatically stops performance counters when a descriptor with the stop bit is completed.
     engine->regs->perfCtrl = XDMA_PERF_CLEAR;
     engine->regs->perfCtrl = XDMA_PERF_AUTO | XDMA_PERF_RUN;
+}
+
+// AUDIT R13 (2026-10-19): stop the performance counters (clear RUN; keep AUTO's
+// auto-stop behavior semantics). Counterpart of IOCTL_XDMA_PERF_START.
+void EngineStopPerf(IN XDMA_ENGINE* engine) {
+    ASSERTMSG("argument engine is NULL!", engine != NULL);
+
+    engine->regs->perfCtrl = 0;  // clear RUN (and AUTO) -> counters freeze
 }
 
 void EngineGetPerf(IN XDMA_ENGINE* engine, OUT XDMA_PERF_DATA* perfData) {

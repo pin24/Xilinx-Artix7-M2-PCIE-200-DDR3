@@ -316,6 +316,10 @@ VOID EngineDisableInterrupt(IN XDMA_ENGINE* engine);
 /// Automatically stops when a dma descriptor with the stop bit is completed
 VOID EngineStartPerf(IN XDMA_ENGINE* engine);
 
+/// Stop the performance counters (AUDIT R13, 2026-10-19: counterpart of
+/// EngineStartPerf; previously IOCTL_XDMA_PERF_STOP was declared but unhandled).
+VOID EngineStopPerf(IN XDMA_ENGINE* engine);
+
 /// Get the performance counters 
 VOID EngineGetPerf(IN XDMA_ENGINE* engine, OUT XDMA_PERF_DATA* perfData);
 

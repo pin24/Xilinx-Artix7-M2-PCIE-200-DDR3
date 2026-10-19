@@ -1,19 +1,19 @@
-# ADDRESS MAP — единый источник истины (DFX-вариант)
+# ADDRESS MAP — единый источник истины (FLAT-вариант)
 
 > **Служебный файл**: единственная согласованная карта адресов, регистров и
-> BAR-конфигурации проекта **XDMA + DDR3 + DFX (TFloat48)** на Artix-7
-> XC7A200T (ветка `XDMA_DDR3_TMUL`).
+> BAR-конфигурации проекта **XDMA + DDR3 + BRAM (TFloat48)** на Artix-7
+> XC7A200T (ветка `2ch-pipeline`, HEAD bf1e18b).
 >
-> **Активная сборка**: `scripts/build_dfx.tcl` → `scripts/xdma_ddr3_dfx_bd.tcl`
-> → `scripts/post_bd_dfx.tcl` + RP из `dfx_block_designs/default.tcl`
-> (альтернатива: `dfx_block_designs/test.tcl`).
+> **Активная сборка**: `scripts/build_flat.tcl` → `scripts/xdma_ddr3_bd.tcl`
+> → `scripts/post_bd_flat.tcl`. DFX полностью удалён — только flat.
 >
 > Все остальные источники (RTL-комментарии, BD TCL, драйвер, хост-софт,
 > README) обязаны соответствовать этому файлу. Любые правки адресов
 > **сначала** вносятся сюда, затем синхронизируются во все остальные файлы.
 >
-> Легаси не-DFX карта (TDOT `0x40001000`, ICAP `0x40002000`, ссылки на
-> `build_all.tcl`) **устарела** — см. §11 «История изменений».
+> dfx-specific блоки (DFX Socket, ICAP, SPI, HWICAP, RP-варианты) в этой
+> карте **НЕ существуют** — они были реализованы только в DFX-сборке, которая
+> удалена. Их упоминание в исторических документах — легаси.
 
 ---
 
@@ -21,69 +21,82 @@
 
 | Параметр | Значение | Где задано |
 |---|---|---|
-| PCIe Vendor ID | `0x10EE` (Xilinx) | `pf0_device_id`-блок в `scripts/xdma_ddr3_dfx_bd.tcl` |
-| PCIe Device ID | `0x7024` | то же + `driver/XDMA.inx`, `xdma_driver_win_src_2017/sys/XDMA.inf` |
+| PCIe Vendor ID | `0x10EE` (Xilinx) | BD XDMA `pf0_device_id` |
+| PCIe Device ID | `0x7024` | то же + `driver/dma/build/XDMA_DMA.inf` |
 | PCIe lanes / Gen | x4 Gen2 | `pl_link_cap_max_link_width/speed` в BD |
-| Режим XDMA | **AXI DMA** (2 H2C + 2 C2H канала) + AXI-Lite bridge | `xdma_rnum_chnl/wnum_chnl`, `axilite_master_en` |
-| **BAR0** (AXI-Lite, M_AXI_LITE) | **128 MB**, окно AXI `0x40000000`…`0x47FFFFFF` | `scripts/build_dfx.tcl` шаг 2d (`pf0_bar0_scale/size`), `pf0_bar2axibar_axil_master=0x40000000` |
-| **BAR2** | НЕ сконфигурирован как мост данных; таблица MSI-X размещена на 64-битном BAR2 (`pf0_msix_cap_table_bir = BAR_3:2`) | BD-конфиг XDMA; фактический размер BAR2 печатает «PCIe BAR REPORT» в `build_dfx.tcl` шаг 2d |
-| **DDR3 в PCIe-пространстве** | **Отсутствует** — DMA-режим: данные хост↔DDR3 идут через H2C/C2H каналы XDMA | см. §1.2 |
+| Режим XDMA | **AXI DMA** (H2C + C2H канала) + AXI-Lite bridge | `xdma_rnum_chnl/wnum_chnl`, `axilite_master_en` |
+| **BAR0** (AXI-Lite, M_AXI_LITE) | **128 MB**, окно AXI `0x40000000`…`0x47FFFFFF` | `build_flat.tcl` шаг 2d, `pf0_bar0_scale/size`, `pf0_bar2axibar_axil_master=0x40000000` |
+| **BAR2** | НЕ мост данных; на нём таблица MSI-X (`pf0_msix_cap_table_bir = BAR_3:2`) | BD-конфиг XDMA; фактический размер печатает «PCIe BAR REPORT» в `build_flat.tcl` |
+| **DDR3 в PCIe-пространстве** | **Отсутствует** — данные хост↔DDR3 идут через DMA-каналы | см. §1.2 |
+| **BRAM в PCIe-пространстве** | **Отсутствует** — доступ только через DMA-каналы с `translateAxiBase=false` | см. §1.2, §6.1 |
 
 ### 1.1. Выбор BAR / устройства (логика хост-драйвера)
 
 | Диапазон AXI-адресов | Канал доступа | Что там |
 |---|---|---|
-| `0x40000000` … `0x47FFFFFF` | Windows: `\\.\XDMA0` (FIX-1 роутит в BAR0); Linux: `/dev/xdma0_control`, offset = addr − 0x40000000 | Вся периферия AXI-Lite (§2) |
-| `0x80000000` … `0x8FFFFFFF` | Только DMA-каналы (h2c/c2h) | DDR3 **256 MB** (§6) — точ. **256 мегабайт = 2 Гбит** (`MT41J128M16`, `C0_MEM_SIZE=268435456` байт). Не путать с флеш W25Q128 (128 **Мбит** = 16 МБ) |
+| `0x40000000` … `0x47FFFFFF` | Windows: `\\.\XDMA0dma\user` (AXI-Lite, периферия); offset = addr − 0x40000000; Linux: `/dev/xdma0_control` | Вся периферия AXI-Lite (§2) |
+| `0x80000000` … `0x8FFFFFFF` | DMA-каналы `h2c/c2h` (translateAxiBase=TRUE) | DDR3 **256 MB** (§6) |
+| `0x10000000` … `0x10001FFF` | DMA-каналы `h2c_bram/c2h_bram` (translateAxiBase=FALSE) | BRAM **8 KB** (§6.1) |
 
 ### 1.2. Куда идут данные (важно для хост-софта)
 
-В DFX-сборке XDMA работает в **DMA-режиме**: `M_AXI` обслуживает
-H2C/C2H-каналы (SmartConnect → MIG `0x80000000` и RP). Второй BAR-мост к
-DDR3 **не сконфигурирован**, поэтому:
+XDMA работает в **DMA-режиме**: `M_AXI` обслуживает H2C/C2H-каналы
+(SmartConnect → MIG `0x80000000` и diag_bram `0x10000000`). Второй BAR-мост к
+DDR3/BRAM **не сконфигурирован**, поэтому:
 
-- MMIO-чтение/запись DDR3 с хоста (через `/dev/xdma0_user` / BAR2) в DFX-сборке
-  **не работает** — второго BAR-моста нет;
-- поток данных хост↔DDR3: **DMA-каналы** (`/dev/xdma0_h2c_0`,
-  `/dev/xdma0_c2h_0` на Linux; `xdma_rw.exe h2c_0 ...` на Windows).
-  Python DMA-API реализована в `xdma_driver.py`: `XdmaDevice.write_dma/
-  read_dma` (смещения от `0x8000_0000`, чанки 1 МиБ, кратность 4 байта);
-  `TdotCore.write_tf48/read_tf48` идут через неё автоматически; на Linux при
-  наличии usr-узла (легаси-сборка с BAR2) — прозрачный MMIO-фолбэк.
-  Самопроверка на железе: `python xdma_driver.py --selftest [--dot]`;
-- ядро `tdot_axi4` читает/пишет DDR3 самостоятельно (M_AXI_TDOT → SmartConnect
-  → MIG), хост лишь программирует адреса в регистрах (§3);
-- DataMover'ы внутри RP ходят в DDR3 по **RP-локальным** адресам
-  `0x00000000…0x0FFFFFFF` (алиас окна MIG, апертура RP `APERTURES {{0x0 256M}}`).
+- MMIO-чтение/запись DDR3/BRAM с хоста (через BAR2) **не работает** — второго
+  BAR-моста нет;
+- поток данных хост↔память: **только DMA-каналы**:
 
-> MSI-X: таблица прерываний лежит на 64-битном BAR2
-> (`pf0_msix_cap_table_bir = BAR_3:2`, offset `0x8000`, PBA `0x8FE0`).
-> Корректность включения/размера BAR2 контролирует «PCIe BAR REPORT» при
-> сборке (`build_dfx.tcl` шаг 2d). При переключении драйвера на polled-режим
-> BAR2 может отсутствовать.
+| Назначение | Windows узел | translateAxiBase | Хост шлёт |
+|---|---|---|---|
+| DDR3 запись | `\\.\XDMA0dma\h2c_0` | TRUE | raw-смещение от `0x80000000` |
+| DDR3 чтение | `\\.\XDMA0dma\c2h_0` | TRUE | raw-смещение от `0x80000000` |
+| BRAM запись | `\\.\XDMA0dma\h2c_bram_0` | FALSE | полный картовый адрес (`0x10000000+`) |
+| BRAM чтение | `\\.\XDMA0dma\c2h_bram_0` | FALSE | полный картовый адрес (`0x10000000+`) |
+
+Python DMA-API реализована в `xdma_driver.py`: `XdmaDevice.write_dma/read_dma`
+(смещения от `0x8000_0000` для DDR3, чанки 1 МиБ, кратность 4 байта);
+`TdotCore.write_tf48/read_tf48` идут через неё автоматически. Самопроверка на
+железе: `python xdma_driver.py --selftest [--dot]`.
+
+**BRAM-каналы (`h2c_bram_0`/`c2h_bram_0`) разделяют DMA-движок channel 0 с
+обычными `h2c_0`/`c2h_0`**: флаг `translateAxiBase` живёт на движке (не на
+файле) и переопределяется при каждом открытии файла (`file_io.c:189-196`).
+⇒ BRAM- и DDR3-каналы одного направления нельзя использовать **одновременно
+в активном потоке** — последнее открытие переопределит трансляцию. Для
+BRAM-тестов — изолированный прогон.
+
+### 1.3. Ключевые константы драйвера
+
+- `XDMA_DDR3_AXI_BASE = 0x80000000` (`drv_src_2017/inc/reg.h:59`) — база,
+  добавляемая двигателем только при `translateAxiBase=TRUE`.
+- Драйвер: `\\.\XDMA0dma` (симлинк `dma_driver.c`). Ноды: `control`,
+  `user`, `bypass`, `h2c_0..3`, `c2h_0..3`, `h2c_bram_0`, `c2h_bram_0`,
+  `event_0..15`. DEVNODE перечислены в `sys/file_io.c:50-85`.
+- Регистры tdot доступны через **`\user`** (AXI-Lite периферия), а не `\control`
+  (config-BAR). В `test_dma_win.py` (XdmaWinDma) компактный бэкенд с
+  `\\.\XDMA0dma` + `\user` для регистров и `\h2c_0`/`\c2h_0` для DMA.
 
 ---
 
-## 2. Карта AXI-Lite (внутри BAR0, каноническая DFX-карта)
+## 2. Карта AXI-Lite (внутри BAR0, каноническая FLAT-карта)
 
-Источник истины: `scripts/xdma_ddr3_dfx_bd.tcl` (assign_bd_address),
-`scripts/build_dfx.tcl` шаг 2d, `scripts/post_bd_dfx.tcl`.
+Источник истины: `scripts/xdma_ddr3_bd.tcl` (assign_bd_address),
+`scripts/build_flat.tcl` шаг 2d, `scripts/post_bd_flat.tcl`.
 
 | Периферия | Базовый адрес | Размер | Мастер lite-SMC | Назначение |
 |---|---|---|---|---|
-| **AXI GPIO (LED/status)** | `0x40020000` | 4 KB | M00 | GPIO ch1: 3 светодиода (out); GPIO2 ch2: 2 бита MIG status (`mmcm_locked`, `init_calib_complete`) |
-| ~~**AXI HWICAP**~~ | `0x40001000` | 4 KB | ~~M02~~ | ~~Xilinx IP (PG135)~~ — **УДАЛЁН из активной DFX-сборки**: лицензионный `axi_hwicap_0` больше не создаётся, адрес не назначается (dual-ICAP устранён — риск взаимоисключающего доступа к одному ICAPE2). Только legacy `block_design_top.tcl`. Единственный ICAP — кастомный `icap_ctrl` (§5). |
-| **DFX Socket** | `0x40022000` | 4 KB | M01 | `dfx_socket/decouple_shutdown_ctrl`: shutdown/decouple RP — см. §4 |
-| **TDOT registers** | `0x40023000` | 4 KB | M03 | Регистры троичного ядра `tdot_axi4` — см. §3 |
-| **ICAP registers** | `0x40024000` | 4 KB | M04 | Кастомный `icap_ctrl` (ICAPE2 X32 @ 62.5 MHz) — см. §5 |
-| **SPI-over-PCIe** | `0x40025000` | 4 KB | M06 | `spi_over_pcie` (`u_spi`, CLK_DIV 16) — программирование флэш/без JTAG («hot-flash»), рабочий — см. §5.1 |
-| **DFX Partition MM2S** | `0x40010000` | 4 KB | — | DataMover MM2S control (внутри RP, через `dfx_socket`) |
-| **DFX Partition S2MM** | `0x40018000` | 4 KB | — | DataMover S2MM control (внутри RP, через `dfx_socket`) |
-| **XADC** | `0x46000000` | 4 KB | M05 | Температура/VCCINT (`xadc_temp.sv`, `u_xadc`) — см. §7 |
+| **DataMover MM2S ctrl** | `0x40010000` | 4 KB | lite-M01 | Контроль MM2S (независимый DMA-путь, см. §6.2) |
+| **DataMover S2MM ctrl** | `0x40018000` | 4 KB | lite-M02 | Контроль S2MM |
+| **AXI GPIO (LED/status)** | `0x40020000` | 4 KB | lite-M00 | GPIO ch1: 3 светодиода (out); GPIO2 ch2: 2 бита MIG status (`mmcm_locked`, `init_calib_complete`) |
+| **TDOT registers** | `0x40023000` | 4 KB | lite-M03 | Регистры троичного ядра `tdot_axi4` — см. §3 |
+| **XADC** | `0x46000000` | 4 KB | lite-M04 | Температура/VCCINT (`xadc_temp.sv`) — см. §7 |
 
-> Диапазон `0x40011000`–`0x40017FFF` и `0x40019000`–`0x4001FFFF` внутри
-> апертуры RP (`0x40010000`, 64 KB) свободен для дополнительных IP будущих
-> RP-вариантов (например, GPIO варианта `test.tcl` @ `0x40012000`).
+> **НЕ существуют во FLAT-сборке** (были только в удалённой DFX):
+> DFX Socket `0x40022000`, ICAP `0x40024000`, SPI `0x40025000`,
+> HWICAP `0x40001000`. Обращение к ним на flat-прошивке попадает в
+> unmapped-пространство AXI-Lite.
 
 ---
 
@@ -93,188 +106,143 @@ DDR3 **не сконфигурирован**, поэтому:
 
 Все регистры 32-битные, байтовый адрес.
 
+### 3.1. Управление (Write)
+
 | Offset | Имя | R/W | Битовое поле | Описание |
 |---|---|---|---|---|
-| `0x00` | `CTRL` | W | `[0]` GO | Запуск вычисления; самосброс через 1 такт |
-| `0x04` | `STATUS` | R | `[0]` BUSY, `[1]` DONE | Состояние вычислителя |
-| `0x08` | `N_IN` | R/W | `[31:0]` | Число пар (1…16·NUM_MAC = MAX_N_TOTAL); 0 → NUM_MAC; >NUM_MAC — long-dot (проходы по NUM_MAC с аккумулятором tfadd48) |
-| `0x0C` | `RES0` | R | `[31:0]` | Результат `[31:0]` (защёлкивается по DONE) |
-| `0x10` | `RES1` | R | `[15:0]` | `{16'h0, результат[47:32]}` |
-| `0x14`/`0x18` | `DATA_ADDR_LO/HI` | R/W | `[31:0]` | Полный AXI-адрес `data` в DDR3 (`0x80000000 + смещение`) |
-| `0x1C`/`0x20` | `WEIGHTS_ADDR_LO/HI` | R/W | `[31:0]` | Адрес `weights` |
-| `0x24`/`0x28` | `RESULT_ADDR_LO/HI` | R/W | `[31:0]` | Адрес результата |
-| `0x2C`/`0x30` | `CORE_RES0/1` | R | `[31:0]`/`[15:0]` | Живые зеркала результата ядра (debug, AUDIT-05) |
-| `0x40` | `SCHED_CTRL` | R/W | `[0]` sched_en, `[1]` irq_en, `[2]` flush, `[3]` irq_ack | Планировщик: вкл. движка / IRQ / сброс кольца (действие) / сброс irq_pending (действие). При sched_en=1 внешний GO игнорируется |
-| `0x44` | `SCHED_WPTR` | R/W | `[7:0]` | Хостовый указатель записи кольца (doorbell; кольцо mod 256) |
-| `0x48` | `SCHED_RPTR` | R | `[7:0]` | Текущий указатель чтения движка |
-| `0x4C`/`0x50` | `DESC_BASE_LO/HI` | R/W | `[31:0]` | База таблицы дескрипторов в DDR3 (полный AXI-адрес) |
-| `0x54`/`0x58` | `COMP_BASE_LO/HI` | R/W | `[31:0]` | База области завершений в DDR3 |
-| `0x5C` | `SCHED_STATUS` | R | `[0]` sched_busy, `[1]` irq_pending | Состояние движка планировщика |
-| `0x60` | `DONE_CNT` | R | `[15:0]` | Свободно-бежащий счётчик завершённых задач |
-| `0x64` | `CORE_PARAMS` | R | `[7:0]` NUM_MAC, `[15:8]` ADDERS | Параметры компиляции ядра (автоопределение драйвером) |
-| `0x68` | `MAGIC` | R | `0x54444F54` ('TDOT') | Идентификация блока драйвером |
-| `0x6C` | `OBS_CTRL` | W | `[0]` CLEAR(импульс), `[1]` FREEZE(уровень) | Сброс/пауза счётчиков наблюдения (см. §3.4) |
-| `0x70` | `BUILD_ID` | R | 8 hex git-кома | Биtстрим-идентификация (0 = не передан) |
-| `0x74` | `CAPS` | R | `[7:0]` NUM_MAC, `[11:8]` ADDERS, `[15:12]` log2(BURST_RD_LEN), `[16]` sched, `[31:24]` REGMAP | Возможности битстрима |
-| `0x78..0xA8` | OBS-счётчики | R | CYCLES_LO/HI, BUSY, MEM, LOAD, COMPUTE, AR, BEAT, AR_STALL, R_WAIT, WR, JOB, FIFO_FULL | см. §3.4 |
-| `0xAC` | `SNAP` | W | любое | Атомарный снимок счётчиков в тени |
-| `0xB0..0xE0` | S-тени | R | 13 слов | Теневые копии после SNAP |
+| `0x00` | `CTRL` | W | `[0]` GO | Запуск вычисления; самосброс через 1 такт. Игнорируется при `sched_en=1` |
+| `0x08` | `N_IN` | W | `[31:0]` | Число пар (1…16·NUM_MAC = MAX_N_TOTAL); 0 → NUM_MAC; >NUM_MAC — long-dot (проходы по NUM_MAC с аккумулятором tfadd48) |
+| `0x14`/`0x18` | `DATA_ADDR_LO/HI` | W | `[31:0]` | Полный AXI-адрес `data` (DDR3 `0x80000000+` / BRAM `0x10000000+`) |
+| `0x1C`/`0x20` | `WEIGHTS_ADDR_LO/HI` | W | `[31:0]` | Полный AXI-адрес `weights` |
+| `0x24`/`0x28` | `RESULT_ADDR_LO/HI` | W | `[31:0]` | Полный AXI-адрес результата |
+| `0x40` | `SCHED_CTRL` | W | `[0]` sched_en, `[1]` irq_en, `[2]` flush, `[3]` irq_ack | Планировщик. При `sched_en=1` внешний GO игнорируется |
+| `0x44` | `SCHED_WPTR` | W | `[7:0]` | Хостовый указатель записи кольца (doorbell; кольцо mod 256) |
+| `0x4C`/`0x50` | `DESC_BASE_LO/HI` | W | `[31:0]` | База таблицы дескрипторов (полный AXI, DDR3/BRAM) |
+| `0x54`/`0x58` | `COMP_BASE_LO/HI` | W | `[31:0]` | База области завершений |
+| `0x6C` | `OBS_CTRL` | W | `[0]` CLEAR (импульс), `[1]` FREEZE (уровень) | Наблюдаемость (см. §3.4) |
+| `0xAC` | `OBS_SNAP` | W | любое | Атомарный снимок в тени |
+
+### 3.2. Статус (Read)
+
+| Offset | Имя | Битовое поле | Описание |
+|---|---|---|---|
+| `0x00` | `CTRL` | `[0]` go_reg | Защёлка GO |
+| `0x04` | `STATUS` | `[0]` BUSY, `[1]` DONE | Состояние вычислителя |
+| `0x08` | `N_IN` | `[31:0]` | Число пар |
+| `0x0C` | `RES0` | `[31:0]` | Результат `[31:0]` (защёлка по DONE) |
+| `0x10` | `RES1` | `[15:0]` | `{16'h0, результат[47:32]}` |
+| `0x14`–`0x28` | адреса LO/HI | `[31:0]` | Зеркала write-полей |
+| `0x2C`/`0x30` | `CORE_RES0/1` | `[31:0]`/`[15:0]` | Живые зеркала результата ядра (debug, AUDIT-05) |
+| `0x40` | `SCHED_CTRL` | `[0]` sched_en, `[1]` irq_en, `[2]` flush, `[3]` irq_pending | Состояние планировщика |
+| `0x44` | `SCHED_WPTR` | `[7:0]` | Хостовый указатель записи |
+| `0x48` | `SCHED_RPTR` | `[7:0]` | Указатель чтения движка |
+| `0x4C`–`0x58` | DESC/COMP_BASE | `[31:0]` | Зеркала баз |
+| `0x5C` | `SCHED_STATUS` | `[0]` sched_busy, `[1]` irq_pending | Состояние движка |
+| `0x60` | `DONE_CNT` | `[15:0]` | Свободно-бежащий счётчик завершённых задач |
+| `0x64` | `CORE_PARAMS` | `[7:0]` NUM_MAC, `[15:8]` ADDERS | Параметры компиляции ядра (автоопределение) |
+| `0x68` | `MAGIC` | `0x54444F54` ('TDOT') | Идентификация блока |
+| `0x6C` | `OBS_CTRL` | `[1]` obs_freeze | Статус наблюдаемости |
+| `0x70` | `BUILD_ID` | 8 hex git-коммита | Идентификация битстрима (`0` = не передан/сборка вне git) |
+| `0x74` | `CAPS` | `[7:0]` NUM_MAC, `[11:8]` ADDERS, `[15:12]` log2(BURST_RD_LEN), `[16]`=1, `[19:17]` ELEM_FMT, `[31:24]` REGMAP_V | Возможности битстрима + формат элементов |
+| `0x78..0xA8` | OBS-счётчики | CYCLES_LO/HI, BUSY, MEM, LOAD, COMPUTE, AR, BEAT, AR_STALL, R_WAIT, WR, JOB, FIFO_FULL | см. §3.4 |
+| `0xAC` | `SNAP` | `0` | Write-only; drive 0 при read |
+| `0xB0..0xE0` | S-тени | 13 слов | Теневые копии после SNAP |
+
+**ELEM_FMT (CAPS[19:17])** — определяет формат элементов в памяти ядра:
+
+| Значение | Имя | Байт/элемент | Реализация |
+|---|---|---|---|
+| `0` | LEGACY | 8 | tf48 в 64-битном слове (младшие 48 бит). **Реализовано и MET** |
+| `1` | FP32 | 4 (2 на 64-бит слово) | raw fp32, ядро конвертирует F2T/T2F. **НЕреализуемо на чипе (998% LUT)** — только симуляция/mock; на плате — host-конверсия fp32→tf48 для fmt 0/2 |
+| `2` | PACKED6 | 6 | tf48 плотно, WSTRB=0x3F. **Реализовано и MET** |
+
+Сборка 48-битного результата: `result = ((res1 & 0xFFFF) << 32) | (res0 & 0xFFFFFFFF)`.
+
+### 3.3. Планировщик: дескрипторы, завершения, IRQ
+
+Дескриптор — **32 байта** (4×64-бит), `DESC_BASE + rptr*32` (кольцо mod 256):
+
+| Слово | Биты | Содержимое |
+|---|---|---|
+| W0 | `[47:0]` | `data_addr` — полный AXI (обрезается до 32 бит) |
+| W1 | `[47:0]` | `weights_addr` |
+| W2 | `[47:0]` | `result_addr` |
+| W3 | `[31:16]`/`[15:0]` | `n_total` / `tag` |
+
+Завершение — **16 байт** (2×64-бит), `COMP_BASE + rptr*16`:
+
+| Слово | Биты | Содержимое |
+|---|---|---|
+| W0 | `[47:0]`/`[63:48]` | `result[47:0]` / `tag` |
+| W1 | `[7:0]`/`[15:8]` | `status` (0=OK) / `passes` |
+
+Поток: хост наливает дескрипторы DMA h2c → пишет `SCHED_WPTR` (doorbell) →
+движок выбирает задачи (fetch → dot → результат + completion) → при опустошении
+и `irq_en` поднимается IRQ → хост читает завершения c2h и сбрасывает IRQ
+битом `irq_ack`. IRQ = уровень `tdot_irq` → синхронизация (2-FF, 250 МГц) →
+`xdma_0/usr_irq_req[0]` (MSI-X). Хост-API: `TdotScheduler`.
 
 ### 3.4. Наблюдаемость (OBS, Task 35)
 
-Полная регистровая карта и семантика — `docs/OBSERVABILITY.md`. Кратко:
+Полная семантика — `docs/OBSERVABILITY.md`. Кратко:
 - `CYCLES` — 64-бит free-running (не подчиняется FREEZE);
-- событийные 32-бит счётчики (MEM/LOAD/COMPUTE/AR/BEAT/AR_STALL/R_WAIT/WR/JOB/FIFO_FULL) считаются
-  в такт события; `CLEAR` обнуляет всё и тени; `FREEZE` паузит события, но не CYCLES;
+- событийные 32-бит счётчики (MEM/LOAD/COMPUTE/AR/BEAT/AR_STALL/R_WAIT/WR/JOB/
+  FIFO_FULL) считаются в такт события; `CLEAR` обнуляет всё и тени; `FREEZE`
+  паузит события, но не CYCLES;
 - `SNAP` → `0xB0..0xE0` — консистентный атомарный снимок;
-- host-API: `xdma_driver.TdotCore.{read_build_id, read_caps, obs_clear, obs_freeze, obs_snap, obs_read, obs_read_shadow}`.
-- Вместе с OBS внесён **4KB-кламп read-burst** (AXI4 A4.3.1) — закрывает латентный дефект
-  при ×8-выровненном, но не 4KB-выровненном адресе (модель `scripts/check_burst_4kb.py`).
-
-### 3.1. Планировщик: дескрипторы, завершения, IRQ
-
-Дескриптор — **32 байта** (4×64-бит слова, LE), в таблице по
-`DESC_BASE + rptr*32` (rptr = номер задачи, кольцо mod 256):
-
-| Слово | Биты | Содержимое |
-|---|---|---|
-| W0 | `[47:0]` | `data_addr` — полный AXI-адрес данных (обрезается до 32 бит) |
-| W1 | `[47:0]` | `weights_addr` |
-| W2 | `[47:0]` | `result_addr` (ядро пишет 64-битное слово результата) |
-| W3 | `[31:16]` / `[15:0]` | `n_total` / `tag` |
-
-Завершение — **16 байт** (2×64-бит слова), в области `COMP_BASE + rptr*16`:
-
-| Слово | Биты | Содержимое |
-|---|---|---|
-| W0 | `[47:0]` / `[63:48]` | `result[47:0]` / `tag` |
-| W1 | `[7:0]` / `[15:8]` | `status` (0 = OK) / `passes` (число проходов long-dot) |
-
-Поток: хост наливает дескрипторы DMA h2c → пишет `SCHED_WPTR` (doorbell) →
-движок сам выбирает задачи (fetch → dot → результат + completion) → при
-опустошении кольца и `irq_en` поднимается IRQ → хост читает завершения c2h и
-сбрасывает IRQ битом `irq_ack`. IRQ = уровень `tdot_irq` → 2-FF синхронизация
-в `xdma_ddr3_core_top` (домен 250 МГц) → `xdma_0/usr_irq_req[0]` (MSI-X);
-на Linux — `/dev/xdma0_events_0`. Хост-API: `TdotScheduler`
-(`pytorch_layer/xdma_driver.py`), протокольный тест —
-`scripts/test_sched_host.py`, модель long-dot — `scripts/check_tdot_longdot.py`.
-
-Сборка 48-битного результата:
-`result = ((res1 & 0xFFFF) << 32) | (res0 & 0xFFFFFFFF)`.
-
-⚠ `test_xdma.c`/`emulate_test.py` исторически собирали результат как
-`... | (res0 & 0xFFFF)` — теряя биты [31:16]. В драйвере это исправлено
-(`FIX-1`), формула выше — каноническая.
+- host-API: `xdma_driver.TdotCore.{read_build_id, read_caps, obs_clear,
+  obs_freeze, obs_snap, obs_read, obs_read_shadow}`;
+- вместе с OBS внесён **4KB-кламп read-burst** (AXI4 A4.3.1).
 
 ---
 
-## 4. DFX Socket (`decouple_shutdown_ctrl`, база `0x40022000`) — горячая замена
+## 4. ~~DFX Socket~~ — удалён
 
-AXI GPIO v2.0 (dual). Регистры: GPIO_DATA `0x00`, GPIO_TRI `0x04`,
-GPIO2_DATA `0x08`, GPIO2_TRI `0x0C`. Проводка — `xdma_ddr3_dfx_bd.tcl`,
-hier `dfx_socket`.
-
-**Канал 1 (выходы, 3 бита)** — управление:
-
-| Бит | Назначение | Куда идёт |
-|---|---|---|
-| 0 | **DECOUPLE** — удерживать `rp_resetn` в сбросе | `dfx_decoupler.resetn.decouple` |
-| 1 | **SHUTDOWN M** — заглушить шину RP M_AXI (RP → статика/DDR3) | `dfx_axi_shutdown_static_master.request_shutdown` |
-| 2 | **SHUTDOWN S** — заглушить шину RP S_AXI (статика → RP) | `dfx_axi_shutdown_static_slave.request_shutdown` |
-
-**Канал 2 (входы, 5 бит = `xlconcat_status`)** — статус:
-
-| Бит | Сигнал |
-|---|---|
-| 0 | master `shutdown_requested` |
-| 1 | master `in_shutdown` |
-| 2 | slave `shutdown_requested` |
-| 3 | slave `in_shutdown` |
-| 4 | `decouple_status` |
-
-### 4.1. Протокол горячей замены RP (без JTAG)
-
-1. Записать `0b111` в `GPIO_DATA` (decouple + оба shutdown).
-2. Дождаться `GPIO2_DATA == 0b11010` (`in_shutdown` M+S + `decouple_status`).
-3. Загрузить **частичный** битстрим RP: через `icap_ctrl` (`0x40024000`,
-   протокол §5, скрипт `pytorch_layer/icap_load.py`). (HWICAP `0x40001000`
-   удалён из активной сборки — §2.)
-4. Записать `0b000` в `GPIO_DATA` — `dfx_axi_shutdown_manager` возобновляет
-   шины, `dfx_decoupler` снимает сброс RP. PCIe-линк и статика живы всё время.
-5. Проверить, что статус ушел в `0b00000`.
-
-Всё это делает одной командой `pytorch_layer/dfx_swap.py <partial.bit>`
-(`--status` — только статус, `--timeout`, `--no-verify`).
-
-Частичные битстримы производит сборка: `build_dfx.tcl` шаг 9b /
-`gen_bitstream.tcl` (экспорт `*partial*.bit|.bin` в `build/artifacts_dfx/`).
-
-⚠ Апертура/присоединение RP менять нельзя без пересмотра pblock и
-register slice'ов (`rp_m_axi_register_slice`, `rp_s_axi_register_slice`
-должны совпадать по настройкам — требование UG909).
+DFX-сборка полностью удалена из проекта (2026-10-17). Hot-swap RP,
+`dfx_swap.py`, `icap_load.py` для flat **неприменимы** и являются легаси.
 
 ---
 
-## 5. Регистры ICAP (`icap_ctrl.sv`, база `0x40024000`)
+## 5. ~~ICAP / SPI~~ — удалены (не во FLAT)
 
-Источник истины: `rtl/integration/icap_ctrl.sv` (декод `[3:2]`).
-
-| Offset | Имя | R/W | Битовое поле | Описание |
-|---|---|---|---|---|
-| `0x00` | `CTRL` | W | `[0]` GO, `[1]` STOP | GO — старт сессии; STOP — завершение. Самосброс. |
-| `0x04` | `STATUS` | R | `[0]` READY, `[1]` BUSY | READY=1 → mailbox свободен. BUSY=1 — сессия активна. |
-| `0x08` | `DATA` | W | `[31:0]` | Слово битстрима (LE-представление BE-слова `.bin`). |
-
-Протокол: `CTRL←GO` → для каждого слова: ждать `READY`, писать `DATA` →
-`CTRL←STOP`. Порядок байтов: BE-слово `0xAA995566` пишется как `0x665599AA`
-(`icap_load.py` делает это автоматически, контракт совпадает с ядром Linux
-`xilinx_hwicap`). ICAPE2 тактируется 62.5 MHz (деление 125 MHz / 2 через
-register-toggle + BUFG; BUFGCE_DIV на Artix-7 недоступен).
-
-⚠ В `test_xdma.c` регистры называются `ICAP_GO`/`ICAP_READY` (адреса те же),
-регистр `DATA` не объявлен — загрузка битстрима через test_xdma невозможна;
-использовать `icap_load.py`/`dfx_swap.py`.
-
----
-
-### 5.1. SPI-over-PCIe (`spi_over_pcie.sv`, база `0x40025000`)
-
-Источник истины: `rtl/integration/spi_over_pcie.sv` (декод `[4:2]`, 32-байтное
-пространство). Рабочий — «hot-flash» без JTAG: запись нового битстрима в
-SPI-флэш (W25Q128JV) через STARTUPE2.
-
-| Offset | Имя | R/W | Битовое поле | Описание |
-|---|---|---|---|---|
-| `0x00` | `CTRL` | W | `[0]` START (self-clear), `[1]` ABORT, `[2]` WREN (шлёт 0x06), `[3]` RDID (шлёт 0x9F) | Старт/прерывание сессии |
-| `0x04` | `STATUS` | R | `[0]` BUSY, `[1]` DONE, `[2]` ERROR, `[3]` WIP_FLASH | Состояние SPI-сессии |
-| `0x08` | `CMD` | W | `[7:0]` | Команда SPI (0x03 read, 0x02 page-program, 0x20 sector-erase, 0x06 WREN, 0x05 RDSR, 0xC7 chip-erase) |
-| `0x0C` | `ADDR` | W | `[23:0]` | 24-битный адрес флэш |
-| `0x10` | `LEN` | W | `[31:0]` | Длина передачи в байтах |
-| `0x14` | `DATA` | W | `[7:0]` | TX FIFO, байт в `[7:0]` |
-| `0x18` | `RX` | R | `[7:0]` | Последний принятый байт |
-
-`spi_cclk = S_AXI_ACLK / (2*CLK_DIV)`, `CLK_DIV=16` при инстанцировании
-(`u_spi` в `xdma_ddr3_core_top.sv`). STARTUPE2 ведёт только CCLK (L12);
-`FCS_B/D00-D03` — обычные IO.
+- `icap_ctrl.sv` существует в дереве, но **не инстанцирован** в flat-top.
+- `spi_over_pcie.sv` — **неблокирующий STUB** (не подключён) — см. AUDIT_FULL 2026-10-19, R11.
 
 ---
 
 ## 6. DDR3 — адресация и формат данных
 
-- AXI-адрес MIG: `0x80000000`, размер **256 MB** (MT41J128M16XX-125, 16 бит,
-  `mig_a.prj` в `xdma_ddr3_dfx_bd.tcl`).
-- Хост: только через DMA-каналы (§1.2). RP: RP-локальный алиас `0x00000000`.
-- Каждый TFloat48 занимает **64-битное слово** (8 байт, little-endian):
-  `[16'h0][E:8][M:40]` — младшие 48 бит значимы.
+### 6.0. DDR3 (MIG, `0x80000000`)
 
-| Что | Формула адреса |
-|---|---|
-| `data[i]`    | `data_start    + i * 8` |
-| `weights[i]` | `weights_start + i * 8` |
-| `result`     | `result_addr` (одно 64-битное слово) |
+- AXI-адрес MIG: `0x80000000`, размер **256 MB** (0x10000000,
+  MT41J128M16XX-125, `C0_MEM_SIZE=268435456`). Не путать с флеш W25Q128 (128
+  Мбит = 16 МБ).
+- Хост: **только через DMA-каналы** `h2c_0..3`/`c2h_0..3` (translateAxiBase=TRUE,
+  raw offset от `0x80000000`).
 
-Соглашение хоста (`pytorch_layer/fpga_backend.py`): data `0x0000`,
-weights `0x1000`, result `0x2000` (смещения от `0x80000000`).
+### 6.1. BRAM (diag_bram, `0x10000000`)
+
+- `diag_bram` (BRAM 1024×64) + `diag_bram_ctrl` (AXI4 SINGLE_PORT), размер
+  **8 KB** (0x2000). `xdma_ddr3_bd.tcl:511-526,730-733`.
+- Хост: **только через DMA-каналы** `h2c_bram_0`/`c2h_bram_0`
+  (translateAxiBase=FALSE, полный картовый адрес от `0x10000000`).
+- Тот же адрес `0x10000000` обслуживает мастера: host `xdma_0/M_AXI`, tdot
+  `M_AXI_TDOT`, MM2S, S2MM (`xdma_ddr3_bd.tcl:730-733`).
+- Использование: диагностика read-пути ядра без MIG (см. `docs/REBUILD_INSTRUCTION.md`,
+  `docs/CHANGE_LOG_2026-10-03/05/06`; `test_dma dot_bram`).
+
+### 6.2. Данные в памяти
+
+Формат элемента зависит от ELEM_FMT (см. §3.2):
+
+| ELEM_FMT | Байт/элемент | адрес `data[i]` | адрес `weights[i]` | result |
+|---|---|---|---|---|
+| 0 (legacy) | 8 | `data_start + i*8` | `weights_start + i*8` | одно 64-бит слово, мл. 48 бит |
+| 1 (fp32) | 4 | `data_start + i*4` (2 на 64-бит слово) | `weights_start + i*4` | 64-бит слово, мл. 32 бит (WSTRB=0xF) |
+| 2 (PACKED6) | 6 | `data_start + i*6` | `weights_start + i*6` | 6 байт, WSTRB=0x3F |
+
+Соглашение хоста (`pytorch_layer/fpga_backend.py`): data `0x0000`, weights
+`0x1000`, result `0x2000` (смещения от `0x80000000`).
 
 Регионы планировщика (смещения от `0x80000000`, константы в
 `pytorch_layer/xdma_driver.py`):
@@ -301,26 +269,22 @@ weights `0x1000`, result `0x2000` (смещения от `0x80000000`).
 Формулы: `temp_c = raw * 503.975 / 4096 − 273.15`;
 `vccint = raw * 3.0 / 4096`.
 
-XADC физически доступен через примитив `xadc_prim u_xadc_prim` в
-`rtl/integration/xdma_ddr3_core_top.sv` (DCLK = clk50, 50 МГц, в пределах
-спецификации 8…250 МГц). Он опрашивает встроенный XADC-блок (temperature +
-VCCINT) и подаёт реальные `raw_temp` / `raw_vccint` / `raw_valid` в `u_xadc`
-(модуль `xadc_temp`, AXI-Lite @ `0x46000000`, M05). Хост-драйвер читает
-температуру/напряжение через `0x46000000` (`monitor_temp.py`, XADC_BASE).
+XADC доступен через примитив `xadc_prim u_xadc_prim` в
+`rtl/integration/xdma_ddr3_core_top.sv` (DCLK = clk50, 50 МГц). Он опрашивает
+встроенный XADC (temperature + VCCINT) и подаёт реальные значения в `u_xadc`
+(`xadc_temp`, AXI-Lite @ `0x46000000`). Хост — `monitor_temp.py`.
 
-> **Разрешён прежний BUG-031**: раньше считалось, что единственный XADC
-> «занят MIG» и `raw_* = 0` (читаются 0°C/0V). Фактически доступ к XADC
-> обеспечивает примитив `xadc_prim` (избегает конфликта UTLZ-1 и обходит
-> сужение `XADC_En=Off` в MIG), поэтому мониторинг вернул реальные значения.
-> Резервный источник статуса платы — MIG status через GPIO2 `axi_gpio_0`
-> (`0x40020000`, GPIO2_DATA `0x08`, bit0=`mmcm_locked`, bit1=`init_calib_complete`).
+> BUG-031 разрешён: доступ к XADC обеспечивает `xadc_prim` (избегает
+> конфликта UTLZ-1, обходит сужение `XADC_En=Off` в MIG). Резерв —
+> MIG status через GPIO2 (`0x40020000` + 0x08, bit0=`mmcm_locked`,
+> bit1=`init_calib_complete`).
 
 ---
 
 ## 8. Формат TFloat48 (битовое представление)
 
 ```
-64-битное слово в DDR3:
+64-битное слово в DDR3 (ELEM_FMT=0 legacy):
   bits [63:48] = 0x0000
   bits [47:40] = E (экспонента, 8 бит, signed, bias 40)
   bits [39:0]  = M (мантисса, 40 бит = 20 тритов, нормализована [3^18, 3^19))
@@ -334,56 +298,41 @@ VCCINT) и подаёт реальные `raw_temp` / `raw_vccint` / `raw_valid`
   word64 = struct.pack("<Q", bits48)
 ```
 
+PACKED6 (ELEM_FMT=2): каждый tf48 занимает **6 байт** плотно (E в 6-м байте,
+`struct.pack("<Q", bits)[:6]`), без zero-расширения до 8 байт.
+
 ---
 
-## 9. RP-варианты (`dfx_block_designs/`)
+## 9. ~~RP-варианты (двуxk изделие DFX)~~ — удалены
 
-RP-локальная карта (адреса идентичны host-виду, апертура RP 64 KB
-`0x40010000`–`0x4001FFFF`; RP-мастер видит DDR3 с `0x00000000`, 256 MB):
-
-| Сегмент (rp_S_AXI) | default.tcl | test.tcl |
-|---|---|---|
-| DataMover MM2S control | `0x40010000` / 4K | `0x40010000` / 4K |
-| DataMover S2MM control | `0x40018000` / 4K | `0x40018000` / 4K |
-| GPIO (внутри RP) | — | `0x40012000` / 4K |
-| DataMover Data_MM2S/Data_S2MM (→ MIG) | `0x00000000` / 256 MB | то же |
-
-> ИСПРАВЛЕНО 2026-09-05: в `test.tcl` S2MM был на RP-локальном
-> `0x40011000` — хост по каноническому адресу `0x40018000` в него не попадал.
-> Диапазоны всех сегментов DataMover унифицированы до 4 KB (и на стороне
-> статики: `build_dfx.tcl`, `xdma_ddr3_dfx_bd.tcl`), чтобы оставлять место
-> для дополнительных IP внутри апертуры RP.
-
-> WIDENED 2026-09-06: AXIS-сторона DataMover'ов расширена 32→64 бита
-> (`c_m_axis_mm2s_tdata_width`/`c_s_axis_s2mm_tdata_width` = 64) в обоих
-> вариантах RP (`default.tcl`, `test.tcl`). Потоковый тракт RP: 64b×125 МГц =
-> 1,0 ГБ/с (было 500 МБ/с). AXI-сторона (128b), CMD/STS-интерфейсы
-> (104/8 бит) и адреса не изменялись; `axis_data_fifo` наследует ширину
-> автоматически.
+Сборка flat не содержит RP, `dfx_block_designs/default.tcl`, `test.tcl`,
+апертур и `post_bd_dfx.tcl`. Этот раздел удалён вместе с DFX.
 
 ---
 
 ## 10. Сводка для хост-разработчика
 
 ```python
-from xdma_driver import XdmaLinux, XdmaWindows, TdotCore
+from xdma_driver import XdmaWinDriver, TdotCore
 
-dev  = XdmaWindows()          # или XdmaLinux("/dev/xdma0")
-core = TdotCore(dev, num_mac=32)
+dev  = XdmaWinDriver()            # DLL-драйвер (MMIO-регистры, без DMA)
+core = TdotCore(dev, num_mac=32)  # или XdmaWinDma для DMA-каналов
 
-# 1. Данные в DDR3: в DFX-сборке — через DMA (h2c/c2h), см. §1.2.
-#    (write_tf48() через MMIO работает только в легаси не-DFX сборке с BAR2.)
+# 1. Данные в DDR3: только через DMA-каналы (h2c_0/c2h_0), см. §1.2.
+#    write_input() -> write_dma(ddr_off) с offset от 0x80000000.
 
 # 2. Программирование ядра (AXI-Lite, работает всегда):
 core.set_addrs(0x0000, 0x1000, 0x2000)   # + 0x80000000 внутри set_addrs
 core.set_n(n)
 core.start()
 core.wait_done(timeout_ms=5000)
-res48 = core.read_result_reg()           # или чтение result из DDR3 (DMA)
+res48 = core.read_result_reg()           # или чтение result из памяти (DMA)
 
-# 3. Горячая замена RP без JTAG:
-#    python pytorch_layer/dfx_swap.py build/artifacts_dfx/*partial*.bit
+# 3. BRAM-диагностика (без MIG): `test_dma dot_bram n`, см. §6.1.
 ```
+
+Чтобы не потеряться в отличиях DFX/FLAT, брать за основу:
+`docs/worklog.md` от 2026-10-17 (удаление DFX) и `docs/AUDIT_FULL_2026-10-19.md`.
 
 ---
 
@@ -394,11 +343,13 @@ res48 = core.read_result_reg()           # или чтение result из DDR3 
 | 2026-08-25 | Исходная легаси-карта: TDOT `0x44000000`, ICAP `0x46000000` |
 | 2026-08-26 | `resize_bar0.tcl`: BAR0 128MB; TDOT `0x40001000`, ICAP `0x40002000` (не-DFX) |
 | 2026-08-30 | FIX-5: XADC `0x46000000`, `u_xadc` инстанцирован в top |
-| 2026-09-01 | DFX-интеграция: HWICAP `0x40001000`, DFX Socket `0x40002000`, TDOT `0x40003000`, ICAP `0x40004000` (каноническая DFX-карта) |
-| 2026-09-05 | **Этот файл переписан под DFX-карту** (легаси-карта удалена). MM2S/S2MM-сегменты 32K→4K (build_dfx.tcl, xdma_ddr3_dfx_bd.tcl, default.tcl); `test.tcl` S2MM `0x40011000`→`0x40018000`; задокументировано отсутствие PCIe-мэппинга DDR3 (DMA-only); добавлены §4 (DFX Socket/горячая замена) и §9 (RP-варианты). Синхронизировано: README.md, xdma_driver.py, dfx_swap.py (новый), monitor_temp.py, build_dfx.tcl |
-| 2026-09-27 | **SPI-over-PCIe зафиксирован в карте**: §2 добавлен `S_AXI_SPI_REGS` @ `0x40005000` (4 KB, M06, `u_spi`), новый §5.1 с регистровой картой (hot-flash без JTAG, W25Q128JV через STARTUPE2). БАГ: `XdmaWinUpstream.write_dma/read_dma` больше не прибавляют `DDR3_BASE` к смещению (offset шёл как card-side адрес и уезжал на `0x80000000`); теперь передают `ddr_off` как есть — как XdmaLinux/XdmaWindows. Синхронизировано: xdma_driver.py, ADDRESS_MAP.md |
-| 2026-09-27 | **Актуализация под код** (пересинхронизация с фактическим RTL/BD): §7 XADC — `xadc_prim u_xadc_prim` (DCLK clk50) подаёт реальные `raw_temp/raw_vccint/raw_valid`, убран блок «XADC занят MIG / читаются 0» (BUG-031 разрешён); §2 — HWICAP `0x40001000` помечен как **удалённый из активной DFX-сборки** (legacy только в `block_design_top.tcl`), единственный ICAP — `icap_ctrl` `0x40004000`; §4 — горячая замена RP идёт только через icap_ctrl. Отражено также в README.md (§2). |
-| 2026-10-01 | **Периферия сдвинута выше окна XDMA** (баг #2: внутренние XDMA-регистры на BAR0 0x0–0x7FFF перехватывали статическую AXI-Lite периферию). Все слоты периферии перенесены на +0x20000 (выше 0x7FFF): GPIO `0x40000000`→`0x40020000`, DFX Socket `0x40002000`→`0x40022000`, TDOT `0x40003000`→`0x40023000`, ICAP `0x40004000`→`0x40024000`, SPI `0x40005000`→`0x40025000`. DataMover (`0x40010000`/`0x40018000`) и XADC (`0x46000000`) без изменений. BAR0=128MB (баг #1) уже зафиксирован. Синхронизировано: `scripts/xdma_ddr3_dfx_bd.tcl`, `scripts/build_dfx.tcl`, `driver/test_dma.c`, `pytorch_layer/xdma_driver.py`, `icap_load.py`, `dfx_swap.py`, `docs/ADDRESS_MAP.md`. |
+| 2026-09-01 | DFX-интеграция: HWICAP/DFX Socket/TDOT/ICAP (каноническая DFX-карта) |
+| 2026-09-05 | Переписано под DFX-карту; документировано отсутствие PCIe-мэппинга DDR3 |
+| 2026-09-06 | Планировщик TDOT: регистры 0x40–0x60, long-dot, DDR-регионы, IRQ MSI-X |
+| 2026-09-27 | SPI-over-PCIe зафиксирован; актуализация XADC/BUG-031 |
+| 2026-10-01 | Периферия сдвинута на +0x20000 (GPIO 0x40020000, TDOT 0x40023000) |
+| 2026-10-17 | **DFX полностью удалён** — только flat. ADDRESS_MAP переписан под flat |
+| 2026-10-19 | **Актуализация под flat-код** (AUDIT_FULL_2026-10-19): добавлены BRAM `0x10000000`, каналы `h2c_bram/c2h_bram` (translateAxiBase=FALSE), таблица периферии без DFX/ICAP/SPI, форматы ELEM_FMT (0/1/2), §4/5/9 помечены удалёнными |
 
 ---
 
@@ -406,18 +357,14 @@ res48 = core.read_result_reg()           # или чтение result из DDR3 
 
 При любом изменении адресов/регистров проверить совпадение с этим файлом:
 
-- [x] `scripts/build_dfx.tcl` — шаг 2d (BAR0, адреса, диапазоны 4K)
-- [x] `scripts/xdma_ddr3_dfx_bd.tcl` — assign_bd_address + APERTURES RP
-- [x] `scripts/post_bd_dfx.tcl` — TDOT/ICAP/XADC-порты и адреса
-- [x] `dfx_block_designs/default.tcl`, `dfx_block_designs/test.tcl` — RP-локальная карта
+- [x] `scripts/build_flat.tcl` — шаг 2d (BAR0, адреса, диапазоны 4K)
+- [x] `scripts/xdma_ddr3_bd.tcl` — assign_bd_address (AXI-Lite, DDR3, BRAM)
+- [x] `scripts/post_bd_flat.tcl` — периферия flat
 - [x] `rtl/integration/tdot_axi4.sv` — регистровая карта §3
-- [x] `rtl/integration/icap_ctrl.sv` — регистровая карта §5
-- [x] `rtl/integration/xdma_ddr3_core_top.sv` — инстанции u_tdot/u_icap/u_xadc/u_spi
+- [x] `rtl/integration/xdma_ddr3_core_top.sv` — инстанции u_tdot/u_xadc
+- [x] `driver/dma/build/XDMA_DMA.inf` — HWID PCI\VEN_10EE&DEV_7024
+- [x] `driver/dma` (dma_driver.c, file_io.c, dma_engine.c) — симлинки, каналы, translateAxiBase
 - [x] `README.md` — раздел «Карта адресов»
-- [x] `pytorch_layer/xdma_driver.py` — REG_BASE `0x40023000`, ICAP_BASE `0x40024000`, DFX_SOCK_BASE `0x40022000`, SPI_BASE `0x40025000`; write_dma/read_dma передают смещение ddr_off без DDR3_BASE. (`HWICAP_BASE 0x40001000` остаётся только как legacy-константа для совместимости с `block_design_top.tcl`; активной сборкой не используется — §2)
-- [x] `pytorch_layer/icap_load.py` — ICAP_BASE `0x40024000`
-- [x] `pytorch_layer/dfx_swap.py` — DFX_SOCK_BASE `0x40022000` + биты §4
+- [x] `pytorch_layer/xdma_driver.py` — REG_BASE `0x40023000`; write_dma/read_dma сдвиг от DDR3_BASE
+- [x] `pytorch_layer/test_dma_win.py` — TDOT/GPIO/DDR3_BASE
 - [x] `pytorch_layer/monitor_temp.py` — XADC_BASE `0x46000000`
-- [x] `driver/driver.c` (FIX-1), `driver/test_xdma.c` — границы BAR0/BAR2, адреса периферии
-
-| 2026-09-06 | **Планировщик TDOT**: регистры `0x40`–`0x60` (декод расширен до `[7:2]`), N_IN — long-dot до 16·NUM_MAC; новые DDR-регионы (дескрипторы/завершения/data/weights/results); IRQ `tdot_irq` → `usr_irq_req[0]` (MSI-X). См. §3.1, §6.

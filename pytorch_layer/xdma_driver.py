@@ -1218,8 +1218,12 @@ def _selftest(argv=None) -> int:
                  min(len(buf), len(rb)))
         raise XdmaError(f"паттерн не сошёлся: первый расход на смещении "
                         f"0x{i:X} (write=0x{buf[i]:02X} read=0x{rb[i]:02X})")
-    h2c_mbs = args.size / (t1 - t0) / (1 << 20)
-    c2h_mbs = args.size / (t2 - t1) / (1 << 20)
+    # AUDIT R9 (2026-10-19): защита от деления на ноль при мгновенном заступо
+    # (t1-t0 или t2-t1 == 0 на водоохлаждаемых дисках/при мелком размере).
+    _wt = (t1 - t0) or 1e-9
+    _rt = (t2 - t1) or 1e-9
+    h2c_mbs = args.size / _wt / (1 << 20)
+    c2h_mbs = args.size / _rt / (1 << 20)
     print(f"паттерн {args.size >> 20} МиБ: OK; h2c {h2c_mbs:.0f} МиБ/с, "
           f"c2h {c2h_mbs:.0f} МиБ/с")
 

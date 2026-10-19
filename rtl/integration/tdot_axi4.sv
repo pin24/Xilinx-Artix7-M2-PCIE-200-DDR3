@@ -163,9 +163,12 @@ module tdot_axi4 #(
     localparam int AXI_SZ = $clog2(SW);             // 3 (8 байт)
     localparam int FIFO_DEPTH = 2 * NUM_MAC;        // хватает на обе выборки
     localparam int FIFO_PTRW = $clog2(FIFO_DEPTH);  // бит адреса FIFO
-    localparam int RD_LEN_W = $clog2(BURST_RD_LEN);
-    // NOTE: RD_LEN_W объявлен, но не используется в текущей логике. Оставлен
-    // для будущих расширений (например, динамический BURST_RD_LEN).
+    // AUDIT R16 (2026-10-19): мёртвый localparam RD_LEN_W удалён (нигде не
+    // использовался, только объявлен). BURST_RD_LEN сам по себе остаётся —
+    // влияет на 4KB-кламп burst. BURST_WR_LEN (стр. 77) тоже не используется в
+    // логике ядра, но УДАЛИТЬ его нельзя: он пробрасывается в тестовые
+    // инстанцирования tb_tdot_axi4* (порт .BURST_WR_LEN()) — остаётся как
+    // compatibility-параметр для тестов.
 
     // Long-dot: максимум проходов по NUM_MAC пар (сатурация n_total).
     localparam int MAX_PASSES  = 16;

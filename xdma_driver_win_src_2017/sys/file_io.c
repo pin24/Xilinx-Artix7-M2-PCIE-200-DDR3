@@ -32,7 +32,9 @@
 #include "xdma_public.h"
 #include "file_io.h"
 
-// DIAG-EVENTLOG forward declarations (used before their definitions below).
+// AUDIT R13 (2026-10-19): forward-декларации DIAG-функций возвращены на место.
+// Без них вызовы на строке ~212 идут ДО определения (строка ~267) -> неявный
+// int-тип -> C2371 в определении `VOID XdmaDiagOpen`. (См. git diff HEAD.)
 VOID XdmaDiagOpen(WDFFILEOBJECT file, NTSTATUS status);
 VOID XdmaDiagRead(WDFQUEUE queue, ULONG ctx0, ULONG ctx1);
 
@@ -517,6 +519,27 @@ VOID EvtIoWrite(IN WDFQUEUE queue, IN WDFREQUEST request, IN size_t length)
     return; // request has been either completed directly or forwarded to a queue
 }
 
+static NTSTATUS IoctlGetVersion(IN WDFREQUEST request) {
+    // AUDIT R13 (2026-10-19): реализовать ранее декларированный, но не
+    // обрабатываемый IOCTL_XDMA_GET_VERSION. Возвращает версию libxdma
+    // (константа XDMA_LIB_VERSION из libxdma/xdma.h; чтобы не тянуть цепочку
+    // включений сюда, значение продублировано макросом ниже — синхронно с
+    // xdma.h:32 XDMA_LIB_VERSION = XDMA_MAKE_VERSION(2017, 4, 1)).
+    #define XDMA_LIB_VERSION_LOCAL ((ULONG)((2017u << 24) | (4u << 16) | 1u))
+    ULONG libVersion = XDMA_LIB_VERSION_LOCAL;
+    WDFMEMORY requestMemory;
+    NTSTATUS status = WdfRequestRetrieveOutputMemory(request, &requestMemory);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_IO, "IoctlGetVersion: RetrieveOutputMemory failed: %!STATUS!", status);
+        return status;
+    }
+    status = WdfMemoryCopyFromBuffer(requestMemory, 0, &libVersion, sizeof(libVersion));
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_IO, "IoctlGetVersion: MemoryCopyFromBuffer failed: %!STATUS!", status);
+    }
+    return status;
+}
+
 static NTSTATUS IoctlGetPerf(IN WDFREQUEST request, IN XDMA_ENGINE* engine) {
 
     ASSERT(engine != NULL);
@@ -619,10 +642,27 @@ VOID EvtIoDeviceControl(IN WDFQUEUE Queue, IN WDFREQUEST request, IN size_t Outp
     // ioctl codes defined in xdma_public.h
 
     switch (IoControlCode) {
+    case IOCTL_XDMA_GET_VERSION:
+        // AUDIT R13 (2026-10-19): реализован (ранее был STATUS_NOT_SUPPORTED).
+        // Не требует DMA-движка, поэтому возвращает версию libxdma напрямую.
+        TraceInfo(DBG_IO, "IOCTL_XDMA_GET_VERSION");
+        status = IoctlGetVersion(request);
+        if (NT_SUCCESS(status)) {
+            WdfRequestCompleteWithInformation(request, status, sizeof(ULONG));
+        }
+        break;
     case IOCTL_XDMA_PERF_START:
         TraceInfo(DBG_IO, "%s_%u IOCTL_XDMA_PERF_START",
                   queue->engine->dir == H2C ? "H2C" : "C2H", queue->engine->channel);
         EngineStartPerf(queue->engine);
+        status = STATUS_SUCCESS;
+        WdfRequestComplete(request, status);
+        break;
+    case IOCTL_XDMA_PERF_STOP:
+        // AUDIT R13 (2026-10-19): реализован (ранее STATUS_NOT_SUPPORTED).
+        TraceInfo(DBG_IO, "%s_%u IOCTL_XDMA_PERF_STOP",
+                  queue->engine->dir == H2C ? "H2C" : "C2H", queue->engine->channel);
+        EngineStopPerf(queue->engine);
         status = STATUS_SUCCESS;
         WdfRequestComplete(request, status);
         break;
@@ -701,6 +741,20 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
         engine->txnDone = FALSE;
         WdfSpinLockRelease(engine->engineLock);
     }
+    // AUDIT R4 (2026-10-19): переопределяем translateAxiBase из ТЕКУЩЕГО запроса
+    // прямо перед транзакцией (а не только на open). Один движок исполняет запросы
+    // последовательно, поэтому флаг теперь отражает последний запускаемый запрос;
+    // изолированный BRAM-тест (h2c_bram_0) больше не затирает адресацию следующего
+    // DDR3-запроса на том же канале. (Ограничение полного per-request флага и
+    // одновременного параллельного использования h2c_0+h2c_bram_0 на одном движке
+    // — см. AUDIT_FULL R4.)
+    {
+        WDFFILEOBJECT fobj = WdfRequestGetFileObject(Request);
+        PFILE_CONTEXT fc = (fobj != NULL) ? GetFileContext(fobj) : NULL;
+        if (fc != NULL) {
+            engine->translateAxiBase = fc->translateAxiBase;
+        }
+    }
     TraceInfo(DBG_IO, "%s_%u writing %llu bytes to device",
               DirectionToString(engine->dir), engine->channel, length);
 
@@ -774,6 +828,15 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
         WdfSpinLockAcquire(engine->engineLock);
         engine->txnDone = FALSE;
         WdfSpinLockRelease(engine->engineLock);
+    }
+    // AUDIT R4 (2026-10-19): см. коммент в EvtIoWriteDma — переопределяем
+    // translateAxiBase из текущего запроса перед транзакцией (BRAM-файл -> FALSE).
+    {
+        WDFFILEOBJECT fobj = WdfRequestGetFileObject(Request);
+        PFILE_CONTEXT fc = (fobj != NULL) ? GetFileContext(fobj) : NULL;
+        if (fc != NULL) {
+            engine->translateAxiBase = fc->translateAxiBase;
+        }
     }
     TraceInfo(DBG_IO, "%s_%u reading %llu bytes from device",
               DirectionToString(engine->dir), engine->channel, length);
@@ -857,7 +920,7 @@ VOID EvtIoReadEngineRing(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t 
 VOID EvtCancelDma(IN WDFREQUEST request) {
     PQUEUE_CONTEXT queue = GetQueueContext(WdfRequestGetIoQueue(request));
     XDMA_ENGINE* engine = queue->engine;
-    // FIX 2026-10-17 (BSOD 0x10D_4): драйвер использует ОДИН dmaTransaction на движок.
+    // FIX 2026-10-17 (BSOD 0x10D): драйвер использует ОДИН dmaTransaction на движок.
     // При перекрытии (параллельные W+R через same queue) следующий запрос уже
     // перезаписал транзакцию, и cancel старого request не должен трогать
     // Release/Complete ТЕКУЩЕЙ (чужой) транзакции — иначе NULL/двойное.
@@ -865,17 +928,58 @@ VOID EvtCancelDma(IN WDFREQUEST request) {
         WDFREQUEST active = WdfDmaTransactionGetRequest(engine->dmaTransaction);
         if (active != NULL && active != request) return;   // текущая транзакция не про этот request
     }
-    TraceInfo(DBG_IO, "Request 0x%p from Queue 0x%p", request, queue);
-    EngineStop(queue->engine);
-    NTSTATUS status = WdfRequestUnmarkCancelable(request);
-    if (!NT_SUCCESS(status)) {
-        TraceError(DBG_IO, "WdfRequestUnmarkCancelable failed: %!STATUS!", status);
+    // AUDIT R1 (2026-10-19): raсе cancel↔ISR/DPC. Ранее EvtCancelDma вызывал
+    // WdfDmaTransactionRelease БЕЗ участия в том же флаге engine->txnDone, которым
+    // EngineProcessTransfer защищает DmaCompleted/Release. Если cancel в тот же
+    // момент, когда DPC уже взял транзакцию (txnDone=TRUE), оба пути делали Release/
+    // DmaCompleted на одной транзакции -> UAF/BugCheck 0x10D. Теперь cancel
+    // участвует в check-and-set txnDone под engineLock: только один владелец
+    // (либо cancel, либо DPC/движок) выполняет Release транзакции.
+    BOOLEAN ownTxn = FALSE;
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        if (!engine->txnDone) {
+            engine->txnDone = TRUE;   // cancel становится владельцем транзакции
+            ownTxn = TRUE;
+        }
+        WdfSpinLockRelease(engine->engineLock);
     }
-    status = WdfDmaTransactionRelease(queue->engine->dmaTransaction);
-    if (!NT_SUCCESS(status)) {
-        TraceError(DBG_IO, "WdfDmaTransactionRelease failed: %!STATUS!", status);
+
+    // Снять cancelability. STATUS_CANCELLED => request уже забран другим путём
+    // (DPC/EvtTransferCompleteCb владеет и завершит его) — тогда, если мы НЕ
+    // владеем транзакцией, ничего не делаем (транзакцию освободит владелец).
+    NTSTATUS st = WdfRequestUnmarkCancelable(request);
+    if (st == STATUS_CANCELLED && !ownTxn) {
+        return; // другим путём владеет request'ом и транзакцией
     }
-    WdfRequestComplete(request, STATUS_CANCELLED);
+
+    // Останавливаем движок, только если владеем транзакцией (иначе DPC уже
+    // обрабатывает кроткое состояние и сам остановит движок).
+    if (ownTxn) {
+        EngineStop(engine);
+    }
+    if (st != STATUS_SUCCESS) {
+        TraceError(DBG_IO, "WdfRequestUnmarkCancelable failed: %!STATUS!", st);
+    }
+
+    // Владеем транзакцией (ownTxn): освобождаем её РОВНО ОДИН раз. Если же
+    // request отдан другому пути (st==STATUS_CANCELLED) но транзакция ваша
+    // (ownTxn=TRUE) — это возможно только при частично совпавшей гонке; тогда
+    // всё равно освобождаем транзакцию (DPC не будет её трогать после txnDone).
+    if (ownTxn) {
+        NTSTATUS rst = WdfDmaTransactionRelease(engine->dmaTransaction);
+        if (!NT_SUCCESS(rst)) {
+            TraceError(DBG_IO, "WdfDmaTransactionRelease failed: %!STATUS!", rst);
+        }
+    }
+if (st == STATUS_SUCCESS) {
+        WdfRequestComplete(request, STATUS_CANCELLED);
+    } else {
+        // Другой путь завершит request (его STATUS_CANCELLED-ветка); мы лишь
+        // освободили транзакцию, если владели ею.
+        if (ownTxn)
+            WdfRequestComplete(request, STATUS_CANCELLED);
+    }
 }
 
 VOID EvtCancelReadUserEvent(IN WDFREQUEST request) {

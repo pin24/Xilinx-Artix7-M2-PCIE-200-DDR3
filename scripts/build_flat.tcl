@@ -318,8 +318,13 @@ set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AddRetime [get_runs
 # использованный ранее синтаксис падал 'run does not have property'.
 # ВАЖНО (audit 2026-10-18): каждый set_property generic ПЕРЕЗАПИСЫВАЕТ предыдущий
 # (get_property generic [current_fileset] показывает только последний), поэтому
-# ВСЕ параметры задаём ОДНОЙ строкой: "NUM_MAC=.. ADDERS=.. ELEM_FMT=..".
-set_property generic "NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} ELEM_FMT=${ELEM_FMT}" [current_fileset]
+# ВСЕ параметры задаём ОДНОЙ строкой: "NUM_MAC=.. ADDERS=.. ELEM_FMT=.. BUILD_ID=..".
+# FIX 2026-10-19 (AUDIT R3): BUILD_ID, заданный на стр. 272, перезаписывался этой
+# строкой (BUILD_ID в неё не входил) -> синтез брал дефолт 32'h0. Теперь BUILD_ID
+# включён в единую строку generic, и audit-gate ниже проверяет его фактическое
+# применение. (Примечание: generic здесь теперь только для последующих set_property;
+# стр. 272 оставлена для комментарийной ясности, фактически не используется.)
+set_property generic "NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} ELEM_FMT=${ELEM_FMT} BUILD_ID=32'h${BUILD_ID_HEX}" [current_fileset]
 # BUG-047: apply set_clock_groups in PLACE_DESIGN.TCL.PRE (clocks exist in DCP).
 set_property STEPS.PLACE_DESIGN.TCL.PRE ${ROOT}/scripts/timing_exceptions_post.tcl [get_runs impl_1]
 
@@ -344,6 +349,19 @@ if {[string first "NUM_MAC=${NUM_MAC}" ${_g}] == -1 ||
     puts "=== AUDIT-GATE FAIL: NUM_MAC/ADDERS/ELEM_FMT NOT applied (would build default) ==="
     close_project
     exit 1
+}
+# AUDIT-GATE (AUDIT R3, 2026-10-19): проверить, что BUILD_ID реально дошёл до
+# синтеза (не затирается дефолтом 32'h0). Если в строке generic нет нашего
+# BUILD_ID_HEX — сборка ФАТАЛЬНА (иначе регистр BUILD_ID 0x70 молча читается как 0).
+if {${BUILD_ID_HEX} ne "00000000"} {
+    if {[string first "BUILD_ID=32'h${BUILD_ID_HEX}" ${_g}] == -1} {
+        puts "=== AUDIT-GATE FAIL: BUILD_ID=32'h${BUILD_ID_HEX} NOT applied (would read 0) ==="
+        close_project
+        exit 1
+    }
+    puts "=== AUDIT-GATE PASS: BUILD_ID=32'h${BUILD_ID_HEX} применяется ==="
+} else {
+    puts "=== AUDIT-GATE: BUILD_ID не задан (вне git/архив) — регистр будет 0 ==="
 }
 puts "=== AUDIT-GATE PASS: параметры применяются ==="
 
