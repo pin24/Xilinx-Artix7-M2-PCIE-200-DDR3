@@ -61,6 +61,15 @@ from xdma_driver import (  # noqa: E402
 #   TFloat.from_float(1.0) -> e_int=0, m_int=2^36 -> bits = 0x0010_0000_0000
 TF48_ONE = 0x0010_0000_0000
 
+# 48-битная маска RTL-конвенции [E:8][M:40]
+TF48_MASK = (1 << 48) - 1
+TF48_M_MASK = (1 << 40) - 1
+TF48_E_SHIFT = 40
+
+# Код ошибки tfloat48 в RTL-конвенции [E:8][M:40]: все 20 тритов мантиссы = ERR(11),
+# т.е. биты [39:0] все = 1, экспонента E=0. Соответствует RTL-дешифрации err-значения.
+TF48_ERR = TF48_M_MASK  # 0x0000_00FF_FFFF_FFFF
+
 _MAGIC_TDOT = 0x54444F54  # 'TDOT'
 
 
@@ -245,8 +254,36 @@ def caps_to_float(bits: int, fmt: int) -> float:
     return TFloat.from_bits((m << 8) | e).to_float()
 
 
-def auto_test(dev: XdmaDevice, reset_done_before_go: bool = True):
-    """Основной прогон: детект формата + dot-проверка + цикл нагрузки."""
+def random_fp32_vector(n: int, seed: int) -> list:
+    """Псевдослучайный float32-вектор в разумном диапазоне tf48.
+
+    Диапазон [-4, 4): произведение/суммы n<=64 элементов не выходят за
+    точный диапазон tf48 (E до +40; 4^64~10^38 < 3^40~10^19 — безопасно).
+    Использует np.random с фиксированным seed для воспроизводимости.
+    """
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    return rng.uniform(-4.0, 4.0, size=n).astype(np.float32).tolist()
+
+
+def _dot_fp32_reference(data, weights) -> float:
+    """Эталон dot в float32 (numpy) для сравнения с результатом ядра."""
+    import numpy as np
+    return float(np.dot(np.asarray(data, dtype=np.float32),
+                        np.asarray(weights, dtype=np.float32)))
+
+
+def auto_test(dev: XdmaDevice, mode: str = "auto",
+              reset_done_before_go: bool = True):
+    """Основной прогон: детект формата + dot-проверка + цикл нагрузки.
+
+    mode="ones" — данные 1.0/1.0, ожидаемый dot=n (штатный самопроверочный).
+    mode="fp32" — случайные float32-векторы, хост конвертирует fp32->tf48
+                  для ELEM_FMT=0/2 (или шлёт raw fp32 для =1); ожидаемый
+                  dot считается numpy в fp32 и сравнивается с декодированным
+                  результатом ядра (tf48 ~31 бит -> допустимая погрешность).
+    mode="auto" — "ones" для форматов 0/2, "fp32" для 1 (если когда-либо).
+    """
     core = TdotCore(dev)  # авто-детект CAPS/CORE_PARAMS
     assert core.magic == _MAGIC_TDOT, ("MAGIC != 'TDOT' (0x%08X): это не ядро "
                                        "tdot_axi4?" % (core.magic or 0))
@@ -264,6 +301,12 @@ def auto_test(dev: XdmaDevice, reset_done_before_go: bool = True):
     if fmt not in (0, 1, 2):
         raise XdmaError(f"неизвестный ELEM_FMT={fmt} (CAPS 0x74 [19:17])")
 
+    if mode == "auto":
+        # fmt=1 (fp32 в ядре) пока нереализуем на чипе; если появится — fp32-вход
+        mode = "fp32" if fmt == 1 else "ones"
+    if mode not in ("ones", "fp32"):
+        raise ValueError(f"неизвестный режим входа: {mode}")
+
     # офсеты в DDR3 (в стороне; result достаточно 8-байт на все форматы)
     DATA_OFF, WG_OFF, RES_OFF = 0x0, 0x1000, 0x2000
 
@@ -271,15 +314,22 @@ def auto_test(dev: XdmaDevice, reset_done_before_go: bool = True):
     sizes = [s for s in sizes if s <= num_mac] or [num_mac]  # в пределах NUM_MAC
     iters = args.iters
 
-    print("\n=== dot-проверка и нагрузка по n из %s (по %d итер.) ==="
-          % (sizes, iters))
+    print("\n=== dot-проверка и нагрузка по n из %s (по %d итер.), вход=%s ==="
+          % (sizes, iters, mode))
     all_pass = True
+    max_err = 0.0   # макс. |got - expected| (fp32)
+    max_rel = 0.0   # макс. |got - expected|/|expected| (fp32)
     for n in sizes:
         for it in range(iters):
             # генерируем входные данные в правильном формате
-            data = [1.0] * n
-            weights = [1.0] * n
-            expected = float(n)  # dot(1,1)*n = n
+            if mode == "fp32":
+                data = random_fp32_vector(n, seed=1000 * n + it)
+                weights = random_fp32_vector(n, seed=200000 + 1000 * n + it)
+                expected = _dot_fp32_reference(data, weights)
+            else:
+                data = [1.0] * n
+                weights = [1.0] * n
+                expected = float(n)  # dot(1,1)*n = n
 
             t0 = time.monotonic()
             res = _run_single(core, fmt, data, weights, n,
@@ -288,24 +338,69 @@ def auto_test(dev: XdmaDevice, reset_done_before_go: bool = True):
             got = res if isinstance(res, float) else caps_to_float(res, fmt)
             rawbits = int(res) if not isinstance(res, float) else 0
 
-            ok = abs(got - expected) <= max(1e-3, abs(expected) * 1e-3)
+            err = abs(got - expected)
+            rel = err / (abs(expected) + 1e-12)
+            max_err = max(max_err, err)
+            max_rel = max(max_rel, rel)
+            # tf48 даёт ~31 значащий бит против 24 у fp32 -> относительный
+            # запас 1e-3 (и абсолютный флор) достаточно строг для конверсии.
+            ok = err <= max(1e-3, abs(expected) * 1e-3)
             all_pass &= ok
-            print("  n=%3d it=%d -> got=%.6f exp=%.3f  raw=0x%012X  %6.2f ms  %s"
-                  % (n, it, got, expected, rawbits, dt * 1e3,
+            print("  n=%3d it=%d -> got=%.6f exp=%.6f  err=%.3e rel=%.2e "
+                  "raw=0x%012X  %6.2f ms  %s"
+                  % (n, it, got, expected, err, rel, rawbits, dt * 1e3,
                      "PASS" if ok else "FAIL"))
 
+    print("  [сводка] max_abs_err=%.3e max_rel_err=%.2e" % (max_err, max_rel))
     print("\n=== ИТОГ: %s ===" % ("PASS" if all_pass else "FAIL"))
     return 0 if all_pass else 1
 
 
+def _tf48_to_bits(t) -> int:
+    """TFloat48 -> 48-битное целое в RTL-конвенции [E:8][M:40].
+
+    Поле экспоненты E в бит[47:40], мантисса M в бит[39:0]
+    (совпадает с to_bits48 в verify и fpga_backend._to_bits48).
+    """
+    return ((t.e_int & 0xFF) << TF48_E_SHIFT) | (t.m_int & TF48_M_MASK)
+
+
+def fp32_to_tf48_list(arr) -> list:
+    """list of float32 -> list of 48-бит tf48 (RTL-конвенция [E:8][M:40]).
+
+    Host-конверсия fp32 -> tf48 ДЛЯ ядра без встроенной fp32-конверсии
+    (ELEM_FMT=0/2; ELEM_FMT=1 нереализуем на xc7a200t). Каждое fp32-значение
+    кодируется через блоковый эмулятор TFloat.from_float.
+
+    Спецслучаи (обрабатываются здесь, как на хосте):
+      inf / -inf / nan  -> 0            (биты 0x0)
+      субнормальное / underflow -> 0    (выход < 3^-40 -> ноль)
+      overflow (|v| > 3^40 диапазон) -> TF48_ERR  (все триты мантиссы = ERR)
+      прочие нормальные   -> 48-бит [E:8][M:40]
+    """
+    from block.tfloat48 import TFloat, TFloatError
+    out = []
+    for v in arr:
+        try:
+            t = TFloat.from_float(float(v))
+        except TFloatError:
+            # overflow: экспонента вне диапазона [-40, +40]
+            out.append(TF48_ERR)
+            continue
+        # from_float уже вернул 0 (err=False) для +/-inf/nan? нет:
+        # для inf/nan он ставит err=True, но to_bits48 даёт нулевые поля.
+        # Требование host: inf/nan/subnormal/underflow -> 0, overflow -> ERR.
+        if t.err:
+            # inf / nan: кодируем как 0, а не ERR (как делает host-конвертер)
+            out.append(0)
+            continue
+        out.append(_tf48_to_bits(t))
+    return out
+
+
 def _floats_to_tf48_bits(vals) -> list:
     """Список float -> список 48-бит tf48 (для ELEM_FMT=0/2)."""
-    from block.tfloat48 import TFloat
-    out = []
-    for v in vals:
-        t = TFloat.from_float(float(v))
-        out.append(((t.e_int & 0xFF) << 40) | (t.m_int & ((1 << 40) - 1)))
-    return out
+    return fp32_to_tf48_list(vals)
 
 
 def _run_single(core: TdotCore, fmt: int, data, weights, n: int,
@@ -359,7 +454,37 @@ def unit_packing() -> int:
     assert struct.unpack("<f", f[0:4])[0] == 1.0
     assert struct.unpack("<f", f[4:8])[0] == 2.0
     assert struct.unpack("<f", f[8:12])[0] == 3.0
-    print("unit(packing): legacy 8B/packed6 6B/fp32 4B roundtrip — OK")
+
+    # ---- host-конверсия fp32 -> tf48 (fp32_to_tf48_list) ----
+    # 1.0 -> точный tf48-бит
+    assert fp32_to_tf48_list([1.0]) == [TF48_ONE]
+    # константа 1.0 в RTL-конвенции [E:8][M:40] = 0x0010_0000_0000
+    # -1.0 -> знак в мантиссе
+    neg_one = fp32_to_tf48_list([-1.0])[0]
+    assert neg_one != 0 and (neg_one & TF48_M_MASK) != 0
+    # спецслучаи: inf/nan/subnormal/underflow -> 0; overflow -> TF48_ERR
+    assert fp32_to_tf48_list([float("inf"), float("-inf"), float("nan")]) \
+        == [0, 0, 0]
+    assert fp32_to_tf48_list([1e-45]) == [0]            # субнормал -> 0
+    assert fp32_to_tf48_list([1e-300]) == [0]           # underflow -> 0
+    assert fp32_to_tf48_list([3.0 ** 41]) == [TF48_ERR]  # overflow -> ERR
+    # roundtrip fp32 -> tf48-биты -> fp32 (через caps_to_float) в допустимой
+    # погрешности (~7 знаков для tf48 против ~7 у fp32)
+    import random as _rnd
+    _rnd.seed(7)
+    for _ in range(64):
+        v = float(_rnd.uniform(-256.0, 256.0))
+        b = fp32_to_tf48_list([v])[0]
+        back = caps_to_float(b, 0)
+        if v == 0.0:
+            assert back == 0.0
+        else:
+            rel = abs(back - v) / abs(v)
+            assert rel < 1e-6, "fp32->tf48 roundtrip too large: %g->%g (%.2e)" \
+                               % (v, back, rel)
+
+    print("unit(packing): legacy 8B/packed6 6B/fp32 4B roundtrip + "
+          "fp32->tf48 host-конверсия — OK")
     return 0 if ok else 1
 
 
@@ -374,6 +499,10 @@ def main(argv=None) -> int:
     ap.add_argument("--num-mac", type=int, default=32, help="при --mock: NUM_MAC")
     ap.add_argument("--adders", type=int, default=4, help="при --mock: ADDERS")
     ap.add_argument("--iters", type=int, default=3, help="итераций на размер n")
+    ap.add_argument("--input", default="auto", choices=("auto", "ones", "fp32"),
+                    help="входные данные: auto (ones для 0/2, fp32 для 1), "
+                         "ones (1.0-векторы) или fp32 (случайные float32; "
+                         "хост конвертирует fp32->tf48 для ELEM_FMT=0/2)")
     ap.add_argument("--unit", action="store_true",
                     help="только unit-проверка паковки (без железа)")
     args = ap.parse_args(argv)
@@ -384,8 +513,9 @@ def main(argv=None) -> int:
     if args.mock:
         fmt = args.fmt if args.fmt is not None else 0
         dev = MockDevice(elem_fmt=fmt, num_mac=args.num_mac, adders=args.adders)
-        print("mock-режим: формат = %s" % format_name(fmt))
-        return auto_test(dev)
+        print("mock-режим: формат = %s, вход = %s"
+              % (format_name(fmt), args.input))
+        return auto_test(dev, mode=args.input)
 
     try:
         dev, desc = open_device(args.dev)
@@ -394,7 +524,7 @@ def main(argv=None) -> int:
               "`bench_tdot_auto.py --mock` (или `--unit`)." % e)
         return 2
     print("устройство: %s" % desc)
-    return auto_test(dev)
+    return auto_test(dev, mode=args.input)
 
 
 if __name__ == "__main__":
