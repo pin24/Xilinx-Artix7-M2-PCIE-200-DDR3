@@ -105,20 +105,27 @@ def matmul_w(X, W, backend, fb=None):
     assert fb is not None, "fpga требует fb"
     n = int(fb.n)
     out = np.zeros((B, fout), dtype=np.float32)
-    # Батч через fpga: по каждой выходной нейроне — один вызов run_dot на ВСЕ
-    # строки (B задач в кольце) вместо поточечно. По оси in идём чанками по n
-    # (long-dot в RTL суммаризует сам, но здесь дробится явно для нулевой маски).
+    # Батч через fpga: по каждой выходной нейроне — один вызов на ВСЕ строки
+    # (B задач в кольце). По оси in идём чанками по n (long-dot в RTL суммаризует,
+    # здесь дробится для нулевой маски).
+    # FIX-CONV 2026-10-20: X конвертируется в TFloat48 ОДИН раз на чанк (общая
+    # для всех нейронов), а не fout раз — главный оставшийся host-поток убран.
+    x_chunks = []
+    for co in range(0, fin, n):
+        L = min(n, fin - co)
+        xb = np.zeros((B, n), dtype=np.float32)
+        xb[:, :L] = X[:, co:co + L]
+        x_chunks.append(fb._batch_to_bits(xb))
     for o in range(fout):
         wcol = W[:, o]
         acc = np.zeros(B, dtype=np.float32)
-        for co in range(0, fin, n):
-            xe = X[:, co:co + n]
-            L = xe.shape[1]
-            xb = np.zeros((B, n), dtype=np.float32)
-            xb[:, :L] = xe
+        for ci, co in enumerate(range(0, fin, n)):
+            L = min(n, fin - co)
             wb = np.zeros(n, dtype=np.float32)
             wb[:L] = wcol[co:co + L]
-            acc += fb.run_dot(xb, np.broadcast_to(wb, (B, n)))
+            # весовая колонка одинакова для всех строк — конвертируем 1 раз
+            w_bits = [fb._to_bits_list(wb)] * B
+            acc += fb.run_dot_bits(x_chunks[ci], w_bits)
         out[:, o] = acc
     return out
 

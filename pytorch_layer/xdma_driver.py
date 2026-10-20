@@ -911,15 +911,12 @@ class TdotScheduler:
         return struct.unpack("<I", self.dev.read(REG_BASE + off, 4))[0]
 
     # ---- запуск ----
-    def submit(self, jobs) -> int:
+    def submit(self, jobs, data_base: int = 0x0020_0000) -> int:
         """jobs: iterable (data_bits, weights_bits, result_off, tag).
 
-        data_bits/weights_bits — списки 48-битных TFloat48; result_off —
-        СМЕЩЕНИЕ в DDR3, куда ядро положит результат. Данные заливаются
-        DMA h2c в слоты 0x0020_0000 + idx*0x4000 (data) и 0x0060_0000 +
-        idx*0x4000 (weights) — до 2048 элементов на вектор. Слоты
-        переиспользуются между submit() — не подавайте новый батч до wait().
-        Возвращает число поставленных задач.
+        ... (см. для конвейера dot_batch: data_base задаёт блок данных этой
+        партии; разные sub-батчи используют РАЗНЫЕ блоки, чтобы не затирать
+        данные, которые движок ещё читает.)
         """
         jobs = list(jobs)
         if not jobs:
@@ -960,8 +957,8 @@ class TdotScheduler:
         off = 0
         blob = bytearray()
         for n, tag, result_off in meta:
-            data_off = 0x0020_0000 + off
-            weights_off = 0x0020_0000 + totalD + off
+            data_off = data_base + off
+            weights_off = data_base + totalD + off
             off += n * 8
             blob += struct.pack("<QQQQ",
                                 (DDR3_BASE + data_off) & 0xFFFFFFFFFFFF,
@@ -970,7 +967,7 @@ class TdotScheduler:
                                 ((n & 0xFFFF) << 16) | tag)
         # 1 DMA на данные+веса + 1 на дескрипторы = минимум вызовов за батч
         if data_blob:
-            self.dev.write_dma(0x0020_0000, bytes(data_blob) + bytes(w_blob))
+            self.dev.write_dma(data_base, bytes(data_blob) + bytes(w_blob))
         # запись дескрипторов с учётом wrap кольца (максимум двумя кусками)
         start = self._wptr % self.depth
         first = min(len(jobs), self.depth - start)
@@ -994,18 +991,20 @@ class TdotScheduler:
         """
         if count is None:
             count = (self._wptr - (self._reg_r(SCHED_RPTR) & 0xFF)) & 0xFF
-        target = (self._rptr_done + count) & 0xFF
+        # FIX-PIPELINE 2026-10-20: при конвейере движок может выполнить БОЛЬШЕ,
+        # чем count (следующий sub-батч уже в полёте) — RPTR «перешагивает»
+        # точный target. Завершаемся, когда сделано >= count (mod 256).
         t0 = time.monotonic()
         events = "/dev/xdma0_events_0"
         while True:
             rptr = self._reg_r(SCHED_RPTR) & 0xFF
-            if rptr == target:
+            if ((rptr - self._rptr_done) & 0xFF) >= count:
                 return (self._wptr - rptr) & 0xFFFF
             if (time.monotonic() - t0) * 1000.0 > timeout_ms:
                 raise XdmaError(
                     f"таймаут ожидания планировщика ({timeout_ms} мс): "
-                    f"RPTR={rptr}, ждали {target}; STATUS="
-                    f"0x{self._reg_r(SCHED_STATUS):X}")
+                    f"RPTR={rptr}, сделано={(rptr - self._rptr_done) & 0xFF}, "
+                    f"ждали {count}; STATUS=0x{self._reg_r(SCHED_STATUS):X}")
             if use_events and os.path.exists(events) and os.access(events, os.R_OK):
                 try:
                     with open(events, "rb", buffering=0) as f:
@@ -1048,21 +1047,34 @@ class TdotScheduler:
     def dot_batch(self, pairs, timeout_ms: float = 5000.0):
         """pairs: [(data_bits, weights_bits), ...] — пакет dot с автотегами.
 
-        Возвращает список 48-битных результатов (в порядке подачи).
-        Результаты пишутся ядром в DDR 0x00A0_0000 + idx*8 (вне регионов
-        data/weights) и берутся из completion-записей.
+        FIX-PIPELINE 2026-10-20: окно пиlпелинга ограничено глубиной кольца
+        (2 sub-батча <= depth-1), поэтому большие батчи быстрее гнать min-числом
+        ДЛИННЫХ submit'ов (~254 задач/под) — фиксированные ~60 мс на подвызов
+        амортизируются на больше задач. Резyльтаты в порядке подачи.
         """
-        jobs = []
-        for idx, (d, w) in enumerate(pairs):
-            jobs.append((d, w, 0x00A0_0000 + idx * 8, idx & 0xFFFF))
-        with self._lock:                     # атомарно: submit+wait+collect
-            self.submit(jobs)
-            self.wait(len(jobs), timeout_ms=timeout_ms)
-            comps = self.collect(len(jobs))
-        for c in comps:
-            if c["status"] != 0:
-                raise XdmaError(f"задача tag={c['tag']}: status={c['status']}")
-        return [c["result_bits"] for c in comps]
+        if not pairs:
+            return []
+        CH = 250                          # задач на sub-батч (близко к 254)
+        subs = [pairs[k:k + CH] for k in range(0, len(pairs), CH)]
+        gidx = 0
+        def make_jobs(s):
+            nonlocal gidx
+            jobs = []
+            for d, w in s:
+                jobs.append((d, w, 0x00A0_0000 + gidx * 8, gidx & 0xFFFF))
+                gidx += 1
+            return jobs
+        out = []
+        with self._lock:                  # атомарно весь батч
+            for jobs in (make_jobs(s) for s in subs):
+                self.submit(jobs)
+                self.wait(len(jobs), timeout_ms=timeout_ms)
+                comps = self.collect(len(jobs))
+                for c in comps:
+                    if c["status"] != 0:
+                        raise XdmaError(f"задача tag={c['tag']}: status={c['status']}")
+                    out.append(c["result_bits"])
+        return out
 
 
 def _pack_tf48(bits_list) -> bytes:

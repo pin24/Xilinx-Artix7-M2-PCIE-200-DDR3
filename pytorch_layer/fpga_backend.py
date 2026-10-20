@@ -55,6 +55,10 @@ class FpgaBackend:
     def _to_bits48(t) -> int:
         return ((t.e_int & 0xFF) << 40) | (t.m_int & ((1 << 40) - 1))
 
+    def _to_bits_list(self, vals) -> list:
+        """float32 vector -> список 48-битных TFloat48 (для run_dot_bits)."""
+        return [self._to_bits48(TFloat.from_float(v)) for v in vals]
+
     def _batch_to_bits(self, x: np.ndarray) -> list:
         """[batch, N] float32 -> список списков 48-битных TFloat48."""
         return [[self._to_bits48(TFloat.from_float(v)) for v in row] for row in x]
@@ -95,24 +99,34 @@ class FpgaBackend:
             self.device = XdmaWinDma(base=r"\\.\XDMA0dma")
         return self.device
 
-    def _run_fpga(self, a, b, batch):
+    def _run_fpga(self, a, b, batch, a_bits=None, b_bits=None):
         # Каждая строка батча = одна задача планировщика (ring). Длина n до
-        # 16*NUM_MAC покрывается long-dot в RTL сама.
+        # 16*NUM_MAC покрывается long-dot в RTL сама. a_bits/b_bits — уже
+        # сконвертированные (для run_dot_bits), иначе конвертируем здесь.
         if self.n > 16 * self.num_mac:
             raise ValueError(f"n={self.n} > MAX_N_TOTAL={16 * self.num_mac}")
         from xdma_driver import TdotScheduler
         dev = self._ensure_device()
         if self._sched is None or getattr(self._sched, "dev", None) is not dev:
             self._sched = TdotScheduler(dev, num_mac=self.num_mac)
-        a_bits = self._batch_to_bits(a)
-        b_bits = self._batch_to_bits(b)
+        if a_bits is None:
+            a_bits = self._batch_to_bits(a)
+        if b_bits is None:
+            b_bits = self._batch_to_bits(b)
         pairs = [(a_bits[i], b_bits[i]) for i in range(batch)]
-        # лимит кольца планировщика: не более depth-1 задач за батч
-        RING_MAX = 200
-        res_bits = []
-        for s in range(0, batch, RING_MAX):
-            res_bits += self._sched.dot_batch(pairs[s:s + RING_MAX])
+        # разбиение на sub-батчи по ~250 задач и минимизацию числа submit'ов
+        # делает сам TdotScheduler.dot_batch
+        res_bits = self._sched.dot_batch(pairs)
         return np.array([self._bits_to_float(rb) for rb in res_bits], dtype=np.float32)
+
+    def run_dot_bits(self, a_bits, b_bits):
+        """Как run_dot, но вход — уже 48-битные TFloat48 (списки списков).
+        Экономит повторную конвертацию (напр. одни и те же X на много нейронов)."""
+        if len(a_bits) != len(b_bits):
+            raise ValueError(f"размеры не совпадают: {len(a_bits)}/{len(b_bits)}")
+        if self.mode != "fpga":
+            raise NotImplementedError("run_dot_bits только для mode='fpga'")
+        return self._run_fpga(None, None, len(a_bits), a_bits=a_bits, b_bits=b_bits)
 
     def throughput_gflops(self, freq_hz: float = 125e6) -> float:
         """Теоретическая производительность (для сравнения)."""
