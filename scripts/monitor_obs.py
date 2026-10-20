@@ -81,6 +81,13 @@ def main(argv=None):
 
     bid = core.read_build_id()
     caps = core.read_caps()
+    # REGRESS-RESTORE 2026-10-20 (BUG-065, аудит-VS §2.2): WARN "CAPS NUM_MAC !=
+    # --num-mac" потерян в мерже 022ff7a (был в 7748803) — CAPS печатался, но
+    # расхождение с флагом молча не проверялось.
+    caps_mac = (caps or {}).get("num_mac")
+    if caps_mac and caps_mac != args.num_mac:
+        print(f"WARNING: CAPS NUM_MAC={caps_mac} != --num-mac={args.num_mac}; "
+              f"арифметика AR/BEAT на задачу может отличаться от ожидаемой")
     print(f"BUILD_ID = 0x{bid:08X}  CAPS = {caps}\n")
 
     tick_ns = 1e9 / (args.freq * 1e6)   # нс на такт ядра

@@ -531,7 +531,9 @@ class XdmaWinUpstream(XdmaDevice):
         конфиг-регистра). Периферию так НЕ читать (она в \user): тут только XDMA
         движковые/конфиг-регистры (напр. pcieWidth@0x1C). Возвращает raw bytes."""
         if self._ctl is None:
-            raise XdmaError("config-BAR (\control) недоступен")
+            # FIX (BUG-066-сопут, аудит 39-d): r-string — «\c» в обычной строке
+            # давало SyntaxWarning: invalid escape sequence.
+            raise XdmaError(r"config-BAR (\control) недоступен")
         return self._xfer(self._ctl, False, offset, b"", length)
 
     def read(self, addr, length):
@@ -567,6 +569,37 @@ class XdmaWinUpstream(XdmaDevice):
             out += self._xfer(self._c2h, False, ddr_off + off, b"", chunk)
             off += chunk
         return bytes(out)
+
+    def close(self) -> None:
+        r"""Закрыть HANDLE устройств и OVERLAPPED-event (идемпотентно).
+
+        FIX 2026-10-20 (BUG-066, аудит-VS P2-2 / аудит 39-d): XdmaWinUpstream —
+        ОСНОВНОЙ бэкенд скриптов (obs_smi, monitor_obs, stress_platform,
+        bench_dma_serial, nn_fpga_*, nn_audio_*, program_spi_flash) — открывает
+        до 4 HANDLE (\control, \user, \h2c_0, \c2h_0) + event и никогда их не
+        закрывал: утечка 4-5 хендлов на объект. close() раньше был только у
+        неиспользуемого XdmaWinDriver (:273). Безопасен при частичной
+        инициализации (__init__ может упасть после открытия части хендлов) и
+        при повторных вызовах.
+        """
+        k32 = getattr(self, "_k32", None)
+        for name in ("_ctl", "_usr", "_h2c", "_c2h", "_ev"):
+            h = getattr(self, name, None)
+            if not h:
+                continue
+            setattr(self, name, None)
+            if k32 is None:
+                continue
+            try:
+                k32.CloseHandle(h)
+            except Exception:
+                pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 class TdotCore:
     """Управление ядром tdot_axi4 через XDMA."""

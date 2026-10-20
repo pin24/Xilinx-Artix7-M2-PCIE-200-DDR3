@@ -89,6 +89,18 @@ def main(argv=None):
         d.read_dma(off, bench_nbytes)
         print(f"  DMA-нагрузка запущена: блок {args.bench} МБ (write+read через плату)")
 
+    # CAPS (факт прошивки) vs --num-mac (флаг): E-7 — не даём флагу молча врать в шапке.
+    # REGRESS-RESTORE 2026-10-20 (BUG-065, аудит-VS §2.1): фикс 7748803 потерян в мерже
+    # 022ff7a — шапка печатала "build {--num-mac} MAC" как истину, не сверяя с CAPS.
+    try:
+        caps = core.read_caps()
+        caps_mac = caps.get("num_mac") or None
+    except Exception:
+        caps, caps_mac = None, None
+    mac_note = f"CAPS NUM_MAC={caps_mac}" if caps_mac else "CAPS недоступны (старая прошивка?)"
+    if caps_mac and args.num_mac != caps_mac:
+        mac_note += f"  WARN: --num-mac={args.num_mac} != CAPS"
+
     prev = None
     prev_t = None
     try:
@@ -156,7 +168,7 @@ def main(argv=None):
             job_s = (dj / dt_safe) if dj > 0 else 0.0
             s = (f"\x1b[2J\x1b[H"
                  f"  tdot OBS console  "
-                 f"(BUILD_ID=0x{core.read_build_id():08X}  /  build {args.num_mac} MAC)  "
+                 f"(BUILD_ID=0x{core.read_build_id():08X}  /  {mac_note})  "
                  f"[flat, live]   Ctrl+C для выхода\n"
                  f"  {('-'*56)}\n"
                  f"  CYCLES (такты)  {cur['cycles']:>14,d}   кадр {dt_real*1000:.0f} мс\n"
