@@ -31,7 +31,8 @@ import time
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Monitor tdot OBS counters over PCIe")
-    ap.add_argument("--num-mac", type=int, default=16, help="NUM_MAC прошивки (16 или 32)")
+    ap.add_argument("--num-mac", type=int, default=None,
+                    help="NUM_MAC прошивки (16 или 32); по умолч. (None) авто-детект из CAPS")
     ap.add_argument("--ddr-base", type=lambda s: int(s, 0), default=0x80000000,
                     help="DDR3 база (для dot-адресов)")
     ap.add_argument("--dot", type=int, default=0,
@@ -62,7 +63,21 @@ def main(argv=None):
         base = args.dev if args.dev else (r"\\.\XDMA0dma" if sys.platform.startswith("win")
                                           else "/dev/xdma0")
         dev = _Backend(base=base)
-        core = TdotCore(dev, num_mac=args.num_mac, ddr_base=args.ddr_base)
+        core = TdotCore(dev, num_mac=args.num_mac or 32, ddr_base=args.ddr_base)
+        # Авто-детект NUM_MAC из CAPS: если --num-mac не задан — берём из железа;
+        # если задан явно — предупреждаем при расхождении с CAPS.
+        try:
+            caps_nm = int(core.read_caps().get("num_mac") or 0)
+        except Exception as e:
+            caps_nm = 0
+            print(f"  WARN: CAPS недоступны ({e}); NUM_MAC=16 (fallback)")
+        if args.num_mac is None:
+            args.num_mac = caps_nm or 16
+            print(f"  NUM_MAC авто-детект из CAPS: {args.num_mac}")
+        elif caps_nm and caps_nm != args.num_mac:
+            print(f"  WARN: --num-mac={args.num_mac} != CAPS NUM_MAC={caps_nm}; "
+                  f"использую {caps_nm}")
+            args.num_mac = caps_nm
     except Exception as e:
         print(f"ERROR: не могу открыть устройство: {e}")
         print("  — драйвер установлен? плата видна? прошит бит с OBS?")

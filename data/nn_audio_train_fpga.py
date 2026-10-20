@@ -27,7 +27,7 @@ def make_fpga_backend():
     # ring-планировщик требует XdmaWinDma и sched_en=1 (НЕ set_sched(False)).
     from test_dma_win import XdmaWinDma
     dev = XdmaWinDma(base=r"\\.\XDMA0dma")
-    return FpgaBackend(mode="fpga", n=16, device=dev, num_mac=16)   # n=16: чанк dot'а
+    return FpgaBackend(mode="fpga", n=None, device=dev, num_mac=None)  # авто-детект NUM_MAC
 
 def fpga_hidden(x, W1, b1, fb):
     """Скрытый признак одного сэмпла, считаемый НА FPGA (умножитель): relu(W1@x+b1)."""

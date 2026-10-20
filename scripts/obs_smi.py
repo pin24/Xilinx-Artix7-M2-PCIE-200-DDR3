@@ -41,7 +41,8 @@ def main(argv=None):
         except Exception:
             pass
     ap = argparse.ArgumentParser(description="tdot OBS console dashboard")
-    ap.add_argument("--num-mac", type=int, default=16)
+    ap.add_argument("--num-mac", type=int, default=None,
+                    help="NUM_MAC прошивки; по умолч. (None) авто-детект из CAPS")
     ap.add_argument("--ddr-base", type=lambda s: int(s, 0), default=0x80000000)
     ap.add_argument("--dot", type=int, default=0, help="количество dot-задач на цикл для нагрузки")
     ap.add_argument("--interval", type=float, default=0.5, help="секунд между кадрами")
@@ -64,7 +65,21 @@ def main(argv=None):
     from xdma_driver import TdotCore, XdmaError
 
     dev = Backend(base=base)
-    core = TdotCore(dev, num_mac=args.num_mac, ddr_base=args.ddr_base)
+    core = TdotCore(dev, num_mac=args.num_mac or 32, ddr_base=args.ddr_base)
+    # Авто-детект NUM_MAC из CAPS (OBS 0x74): если --num-mac не задан — берём
+    # из железа; если задан явно — предупреждаем при расхождении с CAPS.
+    try:
+        caps_nm = int(core.read_caps().get("num_mac") or 0)
+    except Exception as e:
+        caps_nm = 0
+        print(f"  WARN: CAPS недоступны ({e}); NUM_MAC=16 (fallback)")
+    if args.num_mac is None:
+        args.num_mac = caps_nm or 16
+        print(f"  NUM_MAC авто-детект из CAPS: {args.num_mac}")
+    elif caps_nm and caps_nm != args.num_mac:
+        print(f"  WARN: --num-mac={args.num_mac} != CAPS NUM_MAC={caps_nm}; "
+              f"использую {caps_nm}")
+        args.num_mac = caps_nm
     # (Реальная скорость линка GT/s из user-mode недоступна; показываем только
     # фактическую скорость передачи DMA MB/s (за кадр) — без бесплатной строки PCIe.)
 

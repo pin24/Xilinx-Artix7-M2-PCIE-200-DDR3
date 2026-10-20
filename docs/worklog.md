@@ -867,3 +867,16 @@ Stage Summary:
   Numba НЕ понадобился (зависимость + JIT-warmup vs numpy-only проект).
   Обучение 2000x64: 69.3 -> 59.0 -> 52.1 -> 46.6 c (итог ~33%); RMSE 0.06782 без изменений.
   Проверено: forward_batch fpga vs cpu maxdiff ~5e-7 (H=2/4/16/64), порядок верен.
+---
+Task ID: 2026-10-20-autodetect-ring
+Agent: MultiTool (сессия «автодетект NUM_MAC + кольцо + артефакты 32/2»)
+Task: (1) автодетект NUM_MAC в скриптах; (2) оценка глубины кольца; (3) проверка артефактов 32/2 + симуляция
+
+Work Log:
+- (1) FpgaBackend __init__(num_mac=None,n=None) авто-детектит NUM_MAC из CORE_PARAMS (probe_firmware); n=num_mac по умолчанию; _ensure_device идемпотентен. infer/train_fpga и obs_smi/monitor_obs переведены на автодетект (--num-mac default=None из CAPS). Проверено на плате 16/4: авто подхватил 16, dot B=8 OK.
+- (2) Глубина кольца: указатели 8-бит (потолок in-flight 255), таблицы в DDR (не BRAM). 512 (9 бит)/1024 (10 бит) — практический предел; выигрыш CH 250->~1020 = в ~2-4 раза меньше submit/IOCTL. Отчёт: C:\Temp\gigatool\ring-depth.md.
+- (3) Артефакты 32/2: vivado.log подтвердил GENERIC read-back NUM_MAC=32 ADDERS=2 BUILD_ID=0xfdf6dad0, синтез забиндил 32/2, WNS=0.276/WHS=0.030 pass; artifacts_flat/*.bit|bin|rbt|mcs свежие (21:54) и согласованы; старой 16/4 нет. Симуляция 32/2: 4/4 PASS + T5 (CS_ABORT_WAIT) PASS. Плата НЕ прошивалась.
+
+Stage Summary:
+- Коммит: этот (автодетект + отчёты). Push по явной команде.
+- Далее по плану: увеличение кольца до 1024 (RTL+host) + пересборка прошивки 32/2 + рефлеш.

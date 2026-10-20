@@ -24,7 +24,7 @@ def make_fpga_backend():
     # НЕ set_sched(False): sched_en должен быть включён, иначе кольцо не крутится).
     from test_dma_win import XdmaWinDma
     dev = XdmaWinDma(base=r"\\.\XDMA0dma")
-    return FpgaBackend(mode="fpga", n=16, device=dev, num_mac=16)   # n=16: чанк dot'а
+    return FpgaBackend(mode="fpga", n=None, device=dev, num_mac=None)  # авто-детект NUM_MAC
 
 def main():
     ap = argparse.ArgumentParser()

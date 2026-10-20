@@ -31,13 +31,23 @@ DDR_RESULT  = 0x2000   # результат
 class FpgaBackend:
     """Единый интерфейс: CPU-эмуляция или FPGA через XDMA."""
 
-    def __init__(self, mode: str = "cpu", n: int = 32,
-                 device=None, num_mac: int = 32):
+    def __init__(self, mode: str = "cpu", n=None, device=None, num_mac=None):
         self.mode = mode      # 'cpu' | 'fpga'
-        self.n = n            # размерность dot
         self.device = device  # XdmaDevice или None (fpga -> авто)
         self.num_mac = num_mac
         self._sched = None    # кэш TdotScheduler (батч через ring)
+        if mode == "fpga":
+            if self.num_mac is None:
+                # Авто-детект NUM_MAC из прошивки (CORE_PARAMS) после получения
+                # устройства. Если прошивка недоступна/не сообщает — ValueError.
+                self.num_mac = self._detect_num_mac()
+            else:
+                self._ensure_device()   # ранняя проверка открытия устройства
+        if self.num_mac is None:
+            # не-fpga режим (эмуляция) или неизвестно — старый дефолт
+            self.num_mac = 32 if mode == "cpu" else 16
+        # n: если не задан — dot во всю ширину MAC (matmul всё равно чанкует по n)
+        self.n = n if n is not None else self.num_mac
 
     def run_dot(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """dot по последней оси: a[batch,N] @ b[batch,N] -> [batch]."""
@@ -87,6 +97,7 @@ class FpgaBackend:
 
     # --- FPGA-вызов через XDMA (аппаратный планировщик, batch>1) ---
     def _ensure_device(self):
+        """Вернуть устройство, создав его при необходимости (идемпотентно)."""
         if self.device is not None:
             return self.device
         from xdma_driver import XdmaLinux, XdmaError
@@ -98,6 +109,26 @@ class FpgaBackend:
             from test_dma_win import XdmaWinDma
             self.device = XdmaWinDma(base=r"\\.\XDMA0dma")
         return self.device
+
+    def _detect_num_mac(self) -> int:
+        """Прочитать NUM_MAC прошивки (CORE_PARAMS) через probe_firmware().
+
+        Устройство должно поддерживать probe_firmware() (XdmaWinDma); иначе —
+        ValueError с понятным текстом (нельзя тихо падать на хардкод 16).
+        """
+        dev = self._ensure_device()
+        probe = getattr(dev, "probe_firmware", None)
+        if probe is None:
+            raise ValueError(
+                f"Автодетект NUM_MAC недоступен: устройство {type(dev).__name__} "
+                f"не поддерживает probe_firmware(). Укажите num_mac явно.")
+        info = probe()
+        nm = info.get("NUM_MAC") if isinstance(info, dict) else None
+        if not nm:
+            raise ValueError(
+                "Не удалось определить NUM_MAC прошивки (CORE_PARAMS недоступен). "
+                "Укажите num_mac явно.")
+        return int(nm)
 
     def _run_fpga(self, a, b, batch, a_bits=None, b_bits=None):
         # Каждая строка батча = одна задача планировщика (ring). Длина n до
