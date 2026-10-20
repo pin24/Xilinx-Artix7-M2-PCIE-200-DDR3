@@ -284,10 +284,27 @@ weights `0x1000`, result `0x2000` (смещения от `0x80000000`).
 |---|---|---|---|
 | Таблица дескрипторов | `0x0010_0000` | 32 KB (1024×32 Б) | Кольцо команд (mod 1024) <!-- RING-1024 2026-10-20 -->
 | Область завершений | `0x0011_0000` | 16 KB (1024×16 Б) | Completion-записи <!-- RING-1024 2026-10-20 -->
+| Completion-mailbox | `0x0012_0000` | 16 Б | Device-side статус завершения батча (WAITW). Слоты: `+0x00` flag (host), `+0x08` status (движок пишет) — см. §6.1 |
 | Selftest-паттерн | `0x0100_0000` | — | `xdma_driver.py --selftest` |
 | data (планировщик) | `0x0020_0000` | 4 MiB (256×16 KiB) | Слоты data, `idx*0x4000` |
 | weights (планировщик) | `0x0060_0000` | 4 MiB (256×16 KiB) | Слоты weights |
 | results (планировщик) | `0x00A0_0000` | 2 KB | `idx*8` |
+
+### 6.1. Completion-mailbox (device-side, WAITW-аналог)
+
+Адрес выбран в свободном промежутке DDR3: после конца области завершений
+(`0x0011_4000`) и до начала data планировщика (`0x0020_0000`), т.е. не пересекается
+ни с desc/comp/result, ни с selftest-паттерном `0x0100_0000`. Слоты
+(`MAILBOX_STRIDE=0x10`):
+
+| Смещение от base | Слот | Кто пишет | Формат |
+|---|---|---|---|
+| `+0x00` | flag | host | 64-бит флаг готовности (host через `write_flag`) |
+| `+0x08` | status | движок (RTL) | 64-бит статус-слово; LSW: `0x0`=свободно, `0x1`=DONE (батч готов) |
+
+Host-API: `CompletionMailbox` в `pytorch_layer/xdma_driver.py`
+(`write_flag` / `read_status`), проверка канала — `scripts/mailbox_check.py`.
+Полное описание протокола — `docs/device-prog-2026-10-20.md` §3b.
 
 ---
 
@@ -400,6 +417,7 @@ res48 = core.read_result_reg()           # или чтение result из DDR3 
 | 2026-09-27 | **SPI-over-PCIe зафиксирован в карте**: §2 добавлен `S_AXI_SPI_REGS` @ `0x40005000` (4 KB, M06, `u_spi`), новый §5.1 с регистровой картой (hot-flash без JTAG, W25Q128JV через STARTUPE2). БАГ: `XdmaWinUpstream.write_dma/read_dma` больше не прибавляют `DDR3_BASE` к смещению (offset шёл как card-side адрес и уезжал на `0x80000000`); теперь передают `ddr_off` как есть — как XdmaLinux/XdmaWindows. Синхронизировано: xdma_driver.py, ADDRESS_MAP.md |
 | 2026-09-27 | **Актуализация под код** (пересинхронизация с фактическим RTL/BD): §7 XADC — `xadc_prim u_xadc_prim` (DCLK clk50) подаёт реальные `raw_temp/raw_vccint/raw_valid`, убран блок «XADC занят MIG / читаются 0» (BUG-031 разрешён); §2 — HWICAP `0x40001000` помечен как **удалённый из активной DFX-сборки** (legacy только в `block_design_top.tcl`), единственный ICAP — `icap_ctrl` `0x40004000`; §4 — горячая замена RP идёт только через icap_ctrl. Отражено также в README.md (§2). |
 | 2026-10-01 | **Периферия сдвинута выше окна XDMA** (баг #2: внутренние XDMA-регистры на BAR0 0x0–0x7FFF перехватывали статическую AXI-Lite периферию). Все слоты периферии перенесены на +0x20000 (выше 0x7FFF): GPIO `0x40000000`→`0x40020000`, DFX Socket `0x40002000`→`0x40022000`, TDOT `0x40003000`→`0x40023000`, ICAP `0x40004000`→`0x40024000`, SPI `0x40005000`→`0x40025000`. DataMover (`0x40010000`/`0x40018000`) и XADC (`0x46000000`) без изменений. BAR0=128MB (баг #1) уже зафиксирован. Синхронизировано: `scripts/xdma_ddr3_dfx_bd.tcl`, `scripts/build_dfx.tcl`, `driver/test_dma.c`, `pytorch_layer/xdma_driver.py`, `icap_load.py`, `dfx_swap.py`, `docs/ADDRESS_MAP.md`. |
+| 2026-10-21 | **Completion-mailbox**: занят свободный промежуток `0x0011_4000`…`0x0020_0000` под device-side статус завершения батча (WAITW-аналог, openTPU). Регион `0x0012_0000` (16 Б: `+0x00` flag host, `+0x08` status движок). Новый §6.1. Синхронизировано: `pytorch_layer/xdma_driver.py` (`MAILBOX_OFF`, `CompletionMailbox`), `scripts/mailbox_check.py`, `docs/device-prog-2026-10-20.md` §3b. |
 
 ---
 

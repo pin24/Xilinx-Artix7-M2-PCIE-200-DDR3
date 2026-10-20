@@ -875,6 +875,18 @@ SCHED_DESC_OFF = 0x0010_0000   # таблица дескрипторов (1024 �
 SCHED_COMP_OFF = 0x0011_0000   # область завершений   (1024 × 16 Б = 16 КБ) // RING-1024
 SCHED_RING_DEPTH = 256               # аппаратное кольцо (1024 после прошивки RING-1024)
 
+# Device-side completion mailbox (WAITW-аналог, openTPU). Адрес выбран в
+# свободном промежутке DDR3 между областью завершений (0x0011_4000) и
+# регионом data планировщика (0x0020_0000) — не пересекается ни с desc/comp/
+# result, ни с selftest-паттерном 0x0100_0000 (docs/ADDRESS_MAP.md §6).
+# Формат и протокол — docs/device-prog-2026-10-20.md §"Completion mailbox".
+MAILBOX_OFF = 0x0012_0000      # base завершения-статуса в DDR3 (смещение от 0x8000_0000)
+MAILBOX_FLAG_OFF  = 0x00       # флаг готовности host (движок читает/не трогает)
+MAILBOX_STATUS_OFF = 0x08      # статус-слово завершения, пишет движок (64-бит LSW)
+MAILBOX_STRIDE = 0x10          # шаг слота, чтобы флаг и статус никогда не пересекались
+MAILBOX_STATUS_FREE = 0x0      # 0 = слот свободен (движок ещё не писал)
+MAILBOX_STATUS_DONE = 0x1      # 1 = батч завершён, result валиден
+
 
 class TdotScheduler:
     """Батчевый запуск dot-задач через аппаратный планировщик.
@@ -1097,6 +1109,88 @@ class TdotScheduler:
                         raise XdmaError(f"задача tag={c['tag']}: status={c['status']}")
                     out.append(c["result_bits"])
         return out
+
+
+# ---------------------------------------------------------------------------
+# Device-side completion mailbox (WAITW-аналог, openTPU). Это host-инфраструктура
+# синхронизации «на батч вместо per-task»: вместо ~15мс host-IOCTL на каждую
+# задачу движок сам пишет одно статус-слово в DRAM-mailbox, а host читает ОДНО
+# слово в конце батча. Сейчас движок ЕЩЁ НЕ пишет статус (это будущий RTL,
+# п.2/4 device-prog-2026-10-20.md) — данный класс задаёт документированную точку,
+# куда движок будет писать, и валидирует канал чтения на текущей плате
+# (см. scripts/mailbox_check.py). NB: НЕ меняет существующие методы
+# TdotScheduler/TdotCore — только аддитивная надстройка.
+# ---------------------------------------------------------------------------
+class CompletionMailbox:
+    """Документированная точка device-side синхронизации в DRAM.
+
+    Слоты (смещения от base_addr, stride 0x10 — см. MAILBOX_OFF):
+      +0x00  flag : host пишет «флаг готовности» (движок может читать, чтобы
+                    узнать, что host вооружил батч); host не ждёт его в рантайме
+                    (это просто сигнал готовности, не обязан двигаться).
+      +0x08  status: STATUS-слово завершения. Пишет ДВИЖОК (будущий RTL), как
+                    только батч полностью обработан. 0 = свободно (движок не
+                    трогал), != 0 (обычно MAILBOX_STATUS_DONE=1) = батч готов.
+
+    Поддержка ввода-вывода — через существующий DMA-канал read_dma/write_dma
+    (c2h/h2c): addr здесь — СМЕЩЕНИЕ внутри окна DDR3, как и везде в драйвере.
+    """
+
+    def __init__(self, dev: XdmaDevice, base_addr: int = MAILBOX_OFF,
+                 poll_us: float = 200.0):
+        """dev — XdmaDevice; base_addr — смещение mailbox-слота в DDR3 (от 0x80000000)."""
+        self.dev = dev
+        self.base = base_addr
+        self.poll_us = poll_us
+
+    def _slot(self, off: int) -> int:
+        return self.base + off
+
+    # ---- host -> mailbox ----
+    def write_flag(self, word: int = MAILBOX_STATUS_DONE) -> None:
+        """Host пишет «флаг готовности» в слот flag (+0x00).
+
+        Передаёт движку сигнал, что параметры и данные батча выложены и host
+        вооружён ждать статус. Движок пока ничего не пишет — этот слот оставлен
+        как пассивный маркер (движок может читать его как подтверждение arming).
+        """
+        self.dev.write_dma(self._slot(MAILBOX_FLAG_OFF),
+                           struct.pack("<Q", word & 0xFFFFFFFFFFFFFFFF))
+
+    # ---- mailbox -> host (ожидание статуса движка) ----
+    def read_status(self, addr: int = MAILBOX_STATUS_OFF,
+                    timeout_ms: float = 5000.0,
+                    expected: int = MAILBOX_STATUS_DONE) -> int:
+        """Дождаться, пока движок запишет статус в слот (на WAITW-манер openTPU).
+
+        addr — смещение статус-слота внутри DDR3 (по умолч. base+0x08);
+        читаем ОДНО 64-битное слово через read_dma и берём LSW. Поллинг с шагом
+        poll_us (~200 мкс) до наступления срока timeout_ms. Возвращает прочитанное
+        слово статуса (LSW). expected=0 означает «ждать любое ненулевое значение»;
+        иначе — ждать именно == expected.
+        """
+        if not (self._is_off(addr)):
+            raise XdmaError(f"mailbox: недопустимый статус-адрес 0x{addr:X}")
+        t0 = time.monotonic()
+        while True:
+            raw = self.dev.read_dma(self._slot(addr), 8)
+            lsw = struct.unpack("<Q", raw[:8])[0] & 0xFFFFFFFF
+            if expected:
+                if lsw == expected:
+                    return lsw
+            elif lsw != 0:
+                return lsw
+            if (time.monotonic() - t0) * 1000.0 > timeout_ms:
+                raise XdmaError(
+                    f"mailbox таймаут ({timeout_ms} мс): статус-слово по 0x"
+                    f"{self._slot(addr):X} всё ещё 0x{lsw:X} "
+                    f"(ожидалось {'!= 0' if not expected else hex(expected)})")
+            time.sleep(self.poll_us / 1e6)
+
+    @staticmethod
+    def _is_off(addr: int) -> bool:
+        """Статус-слот — это неотрицательное смещение от base_addr."""
+        return isinstance(addr, int) and addr >= 0
 
 
 def _pack_tf48(bits_list) -> bytes:
