@@ -747,3 +747,13 @@ Work Log:
 - FPGA training = ELM (random features on FPGA, least-squares output).
 - Verified: CPU 0.1 us/sample (correct freq), FPGA 8.08 ms/sample (PCIe-bound). Quality limited by NUM_MAC=16.
 - Recording: docs/CHANGE_LOG_2026-10-20.md (sec 7).
+
+---
+Task ID: 2026-10-20-pcie-bw
+Agent: MultiTool
+Task: Diagnose PCIe bandwidth ceiling (~275 MB/s) on Gen2 x4 link
+Work Log:
+- Confirmed link negotiates Gen2 x4 (DEVPKEY_PciDevice_CurrentLinkSpeed=2, Width=4) = 20 GT/s; DDR3 ~1.6 GB/s; measured ~275 MB/s write / ~262 MB/s read (flat across 4KB..8MB).
+- Root cause: XDMA_DESC_MAX_BYTES=512 -> 512B descriptors with per-descriptor PCIe fetch; overhead scales with data; ceiling ~275 MB/s.
+- Plan: raise descriptor size to 4096, rebuild, reinstall, reboot, re-measure, watch for WHEA 0x124/ROF.
+- Recording: docs/CHANGE_LOG_2026-10-20.md (sec 8).

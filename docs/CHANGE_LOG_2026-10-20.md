@@ -98,3 +98,14 @@ nn_audio_train_cpu.py / nn_audio_infer_cpu.py / nn_audio_train_fpga.py / nn_audi
 - Проверено: CPU генерирует 80000 сэмплов за 6.2 мс (0.1 мкс/сэмпл), частота точная (440->439.9 Гц);
   FPGA-умножитель 200 сэмплов за 1.6 с (8.08 мс/сэмпл) — на этой поточечной задаче CPU быстрее
   в ~80000x из-за PCIe-оверхеда на каждый dot. Качество ограничено NUM_MAC=16 (ELM RMSE ~0.32).
+
+
+---
+
+## 8. PCIe BW diagnosis: 512-byte XDMA descriptors cap throughput at ~275 MB/s
+
+- Link is negotiated FULL Gen2 x4 (CurrentLinkSpeed=2, Width=4) = 20 GT/s (~2 GB/s after 8b/10b); DDR3 (MT41J128M16, 16-bit, DDR3-800) ~1.6 GB/s. So the ceiling is ~1.6 GB/s, NOT 275.
+- Measured write/read MB/s: saturates at ~275 (write) / ~262 (read) regardless of block size (4KB..8MB) -> steady-state datapath limit, not per-IO overhead.
+- Root cause: XDMA_DESC_MAX_BYTES=512 (dma_engine.h:37) slices every transfer into 512-byte descriptors (dma_engine.c:961-962); the engine fetches each descriptor over PCIe from the host, so descriptor-fetch overhead scales with data (6% at 512B) -> ~275 MB/s ceiling.
+- 512 was chosen to avoid WHEA 0x124 / ROF on the Root Port (8086:7f3c). Plan to raise to 4096 (8x fewer descriptors, ~0.8% overhead) and re-measure, watching for ROF.
+- Files: dma_engine.h, dma_engine.c. Status: OPEN (fix in progress).
