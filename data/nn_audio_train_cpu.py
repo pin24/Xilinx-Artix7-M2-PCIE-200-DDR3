@@ -48,6 +48,7 @@ def main():
     ap.add_argument("--out", default="audio_model_cpu.npz")
     args = ap.parse_args()
     AC.HIDDEN = args.hidden   # ширина скрытого слоя (64 = чанки по 16 MAC)
+    HIDDEN = args.hidden                    # синхроним локальную копию (обход capture-at-import)
 
     items = load_dataset() if args.use_dataset else []
     xs, ys = (make_training_batch(items, args.pairs, args.seed) if items

@@ -35,6 +35,7 @@ def main():
     ap.add_argument("--bench", action="store_true")
     args = ap.parse_args()
     AC.HIDDEN = args.hidden   # ширина скрытого слоя (64 = чанки по 16 MAC)
+    HIDDEN = args.hidden                    # синхроним локальную копию (обход capture-at-import)
 
     model = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.model)
     W1, b1, W2, b2 = load_model_npz(model)

@@ -41,6 +41,7 @@ def main():
     ap.add_argument("--out", default="audio_model_fpga.npz")
     args = ap.parse_args()
     AC.HIDDEN = args.hidden   # ширина скрытого слоя (64 = чанки по 16 MAC)
+    HIDDEN = args.hidden                    # синхроним локальную копию (обход capture-at-import)
 
     fb = make_fpga_backend()
     xs, ys = make_analytic_batch(args.pairs, args.seed)
