@@ -15,10 +15,11 @@ puts "--- all PROGRAM props of part ---"
 puts [report_property -all ${cfg}]
 puts "--- set props minimal ---"
 set_property PROGRAM.ERASE 1 ${cfg}
+set_property PROGRAM.UNPROTECT 1 ${cfg}   # FIX-SPI-LOCK 2026-10-20: снять BP-биты защиты чипа (27-3347)
 set_property PROGRAM.CFG_PROGRAM 1 ${cfg}
 set_property PROGRAM.VERIFY 1 ${cfg}
 set_property PROGRAM.ADDRESS_RANGE {use_file} ${cfg}
-set_property PROGRAM.FILES [list {C:/A7_M2/Xilinx-Artix7-M2-PCIE-200-DDR3/build/artifacts_dfx/xdma_ddr3_core_top.mcs}] ${cfg}
+set_property PROGRAM.FILES [list {C:/A7_M2/Xilinx-Artix7-M2-PCIE-200-DDR3/build/artifacts_flat/xdma_ddr3_core_top.mcs}] ${cfg}
 puts "props set, FILES set"
 puts "--- DRP identify ---"
 catch { identify_hw_cfgmem ${cfg} } idres

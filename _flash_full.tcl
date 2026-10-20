@@ -9,9 +9,10 @@ set CFGPART [lindex [get_cfgmem_parts {w25q128jvq-spi-x1_x2_x4}] 0]
 create_hw_cfgmem -hw_device ${dev} ${CFGPART}
 set cfg [get_property PROGRAM.HW_CFGMEM ${dev}]
 set_property PROGRAM.ERASE 1 ${cfg}
+set_property PROGRAM.UNPROTECT 1 ${cfg}   # FIX-SPI-LOCK 2026-10-20: снять BP-биты защиты чипа (27-3347)
 set_property PROGRAM.CFG_PROGRAM 1 ${cfg}
 set_property PROGRAM.VERIFY 1 ${cfg}
-set_property PROGRAM.FILES [list {C:/A7_M2/Xilinx-Artix7-M2-PCIE-200-DDR3/build/artifacts_dfx/xdma_ddr3_core_top.mcs}] ${cfg}
+set_property PROGRAM.FILES [list {C:/A7_M2/Xilinx-Artix7-M2-PCIE-200-DDR3/build/artifacts_flat/xdma_ddr3_core_top.mcs}] ${cfg}
 puts "=== about to erase/verify ==="
 set startinfo [current_hw_target]
 puts "target=$startinfo"

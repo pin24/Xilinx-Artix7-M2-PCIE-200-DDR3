@@ -25,9 +25,10 @@ catch { delete_hw_cfgmem -quiet [get_property PROGRAM.HW_CFGMEM ${dev}] } del
 create_hw_cfgmem -hw_device ${dev} ${CFGPART}
 set cfg [get_property PROGRAM.HW_CFGMEM ${dev}]
 set_property PROGRAM.ERASE          1 ${cfg}
+set_property PROGRAM.UNPROTECT      1 ${cfg}   # FIX-SPI-LOCK 2026-10-20: снять BP-биты защиты чипа (27-3347)
 set_property PROGRAM.CFG_PROGRAM    1 ${cfg}
 set_property PROGRAM.VERIFY         1 ${cfg}
-set_property PROGRAM.FILES [list {C:/A7_M2/Xilinx-Artix7-M2-PCIE-200-DDR3/build/artifacts_dfx/xdma_ddr3_core_top.mcs}] ${cfg}
+set_property PROGRAM.FILES [list {C:/A7_M2/Xilinx-Artix7-M2-PCIE-200-DDR3/build/artifacts_flat/xdma_ddr3_core_top.mcs}] ${cfg}
 puts "=== program_hw_cfgmem ==="
 catch { program_hw_cfgmem -hw_cfgmem ${cfg} } err
 puts "cfgmem result: $err"
