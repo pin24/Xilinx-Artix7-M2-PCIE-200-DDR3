@@ -851,9 +851,9 @@ COMP_STRIDE = 16
 
 # Слои DDR3 под планировщик (в стороне от данных ядра 0x0..0x4000
 # и selftest-паттерна 0x0100_0000; docs/ADDRESS_MAP.md §6)
-SCHED_DESC_OFF = 0x0010_0000   # таблица дескрипторов (256 × 32 Б = 8 КБ)
-SCHED_COMP_OFF = 0x0011_0000   # область завершений   (256 × 16 Б = 4 КБ)
-SCHED_RING_DEPTH = 256
+SCHED_DESC_OFF = 0x0010_0000   # таблица дескрипторов (1024 × 32 Б = 32 КБ) // RING-1024
+SCHED_COMP_OFF = 0x0011_0000   # область завершений   (1024 × 16 Б = 16 КБ) // RING-1024
+SCHED_RING_DEPTH = 256               # аппаратное кольцо (1024 после прошивки RING-1024)
 
 
 class TdotScheduler:
@@ -874,6 +874,7 @@ class TdotScheduler:
         self.dev = dev
         self.num_mac = num_mac
         self.depth = ring_depth
+        self.mask = ring_depth - 1   # кольцевая маска указателей (mod depth)
         self.desc_off = desc_off
         self.comp_off = comp_off
         self._wptr = 0            # локальная копия WPTR (хостовая)
@@ -929,8 +930,8 @@ class TdotScheduler:
             raise ValueError(f"{len(jobs)} задач >= глубины кольца {self.depth} "
                              f"(обёртка mod {self.depth} невозможна; максимум "
                              f"{self.depth - 1} задач за пакет)")
-        rptr = self._reg_r(SCHED_RPTR) & 0xFF
-        pending = (self._wptr - rptr) & 0xFF
+        rptr = self._reg_r(SCHED_RPTR) & self.mask          # RING-1024 2026-10-20
+        pending = (self._wptr - rptr) & self.mask           # RING-1024 2026-10-20
         if pending + len(jobs) > self.depth:
             raise ValueError(f"кольцо переполнено: pending={pending}, "
                              f"новых={len(jobs)}, глубина={self.depth}; "
@@ -976,7 +977,7 @@ class TdotScheduler:
         if first < len(jobs):
             self.dev.write_dma(self.desc_off,
                                bytes(blob[first * DESC_STRIDE:]))
-        self._wptr = (self._wptr + len(jobs)) & 0xFF
+        self._wptr = (self._wptr + len(jobs)) & self.mask   # RING-1024 2026-10-20
         self._reg_w(SCHED_WPTR, self._wptr)          # doorbell
         return len(jobs)
 
@@ -990,20 +991,20 @@ class TdotScheduler:
         Возвращает число незабранных завершений.
         """
         if count is None:
-            count = (self._wptr - (self._reg_r(SCHED_RPTR) & 0xFF)) & 0xFF
+            count = (self._wptr - (self._reg_r(SCHED_RPTR) & self.mask)) & self.mask   # RING-1024 2026-10-20
         # FIX-PIPELINE 2026-10-20: при конвейере движок может выполнить БОЛЬШЕ,
         # чем count (следующий sub-батч уже в полёте) — RPTR «перешагивает»
         # точный target. Завершаемся, когда сделано >= count (mod 256).
         t0 = time.monotonic()
         events = "/dev/xdma0_events_0"
         while True:
-            rptr = self._reg_r(SCHED_RPTR) & 0xFF
-            if ((rptr - self._rptr_done) & 0xFF) >= count:
-                return (self._wptr - rptr) & 0xFFFF
+            rptr = self._reg_r(SCHED_RPTR) & self.mask            # RING-1024 2026-10-20
+            if ((rptr - self._rptr_done) & self.mask) >= count:   # RING-1024 2026-10-20
+                return (self._wptr - rptr) & self.mask
             if (time.monotonic() - t0) * 1000.0 > timeout_ms:
                 raise XdmaError(
                     f"таймаут ожидания планировщика ({timeout_ms} мс): "
-                    f"RPTR={rptr}, сделано={(rptr - self._rptr_done) & 0xFF}, "
+                    f"RPTR={rptr}, сделано={(rptr - self._rptr_done) & self.mask}, "  # RING-1024 2026-10-20
                     f"ждали {count}; STATUS=0x{self._reg_r(SCHED_STATUS):X}")
             if use_events and os.path.exists(events) and os.access(events, os.R_OK):
                 try:
@@ -1018,8 +1019,8 @@ class TdotScheduler:
     def collect(self, n: int | None = None):
         """Читать завершения (RPTR..), возвращать список словарей
         {tag, result_bits, status, passes}. result_bits — 48-битный TFloat48."""
-        rptr = self._reg_r(SCHED_RPTR) & 0xFF
-        done = (rptr - self._rptr_done) & 0xFF
+        rptr = self._reg_r(SCHED_RPTR) & self.mask           # RING-1024 2026-10-20
+        done = (rptr - self._rptr_done) & self.mask            # RING-1024 2026-10-20
         if n is None:
             n = done
         if n > done:
@@ -1039,7 +1040,7 @@ class TdotScheduler:
                     "status": w1 & 0xFF,
                     "passes": (w1 >> 8) & 0xFF,
                 })
-            self._rptr_done = (self._rptr_done + chunk) & 0xFF
+            self._rptr_done = (self._rptr_done + chunk) & self.mask   # RING-1024 2026-10-20
             left -= chunk
         return out
 
@@ -1049,12 +1050,13 @@ class TdotScheduler:
 
         FIX-PIPELINE 2026-10-20: окно пиlпелинга ограничено глубиной кольца
         (2 sub-батча <= depth-1), поэтому большие батчи быстрее гнать min-числом
-        ДЛИННЫХ submit'ов (~254 задач/под) — фиксированные ~60 мс на подвызов
-        амортизируются на больше задач. Резyльтаты в порядке подачи.
+        ДЛИННЫХ submit'ов (~1000 задач/под при depth=1024) — фиксированные
+        ~60 мс на подвызов амортизируются на больше задач. Резyльтаты в порядке
+        подачи. // RING-1024 2026-10-20
         """
         if not pairs:
             return []
-        CH = 250                          # задач на sub-батч (близко к 254)
+        CH = self.depth - 6       # задач на sub-батч (запас под depth-1)
         subs = [pairs[k:k + CH] for k in range(0, len(pairs), CH)]
         gidx = 0
         def make_jobs(s):

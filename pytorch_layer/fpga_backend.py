@@ -31,10 +31,12 @@ DDR_RESULT  = 0x2000   # результат
 class FpgaBackend:
     """Единый интерфейс: CPU-эмуляция или FPGA через XDMA."""
 
-    def __init__(self, mode: str = "cpu", n=None, device=None, num_mac=None):
+    def __init__(self, mode: str = "cpu", n=None, device=None, num_mac=None,
+                 ring_depth: int = 256):
         self.mode = mode      # 'cpu' | 'fpga'
         self.device = device  # XdmaDevice или None (fpga -> авто)
         self.num_mac = num_mac
+        self.ring_depth = ring_depth   # глубина кольца (256 по умолч.; 1024 после прошивки RING-1024)
         self._sched = None    # кэш TdotScheduler (батч через ring)
         if mode == "fpga":
             if self.num_mac is None:
@@ -139,7 +141,9 @@ class FpgaBackend:
         from xdma_driver import TdotScheduler
         dev = self._ensure_device()
         if self._sched is None or getattr(self._sched, "dev", None) is not dev:
-            self._sched = TdotScheduler(dev, num_mac=self.num_mac)
+            from xdma_driver import SCHED_RING_DEPTH
+            rd = self.ring_depth if self.ring_depth else SCHED_RING_DEPTH
+            self._sched = TdotScheduler(dev, num_mac=self.num_mac, ring_depth=rd)
         if a_bits is None:
             a_bits = self._batch_to_bits(a)
         if b_bits is None:

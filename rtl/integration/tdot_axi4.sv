@@ -33,16 +33,16 @@
 // Планировщик (ring-buffer команд в DDR3, irq):
 //   [0x40] SCHED_CTRL   бит0 sched_en, бит1 irq_en, бит2 flush (действие),
 //                       бит3 irq_ack (действие: сброс irq_pending)
-//   [0x44] SCHED_WPTR   хостовый указатель записи (8 бит, кольцо mod 256)
-//   [0x48] SCHED_RPTR   RO текущий указатель чтения (8 бит)
+//   [0x44] SCHED_WPTR   хостовый указатель записи (10 бит, кольцо mod 1024) // RING-1024 2026-10-20
+//   [0x48] SCHED_RPTR   RO текущий указатель чтения (10 бит) // RING-1024 2026-10-20
 //   [0x4C/0x50] DESC_BASE_LO/HI  база таблицы дескрипторов (полный AXI-адрес)
 //   [0x54/0x58] COMP_BASE_LO/HI  база области завершений
 //   [0x5C] SCHED_STATUS RO: бит0 sched_busy, бит1 irq_pending
 //   [0x60] DONE_CNT     RO счётчик завершённых задач (16 бит, free-running)
 //   [0x64] CORE_PARAMS  RO: [7:0]=NUM_MAC, [15:8]=ADDERS (параметры компиляции)
 //   [0x68] MAGIC        RO: 0x54444F54 ('TDOT') — идентификация блока драйвером
-// Кольцо: 256 дескрипторов (таблица 8 КБ) / 256 завершений (4 КБ), указатели
-// 8-бит с естественным переполнением (mod 256).
+// Кольцо: 1024 дескрипторов (таблица 32 КБ) / 1024 завершений (16 КБ), указатели
+// 10-бит с естественным переполнением (mod 1024). // RING-1024 2026-10-20
 //
 // Дескриптор 32 Б (4×64b, LE): W0 data_addr[47:0], W1 weights_addr[47:0],
 //   W2 result_addr[47:0], W3 {32'h0, n_total[15:0], tag[15:0]}.
@@ -247,8 +247,8 @@ module tdot_axi4 #(
     logic        sched_en_q;        // SCHED_CTRL.bit0
     logic        sched_irq_en_q;    // SCHED_CTRL.bit1
     logic        sched_flush_q;     // SCHED_CTRL.bit2 (действие, самоочистка)
-    logic [7:0]  sched_wptr_q;      // хостовый указатель записи (кольцо mod 256)
-    logic [7:0]  sched_rptr_q;      // указатель чтения (движет движок, mod 256)
+    logic [9:0]  sched_wptr_q;      // хостовый указатель записи (кольцо mod 1024) // RING-1024 2026-10-20
+    logic [9:0]  sched_rptr_q;      // указатель чтения (движет движок, mod 1024) // RING-1024 2026-10-20
     logic [63:0] desc_base_q;       // база таблицы дескрипторов (DDR3)
     logic [63:0] comp_base_q;       // база области завершений (DDR3)
     logic        irq_pending_q;     // поднято при опустошении очереди, сброс irq_ack
@@ -319,7 +319,7 @@ module tdot_axi4 #(
                         sched_flush_q  <= wdata_q[2];        // самоочистка в else-ветке
                         // irq_ack (wdata_q[3]) — обрабатывается контроллером (sched_ack_pulse)
                     end
-                    6'd17: sched_wptr_q <= wdata_q[7:0];
+                    6'd17: sched_wptr_q <= wdata_q[9:0];      // RING-1024 2026-10-20
                     6'd19: desc_base_q[31:0]  <= wdata_q;
                     6'd20: desc_base_q[63:32] <= wdata_q;
                     6'd21: comp_base_q[31:0]  <= wdata_q;
@@ -387,8 +387,8 @@ module tdot_axi4 #(
             // ---- планировщик ----
             6'd16: rdata = {28'b0, irq_pending_q, sched_flush_q,
                             sched_irq_en_q, sched_en_q};
-            6'd17: rdata = {24'h0, sched_wptr_q};
-            6'd18: rdata = {24'h0, sched_rptr_q};
+            6'd17: rdata = {22'h0, sched_wptr_q};   // RING-1024 2026-10-20
+            6'd18: rdata = {22'h0, sched_rptr_q};   // RING-1024 2026-10-20
             6'd19: rdata = desc_base_q[31:0];
             6'd20: rdata = desc_base_q[63:32];
             6'd21: rdata = comp_base_q[31:0];
@@ -769,12 +769,12 @@ module tdot_axi4 #(
             case (cstate)
                 CS_IDLE: begin
                     if (sched_flush_q) begin
-                        sched_rptr_q <= 8'h0;            // flush очереди
+                        sched_rptr_q <= 10'h0;            // flush очереди // RING-1024 2026-10-20
                     end else if (sched_pull) begin
                         // fetch дескриптора: 4 слова (32 Б) с DESC_BASE+rptr*32
                         fetch_active <= 1;
                         fetch_cnt <= 0;
-                        rd_addr  <= desc_base_q[AW-1:0] + {19'h0, sched_rptr_q, 5'b0};
+                        rd_addr  <= desc_base_q[AW-1:0] + {17'h0, sched_rptr_q, 5'b0};  // RING-1024 2026-10-20
                         rd_total <= 32'd4;
                         rd_start <= 1;
                         cstate <= CS_FETCH_DESC;
@@ -959,7 +959,7 @@ module tdot_axi4 #(
                 // ---- completion записи задачи планировщика ----
                 CS_CMP1: begin
                     // W0: {tag[15:0], result[47:0]}
-                    wr_addr  <= comp_base_q[AW-1:0] + {20'h0, sched_rptr_q, 4'b0};
+                    wr_addr  <= comp_base_q[AW-1:0] + {18'h0, sched_rptr_q, 4'b0};  // RING-1024 2026-10-20
                     wr_data  <= {job_tag_q, res1_reg[15:0], res0_reg};
                     wr_start <= 1;
                     cstate <= CS_CMP2;
@@ -968,7 +968,7 @@ module tdot_axi4 #(
                     if (wr_done) begin
                         // W1: {48'h0, passes[7:0], status[7:0]}
                         wr_addr  <= comp_base_q[AW-1:0]
-                                    + {20'h0, sched_rptr_q, 4'b0} + SW;
+                                    + {18'h0, sched_rptr_q, 4'b0} + SW;  // RING-1024 2026-10-20
                         wr_data  <= {48'h0, passes_q, 6'b0, align_q, sat_q};
                         wr_start <= 1;
                         cstate <= CS_CMP3;
@@ -976,11 +976,11 @@ module tdot_axi4 #(
                 end
                 CS_CMP3: begin
                     if (wr_done) begin
-                        sched_rptr_q <= sched_rptr_q + 8'd1;
+                        sched_rptr_q <= sched_rptr_q + 10'd1;   // RING-1024 2026-10-20
                         done_cnt_q   <= done_cnt_q + 16'd1;
                         // опустошение очереди -> IRQ (уровень, до irq_ack)
                         if (sched_irq_en_q &&
-                            (sched_rptr_q + 8'd1 == sched_wptr_q))
+                            (sched_rptr_q + 10'd1 == sched_wptr_q))  // RING-1024 2026-10-20
                             irq_pending_q <= 1'b1;
                         cstate <= CS_IDLE;
                     end

@@ -20,15 +20,11 @@ def sigmoid(z):
     z = np.clip(z, -30, 30)
     return 1.0 / (1.0 + np.exp(-z))
 
-def make_fpga_backend(n_features, num_mac):
+def make_fpga_backend(n_features, num_mac=None):
     from fpga_backend import FpgaBackend
-    if sys.platform.startswith("win"):
-        from xdma_driver import XdmaWinUpstream
-        dev = XdmaWinUpstream(base=r"\\.\XDMA0dma")
-    else:
-        from xdma_driver import XdmaLinux
-        dev = XdmaLinux()
-    return FpgaBackend(mode="fpga", n=n_features, device=dev, num_mac=num_mac)
+    # device=None и num_mac=None -> FpgaBackend сам откроет XdmaWinDma и
+    # авто-определит NUM_MAC прошивки (CORE_PARAMS).
+    return FpgaBackend(mode="fpga", n=n_features, device=None, num_mac=num_mac)
 
 def synthetic_data(n_samples=200, n_features=8, seed=7, noise=0.5):
     rng = np.random.default_rng(seed)
@@ -77,7 +73,8 @@ def train(features, num_mac, epochs, lr):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--features", type=int, default=8)
-    ap.add_argument("--num-mac", type=int, default=16)
+    ap.add_argument("--num-mac", type=int, default=None,
+                    help="NUM_MAC прошивки (по умолчанию авто-детект из CORE_PARAMS)")
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--lr", type=float, default=0.5)
     ap.add_argument("--train", action="store_true")

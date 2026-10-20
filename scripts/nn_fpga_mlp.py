@@ -76,11 +76,15 @@ def forward_sched(sb, X, W1, b1, W2, b2, hidden, n_features, batch):
 def make_sched(mode, num_mac):
     from xdma_driver import TdotScheduler
     if sys.platform.startswith("win"):
-        from xdma_driver import XdmaWinUpstream
-        dev = XdmaWinUpstream(base=r"\\.\XDMA0dma")
+        from test_dma_win import XdmaWinDma
+        dev = XdmaWinDma(base=r"\\.\XDMA0dma")
     else:
         from xdma_driver import XdmaLinux
         dev = XdmaLinux()
+    if num_mac is None:
+        # авто-детект NUM_MAC прошивки (CORE_PARAMS) через FpgaBackend
+        from fpga_backend import FpgaBackend
+        num_mac = FpgaBackend(mode="fpga", device=dev, num_mac=None).num_mac
     return dev, TdotScheduler(dev, num_mac=num_mac)
 
 def train(sched_or_none, use_fpga, X, y, hidden, n_features, lr, time_budget, print_every, batch, epoch_cap=0):
@@ -138,7 +142,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", choices=["fpga", "cpu"], default="fpga")
     ap.add_argument("--features", type=int, default=16)
-    ap.add_argument("--num-mac", type=int, default=16)
+    ap.add_argument("--num-mac", type=int, default=None,
+                    help="NUM_MAC прошивки (по умолчанию авто-детект из CORE_PARAMS)")
     ap.add_argument("--hidden", type=int, default=16)
     ap.add_argument("--samples", type=int, default=2000)
     ap.add_argument("--lr", type=float, default=0.5)
