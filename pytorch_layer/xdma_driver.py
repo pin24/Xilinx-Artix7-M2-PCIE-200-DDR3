@@ -495,6 +495,26 @@ class XdmaWinUpstream(XdmaDevice):
         self._ev = k32.CreateEventW(None, True, False, None)
         if not self._ev:
             raise XdmaError("CreateEventW failed")
+        self._k32.CloseHandle.argtypes = [wintypes.HANDLE]   # FIX-R3 2026-10-20
+        self._k32.CloseHandle.restype = wintypes.BOOL
+
+    def close(self) -> None:
+        """Закрыть все handle (идемпотентно, безопасно при частичной инициализации)."""
+        for name in ("_ctl", "_usr", "_h2c", "_c2h", "_ev"):
+            h = getattr(self, name, None)
+            if not h:
+                continue
+            setattr(self, name, None)
+            try:
+                self._k32.CloseHandle(h)
+            except Exception:
+                pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _xfer(self, h, is_write, offset, data, length):
         c = self._c

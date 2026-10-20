@@ -336,6 +336,9 @@ set gen_unparsed {}
 foreach gen_want [list "NUM_MAC=${NUM_MAC}" "ADDERS=${ADDERS}"] {
     lassign [split ${gen_want} "="] gen_name gen_val
     set gen_hit 0
+    # R2 2026-10-20: сброс stale matchVar между итерациями (regexp оставляет
+    # старое значение при неудаче -> ложноe сравнение в следующей итерации)
+    unset -nocomplain _gb_val _gb_val2
     # форма 1: токен "NAME=value"
     if {[lsearch -exact ${gen_tokens} ${gen_want}] >= 0} { set gen_hit 1 }
     # форма 2/3: "NAME = value" или "NAME value" — берём число после имени
