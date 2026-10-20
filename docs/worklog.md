@@ -736,3 +736,14 @@ Work Log:
 - Correct monitoring: python scripts/obs_smi.py --num-mac 16 --dot 100 --interval 0.3 --clear  (verified: AR=+200, BEAT=+3200, WR=+100, JOB=+100).
 - dot() result value (BUG-57) RESOLVED - NOT A BUG: hardware output == verify_tdot_axi4.dot_ref_raw() reference exactly (n=16 -> 0x66900000000; n=8 -> 0); the naive float expectation was wrong, core computes correctly in ternary TFloat.
 - Recording: docs/CHANGE_LOG_2026-10-20.md (sec6), docs/ERROR_HISTORY.md [BUG-56][BUG-57].
+
+---
+Task ID: 2026-10-20-audio-nn
+Agent: MultiTool
+Task: Audio NN number->sound scripts; FPGA as auxiliary multiplier
+Work Log:
+- Added data/nn_audio_common.py (model 2->16->1, phase feature, pluggable matmul cpu/fpga) + train/infer cpu and fpga.
+- FPGA role = auxiliary multiplier: matmul_w backend='fpga' runs each dot-neuron on tdot.
+- FPGA training = ELM (random features on FPGA, least-squares output).
+- Verified: CPU 0.1 us/sample (correct freq), FPGA 8.08 ms/sample (PCIe-bound). Quality limited by NUM_MAC=16.
+- Recording: docs/CHANGE_LOG_2026-10-20.md (sec 7).
