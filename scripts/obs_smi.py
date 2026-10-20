@@ -86,6 +86,7 @@ def main(argv=None):
         print(f"  DMA-нагрузка запущена: блок {args.bench} МБ (write+read через плату)")
 
     prev = None
+    prev_t = None
     try:
         while True:
             t_frame = time.monotonic()   # начало кадра (для реального времени)
@@ -115,7 +116,12 @@ def main(argv=None):
 
             cur = core.obs_read()  # живые счётчики (live)
             cyc = cur["cycles"] or 1
+            cur_t = time.monotonic()
+            dt_real = 1.0
             if prev is not None:
+                dt_real = (cur_t - prev_t) if (prev_t is not None) else 1.0
+                if dt_real <= 0.0:
+                    dt_real = 1e-3
                 dcyc = cur["cycles"] - prev["cycles"]
                 dj = cur["job"] - prev["job"]
                 dar   = cur["ar"]          - prev["ar"]
@@ -134,9 +140,7 @@ def main(argv=None):
                 dj = dar = dbeat = dwr = dfifo = 0
 
             # ---- отрисовка кадра ----
-            dt_real = time.monotonic() - t_frame      # реальная длительность цикла кадра
-            if dt_real <= 0.0:
-                dt_real = 1e-6
+            # dt_real вычислен выше (между двумя чтениями счётчиков prev_t->cur_t)
             if dma_mb is not None:
                 dmamb = dma_mb                       # реальная скорость переноса (--bench)
             else:
@@ -166,6 +170,7 @@ def main(argv=None):
             sys.stdout.write(s)
             sys.stdout.flush()
             prev = cur
+            prev_t = cur_t
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\nОстановлено.")
