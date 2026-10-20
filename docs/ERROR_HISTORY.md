@@ -749,3 +749,47 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 - Тест шёл на FIX-ROF-драйвере v1.1.28 (дескрипторы ≤512). Падение НЕ устранено.
 - ВЫВОД: ROF/0x124 НЕ зависит от размера дескриптора. Вероятнее Completer-Abort/UR по адресу/апертуре или MPS/MRRS платы, либо дефект c2h-пути (C2H0 висел BUSY completed=0 ранее).
 - Следующее: разбор WHEA-error-record (windbg) для точного источника; настройка MPS/MRRS; анализ c2h.
+
+### [BUG-055] DMA 10-секундный таймаут на прошивке flat 16/4 (регрессия v1.1.33) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | `write_dma`/`read_dma` — стабильный `timeout at 0x100000`, ошибки `996 ERROR_IO_INCOMPLETE`/`STATUS_TIMEOUT`; DDR3 откалибрована, адресация верна, конфиг XDMA идентичен эталону |
+| **Причина** | v1.1.33 (d7520aa) перевёл завершение на асинхронный `EvtTransferCompleteCb` + watchdog; колбэк вызывается KMDF только при реальном MSI-X → на ненадёжном канале прерывание не доходило, request висел до watchdog (~10 c). Рабочий v1.1.29 завершал синхронно из `EngineProcessTransfer` |
+| **Исправление** | v1.2.2: возврат синхронного завершения (образец v1.1.29) + CAS `txnDone` в `EvtCancelDma`; `WdfDmaTransactionSetTransferCompleteCallback` убран из `EvtIo*Dma` |
+| **Статус** | ИСПРАВЛЕНО (v1.2.2, проверено на железе: 4B/1K/1M round-trip PASS). Подробно: CHANGE_LOG_2026-10-20 §1-5 |
+
+### [BUG-056] sched_en=1 молча глушит legacy-GO (OBS «не считает», результат мусорный) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | `obs_smi --dot` и `core.dot()` дают OBS=0 и мусорный результат; железо исправно (данные в DDR бит-точны) |
+| **Причина** | RTL: `go_accept = go_pulse && !busy_q && !sched_en_q` — при залипшем `sched_en=1` (после TdotScheduler/обучения) legacy-GO игнорируется без единого сообщения |
+| **Исправление** | Host-side (без RTL): `TdotCore.start()` бросает `XdmaError` при `sched_en=1` (никаких тихих no-op); добавлен `TdotCore.set_sched(on)`; `obs_smi --dot` вызывает `set_sched(False)` перед нагрузкой |
+| **Статус** | ИСПРАВЛЕНО (host). Подробно: CHANGE_LOG_2026-10-20 §6.1 |
+
+### [BUG-057] dot() результат «не совпадает с моделью» (~100x на канонической нагрузке) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | Значение результата против наивного ожидания; в тесте n=8 давал 0 |
+| **Разбор** | БАГА НЕТ: железо совпадает с `dot_ref_raw()` бит-в-бит; расхождение — декод TFloat-форматы/единицы в тестовой нагрузке |
+| **Статус** | ЗАКРЫТО (не баг). Подробно: CHANGE_LOG_2026-10-20 §6.3 |
+
+### [BUG-058] data/nn_audio_infer_fpga.py: IndentationError:47 — FPGA-инференс неработоспособен — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | `IndentationError: unexpected indent (line 48)` при любом запуске; `py_compile` FAIL; единственный битый .py из 88 |
+| **Причина** | Строка `from nn_audio_common import norm_freq, phase_frac` в колонке 0 внутри `main()` (дефект правки capture-at-import 644097c) |
+| **Исправление** | Коммит 6ec9f5b: отступ исправлен, дублирующий реимпорт AC удалён; добавлен SANITY-WARN W1.shape[1] vs --hidden (ловушка метаданных npz.json: audio_model_h64 помечен hidden=16 при W1=(2,64)) |
+| **Статус** | ИСПРАВЛЕНО (6ec9f5b). Верификация: py_compile всех data/*.py, AST, CPU forward_batch на audio_model_fpga W1(2,64) OK |
+
+### [BUG-059] pytorch_layer/stress_platform.py = 10412 байт чистых NUL (повреждён с рождения на main) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | Файл 0% печатных символов, py_compile: «source code string cannot contain null bytes»; нагрузочный стенд платы отсутствовал на main |
+| **Причина** | Систематический феномен повреждения файлов (как docs/CHANGE_LOG_2026-09-27/29: NUL-паддинг + mojibake); на main файл появился уже битым в 6381f8a (08.10); добрая версия существовала только на 2ch-pipeline (R8-rebuild, 3fdda6e) |
+| **Исправление** | Коммит 6ec9f5b: портирован R8-rebuild с 2ch-pipeline на API main — DOT через канонический FpgaBackend.run_dot (float↔TFloat48 внутри бэкенда), NUM_MAC/BUILD_ID из CAPS/OBS с fallback 16, ELEM_FMT-ветки 2ch-линии убраны (в RTL main нет), device-fallback/XADC-монитор/CSV/--mock сохранены |
+| **Статус** | ИСПРАВЛЕНО (6ec9f5b). Верификация: py_compile, AST, --mock PASS, --help импорт-цепочка OK. Рекомендация: бинарный аудит остальных файлов на NUL-повреждения |

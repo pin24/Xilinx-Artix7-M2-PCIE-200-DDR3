@@ -109,3 +109,27 @@ nn_audio_train_cpu.py / nn_audio_infer_cpu.py / nn_audio_train_fpga.py / nn_audi
 - Root cause: XDMA_DESC_MAX_BYTES=512 (dma_engine.h:37) slices every transfer into 512-byte descriptors (dma_engine.c:961-962); the engine fetches each descriptor over PCIe from the host, so descriptor-fetch overhead scales with data (6% at 512B) -> ~275 MB/s ceiling.
 - 512 was chosen to avoid WHEA 0x124 / ROF on the Root Port (8086:7f3c). Plan to raise to 4096 (8x fewer descriptors, ~0.8% overhead) and re-measure, watching for ROF.
 - Files: dma_engine.h, dma_engine.c. Status: OPEN (fix in progress).
+
+---
+
+## 9. Сессия 2026-10-20 (вечер): многоагентный аудит (38-a..e) + корректность OBS + восстановление битых файлов + README FLAT
+
+### 9.1 Фикс-коммит 6ec9f5b (host, BUG-058/059)
+- `data/nn_audio_infer_fpga.py` — IndentationError:47 (строка в колонке 0 внутри main()), FPGA-инференс был неработоспособен с 644097c; исправлен отступ, добавлен SANITY-WARN W1.shape[1] vs --hidden (метаданные npz.json врут: audio_model_h64 помечен hidden=16 при W1=(2,64)).
+- `pytorch_layer/stress_platform.py` — 10412 Б чистых NUL с рождения на main (6381f8a); портирован проверенный R8-rebuild с 2ch-pipeline на API main: DOT через FpgaBackend.run_dot, NUM_MAC/BUILD_ID из CAPS/OBS (fallback 16), device-fallback chain, XADC-монитор, CSV, --mock; ELEM_FMT-ветки 2ch удалены (в RTL main нет).
+
+### 9.2 Корректность OBS (коммит 7748803; аудит 38-e, находки верифицированы вручную по RTL)
+- Карта OBS 0x6C..0xE0 подтверждена 1:1 во всех 5 слоях (0 mismatch); арифметика --dot 100 (AR=+200, BEAT=+3200, WR=+100, JOB=+100) сходится с RTL.
+- Исправлено ОТОБРАЖЕНИЕ/доки: E-2 (R_WAIT печатался как «AR_STALL»), E-1 (monitor_obs: фазы, очищенные obs_clear, делились на абсолютный CYCLES → схлопывание к 0 при аптайме; теперь Δ-семантика), E-3 («DMA живая» = AXI-биты ядра, не host-DMA), E-4 (FIFO_FULL «по дизайну 0» ложно: база ≈2-4 такта/проход, AR-гейт tdot:532), E-5 (CYCLES HI→LO→HI), E-7 (CAPS vs --num-mac), E-8 (obs_clear RMW сохраняет FREEZE — порт 187dc69 с TMUL), E-9 (OBSERVABILITY/ADDRESS_MAP: «CLEAR обнуляет всё и тени» ложно; правила съёма; sched-надбавки).
+
+### 9.3 Итоги аудита 5 агентов (READ-ONLY, отчёты в docs/worklog 2026-10-20-audit38)
+- 38-a регистры/адреса: 0 MISMATCH через RTL↔BD↔драйвер↔тулзы↔доки; A-1..A-8 — легаси-эмуляторы/доки.
+- 38-b маршрутизация FLAT-BD: целостна, DFX→FLAT без потерь; B-2 (сниффер без host-доступа — запланировано), B-3 (XADC CDC), B-4 (SC clock-ассоциации — разово верифицировать).
+- 38-c сборка: C-1 HIGH (FATAL-гейт только setup — hold/WPWS не фатальны), C-3 (ui_clk вне async-групп), C-2/C-4..C-9 (дефолты, _flat64 нежизнеспособен, Makefile/flash → artifacts_dfx, BUILD_ID dirty).
+- 38-d драйвер v1.2.4: D-1/D-2 CRITICAL латентные (молчаливый кламп банка дескрипторов; >8MiB мультипакет — маскируются python-чанками 1MiB), D-3/D-4/D-5 (watchdog мёртв, путь таймаута вне CAS, ErrExit без Unmark), D-7 (GET_VERSION/PERF_STOP), D-8..D-13.
+- 38-e OBS-отображение: E-1..E-10 — исправлены в 7748803 (host/доки); RTL-семантика счётчиков верна.
+
+### 9.4 README переписан под FLAT-реальность
+- Архитектура/адреса/сборка/драйвер/OBS-quickstart/открытые задачи по аудитам; DFX — историческая секция со ссылкой на ветку XDMA_DDR3_TMUL; Makefile помечен устаревшим (build→DFX, artifacts→C:/build_dfx).
+
+Версии: драйвер 1.2.4 (без изменений); RTL/BD не менялись; репо +3 коммита (6ec9f5b, 7748803, docs).

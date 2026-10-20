@@ -149,8 +149,10 @@ def main(argv=None):
             dt_safe = max(dt_real, 1e-9)             # защита: dt=0 не должен давать inf/деление на 0
             if dma_mb is not None:
                 dmamb = dma_mb                       # реальная скорость переноса (--bench)
+                bw_label = "DMA host (write+read)"
             else:
                 dmamb = dbeat * 8 / dt_safe / 1e6    # по прочитанным словам (ΔBEAT)
+                bw_label = "CORE RD (AXI, ядро из DDR3; не host-DMA)"
             job_s = (dj / dt_safe) if dj > 0 else 0.0
             s = (f"\x1b[2J\x1b[H"
                  f"  tdot OBS console  "
@@ -167,9 +169,9 @@ def main(argv=None):
                  f"  ТЕКУЩАЯ АКТИВНОСТЬ (Δ за кадр):\n"
                  f"  AR (чтение)=+{dar:,d}   BEAT (слова)=+{dbeat:,d}   "
                  f"WR (запись)=+{dwr:,d}   JOB (задачи)=+{dj:,d}\n"
-                 f"  DMA (живая, реал. время) = {dmamb:8.1f} MB/s   "
-                 f"FIFO_FULL (Δ)=+{dfifo:,d}\n"
+                 f"  {bw_label} = {dmamb:8.1f} MB/s\n"
                  f"  AR_STALL (бэкпрешер)={ars_p:.3f}%   R_WAIT (латентность/дыры)={rwait_p:.3f}%\n"
+                 f"  FIFO_FULL (Δ)=+{dfifo:,d}  (база ~2-4/проход при n=NUM_MAC; рост = деградация)\n"
                  f"  {('-'*56)}\n"
                  f"  КУМУЛЯТИВНО (с --clear): AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  "
                  f"WR={cur['wr']:,d}  JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"
