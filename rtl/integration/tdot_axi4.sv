@@ -75,7 +75,12 @@ module tdot_axi4 #(
     parameter int C_M_AXI_DATA_WIDTH = 64,
     parameter int BURST_RD_LEN = 32,   // макс. слов в одной read-транзакции (P3b: длиннее burst = выше обмен)
     parameter int BURST_WR_LEN = 8,    // макс. слов в одной write-транзакции
-    parameter logic [31:0] BUILD_ID = 32'h0 // git-коммит битстрима (OBS 0x70; 0 = не передан)
+    parameter logic [31:0] BUILD_ID = 32'h0, // git-коммит битстрима (OBS 0x70; 0 = не передан)
+    // DEVPROG_EN: программы-интерпретатор (device_prog) поверх кольца tdot.
+    // При 0 (по умолчанию) — модуль ПУСТ, поведение битстрима НЕ меняется: все
+    // программно-режимные пути отключены, легаси/кольцо работают по-старому.
+    parameter int DEVPROG_EN = 0,   // 0 = off (легаси), 1 = программный режим активен
+    parameter int DP_FIFO_DEPTH = 64 // глубина FIFO задач device_prog->ядро (только DEVPROG_EN=1)
 )(
     // ---- AXI-Lite slave (регистры команд/статуса) ----
     input  logic                                  S_AXI_ACLK,
@@ -251,9 +256,58 @@ module tdot_axi4 #(
     logic [9:0]  sched_rptr_q;      // указатель чтения (движет движок, mod 1024) // RING-1024 2026-10-20
     logic [63:0] desc_base_q;       // база таблицы дескрипторов (DDR3)
     logic [63:0] comp_base_q;       // база области завершений (DDR3)
-    logic        irq_pending_q;     // поднято при опустошении очереди, сброс irq_ack
+logic        irq_pending_q;      // поднято при опустошении очереди, сброс irq_ack
     logic        sched_busy_q;      // движок исполняет задачу
     logic [15:0] done_cnt_q;        // счётчик завершённых задач
+
+    // ==================== программный режим (device_prog, DEVPROG_EN=1) ============
+    // Все сигналы программного пути существуют ВСЕГДА (иначе генерация правок в
+    // общий контроллер была бы невозможна), но управляются и имеют эффект ТОЛЬКО
+    // когда DEVPROG_EN=1. При DEVPROG_EN=0 они зафиксированы в 0/неактивны, и
+    // легали/кольцо ведут себя точно как раньше (аудит DEVPROG_EN=0-run в отчёте).
+    logic [15:0] dprog_n_units_q;   // число юнитов программы (DP_CTRL[31:16])
+    logic        dprog_start_q;     // импульс запуска программы (DP_CTRL.bit0=1)
+    logic [AW-1:0] dprog_data_base_q, dprog_table_base_q, dprog_mailbox_base_q;
+    logic        dprog_active_q;    // программный режим «вооружён» (en для device_prog)
+    logic        dprog_go_q;        // go-импульс device_prog
+    logic        dprog_complete_q;  // защёлкнут done device_prog (программа раскодирована end-to-end)
+    logic        use_dp_q;          // текущая задача от device_prog (ветвь контроллера)
+
+    // FIFO задач device_prog -> ядро (программный режим; ширина 3*AW+32)
+    logic [DP_FIFO_DEPTH-1:0][AW-1:0] dp_fifo_a, dp_fifo_w, dp_fifo_r;
+    logic [DP_FIFO_DEPTH-1:0][15:0]   dp_fifo_n, dp_fifo_tag;
+    logic [$clog2(DP_FIFO_DEPTH):0]   dp_wrptr, dp_rdptr;
+    wire dp_fifo_empty  = (dp_wrptr == dp_rdptr);
+    wire dp_fifo_full   = ((dp_wrptr - dp_rdptr) >= DP_FIFO_DEPTH);
+    // порты чтения головы FIFO
+    logic [AW-1:0] dp_z_a, dp_z_w, dp_z_r;
+    logic [15:0]   dp_z_n;
+    assign dp_z_a = dp_fifo_a[dp_rdptr[$clog2(DP_FIFO_DEPTH)-1:0]];
+    assign dp_z_w = dp_fifo_w[dp_rdptr[$clog2(DP_FIFO_DEPTH)-1:0]];
+    assign dp_z_r = dp_fifo_r[dp_rdptr[$clog2(DP_FIFO_DEPTH)-1:0]];
+    assign dp_z_n = dp_fifo_n[dp_rdptr[$clog2(DP_FIFO_DEPTH)-1:0]];
+
+    // ---- от device_prog (инстанс ниже) ----
+    logic        dp_desc_task_valid;
+    logic [AW-1:0] dp_desc_task_a, dp_desc_task_w, dp_desc_task_r;
+    logic [15:0] dp_desc_task_n, dp_desc_task_tag;
+    logic        dp_table_req;
+    logic [AW-1:0] dp_table_addr;
+    logic        dp_table_rvalid, dp_table_rvalid_q;
+    logic [63:0] dp_table_rdata, dp_table_rdata_q;
+    logic        dp_done;
+    logic        dp_mailbox_wr_start;
+    logic [AW-1:0] dp_mailbox_wr_addr;
+    logic [63:0] dp_mailbox_wr_data;
+    logic        dp_mbox0_valid, dp_mbox1_valid;   // защёлкнутые mailbox-слова
+    logic [AW-1:0] dp_mbox0_addr, dp_mbox1_addr;
+    logic [63:0] dp_mbox0_data, dp_mbox1_data;
+
+// ---- сервис table-чтения device_prog через read-мастер ----
+    logic        dp_rd_start;      // 1-такт импульс чтения одного 64-бит слова таблицы
+    logic [AW-1:0] dp_rd_addr;
+    logic [1:0]  dpt_state;
+    localparam int DPT_IDLE = 0, DPT_REQ = 1, DPT_WAIT = 2;
 
     // AXI-Lite write channel: приём AW и W НЕЗАВИСИМЫЙ, с защёлками глубиной 1.
     // Запись применяется (commit), когда защёлкнуты ОБА (адрес и данные),
@@ -286,6 +340,9 @@ module tdot_axi4 #(
             sched_wptr_q <= 0;
             desc_base_q <= 0; comp_base_q <= 0;
             obs_freeze_q <= 0; obs_clear_q <= 0; obs_snap <= 0;
+            dprog_n_units_q <= 0;
+            dprog_data_base_q <= 0; dprog_table_base_q <= 0; dprog_mailbox_base_q <= 0;
+            dprog_start_q <= 0;
             // sched_rptr_q/irq_pending_q/done_cnt_q — в блоке контроллера
         end else begin
             // приём AW/W в защёлки по handshake каждого канала независимо
@@ -330,6 +387,16 @@ module tdot_axi4 #(
                         obs_clear_q  <= wdata_q[0];   // импульс, самоочистка ниже
                     end
                     6'd43: obs_snap <= 1'b1;          // любое значение = снимок
+                    // ---- программный режим device_prog (DEVPROG_EN=1) ----
+                    // 0xE4 DP_CTRL: [31:16]=n_units, [0]=go(старт батча)
+                    // 0xE8 DP_DATA_BASE, 0xEC DP_TABLE_BASE, 0xF0 DP_MBOX_BASE
+                    6'd57: begin
+                        dprog_n_units_q <= wdata_q[31:16];
+                        if (DEVPROG_EN && wdata_q[0]) dprog_start_q <= 1'b1;
+                    end
+                    6'd58: dprog_data_base_q    <= wdata_q;
+                    6'd59: dprog_table_base_q   <= wdata_q;
+                    6'd60: dprog_mailbox_base_q <= wdata_q;
                     default: ;
                 endcase
             end else begin
@@ -337,6 +404,7 @@ module tdot_axi4 #(
                 if (sched_flush_q) sched_flush_q <= 0; // самоочистка flush
                 if (obs_clear_q) obs_clear_q <= 0;     // импульс CLEAR
                 if (obs_snap) obs_snap <= 0;           // импульс SNAP
+                if (dprog_start_q) dprog_start_q <= 0; // самосброс старта программы
             end
         end
     end
@@ -432,6 +500,11 @@ module tdot_axi4 #(
             6'd54: rdata = snap_wr;                              // WR_S
             6'd55: rdata = snap_job;                             // JOB_S
             6'd56: rdata = snap_fifo_full;                       // FIFO_FULL_S
+            // ---- программный режим device_prog (DEVPROG_EN=1) ----
+            6'd57: rdata = {dprog_n_units_q, 15'b0, dprog_active_q};
+            6'd58: rdata = dprog_data_base_q;
+            6'd59: rdata = dprog_table_base_q;
+            6'd60: rdata = dprog_mailbox_base_q;
             default: rdata = 32'h0;
         endcase
     end
@@ -497,6 +570,11 @@ module tdot_axi4 #(
     logic        rd_start;
     logic [AW-1:0] rd_addr;
     logic [31:0]   rd_total;
+    // инициация чтения от контроллера ядра (комбинационно мультиплексируется с
+    // локальным table-чтением device_prog в rd_start/rd_addr/rd_total)
+    logic        ctrl_rd_start;
+    logic [AW-1:0] ctrl_rd_addr;
+    logic [31:0]   ctrl_rd_total;
     logic [31:0]   rd_issued, rd_recv;
     logic          rd_done;
     // комбинационные величины очередного AR-burst (4KB-кламп, Task 35/OBS);
@@ -661,15 +739,38 @@ module tdot_axi4 #(
     localparam int CS_CMP2        = 12;
     localparam int CS_CMP3        = 13;
     localparam int CS_ABORT_WAIT  = 14;   // abort по align: ждём освобождения read-мастера
+    // ---- программный режим (DEVPROG_EN=1) ----
+    localparam int CS_DP_WAIT     = 15;   // ждём задачи от device_prog / его complete
+    localparam int CS_DP_KICK     = 16;   // постановка задачи из FIFO device_prog в ядро
+    localparam int CS_DP_MBOX1    = 17;   // mailbox-слово 0
+    localparam int CS_DP_MBOX2    = 18;   // mailbox-слово 1
+    localparam int CS_DP_DONE     = 19;   // программа исполнена
 
-    logic [3:0] cstate;
+    logic [4:0] cstate;
+    // table-чтение device_prog разрешено только вне «данных» задач (между задачами);
+    // объявлено здесь, т.к. зависит от cstate (xvlog: объявление до использования).
+    wire dp_table_permit = (cstate == CS_IDLE) || (cstate == CS_DP_WAIT);
     logic go_q;
     wire go_pulse  = go_reg && !go_q;
     // Внешний GO принимается только когда ядро свободно и планировщик выключен
     // (иначе внешний GO мог бы вклиниться в очередь задач).
     wire go_accept = go_pulse && !busy_q && !sched_en_q;
     wire job_start = go_accept;       // легаси-старт
-    assign fifo_clr = job_start || (cstate == CS_SCHED_KICK);
+    assign fifo_clr = job_start || (cstate == CS_SCHED_KICK) ||
+                      (DEVPROG_EN && (cstate == CS_DP_KICK));
+
+    // read-мастер: источник запроса — ядро (ctrl_rd_*) или таблица device_prog
+    // (dp_rd_*). Одновременно не стартуют: dp_rd разрешён только в CS_DP_WAIT,
+    // где ядро не читает данные (см. dp_table_permit), а ctrl_rd — только в
+    // состояниях задач. При DEVPROG_EN=0 dp_rd_start всегда 0, mux нейтрален.
+    // ВАЖНО: переопределение адреса/длины у read-мастера действует ТОЛЬКО в
+    // DPT_WAIT (фактически идущее table-чтение). В DPT_REQ (запрос ждёт, пока
+    // ядро не освободит шину) mux НЕ перехватывает чтение — иначе device_prog
+    // полез бы забирать шину у исполняющейся задачи. Адрес для DPT_WAIT
+    // защёлкнут в dp_rd_addr на входе в DPT_REQ.
+    assign rd_start = ctrl_rd_start | dp_rd_start;
+    assign rd_addr  = (dpt_state == DPT_WAIT) ? dp_rd_addr : ctrl_rd_addr;
+    assign rd_total = (dpt_state == DPT_WAIT) ? 32'd1       : ctrl_rd_total;
 
     // ---- планировщик: только решение о выборке (вся механика в контроллере) ----
     wire sched_pull = sched_en_q && !busy_q && !sched_flush_q &&
@@ -724,8 +825,8 @@ module tdot_axi4 #(
             go_q <= 0;
             cstate <= CS_IDLE;
             core_valid_in <= 0;
-            rd_start <= 0; wr_start <= 0;
-            rd_addr <= 0; rd_total <= 0;
+            ctrl_rd_start <= 0; wr_start <= 0;
+            ctrl_rd_addr <= 0; ctrl_rd_total <= 0;
             wr_addr <= 0; wr_data <= 0;
             load_idx <= 0; rd_idx <= 0; load_active <= 0; wr_mask_q <= 0;
             core_data <= 0; core_weights <= 0;
@@ -741,10 +842,46 @@ module tdot_axi4 #(
             for (int i = 0; i < 4; i++) desc_w[i] <= 64'h0;
             job_data_addr_q <= 0; job_weights_addr_q <= 0;
             job_result_addr_q <= 0; job_n_total_q <= 0; job_tag_q <= 0;
+            dprog_go_q <= 0; dprog_active_q <= 0;
+            dprog_complete_q <= 0; use_dp_q <= 0;
+            dp_wrptr <= 0; dp_rdptr <= 0;
+            dp_mbox0_valid <= 0; dp_mbox1_valid <= 0;
+            // dp_rd_*/dpt_state/dp_table_* — инстанс и table-FSM device_prog (generate)
         end else begin
             go_q <= go_reg;
             core_valid_in <= 0;
-            rd_start <= 0; wr_start <= 0; acc_start_q <= 0;
+            ctrl_rd_start <= 0; wr_start <= 0; acc_start_q <= 0;
+            dprog_go_q <= 0;
+            // ---- программный режим: приём задач device_prog в FIFO, mailbox, complete ----
+            if (DEVPROG_EN) begin
+                // push задачи от device_prog (нет backpressure на его стороне; FIFO
+                // глубины DP_FIFO_DEPTH поглощает выброс n_out*pass юнита). Потеря при
+                // переполнении НЕ допускается: только !full (для данного теста выброса
+                // много меньше глубины).
+                if (dp_desc_task_valid && !dp_fifo_full) begin
+                    dp_fifo_a[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_a;
+                    dp_fifo_w[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_w;
+                    dp_fifo_r[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_r;
+                    dp_fifo_n[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_n;
+                    dp_fifo_tag[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]] <= dp_desc_task_tag;
+                    dp_wrptr <= dp_wrptr + 1;
+                end
+                // защёлка mailbox-слов device_prog (выдаются им в конце программы)
+                if (dp_mailbox_wr_start) begin
+                    if (dp_mailbox_wr_addr == dprog_mailbox_base_q)
+                        {dp_mbox0_valid, dp_mbox0_addr, dp_mbox0_data} <=
+                            {1'b1, dp_mailbox_wr_addr, dp_mailbox_wr_data};
+                    else
+                        {dp_mbox1_valid, dp_mbox1_addr, dp_mbox1_data} <=
+                            {1'b1, dp_mailbox_wr_addr, dp_mailbox_wr_data};
+                end
+                // complete: device_prog закончил раскодку всей программы
+                if (dp_done) dprog_complete_q <= 1'b1;
+                if (dprog_start_q) begin
+                    dprog_complete_q <= 1'b0;
+                    dp_mbox0_valid <= 1'b0; dp_mbox1_valid <= 1'b0;
+                end
+            end
             // irq_ack действует в любом состоянии (SCHED_CTRL.bit3)
             if (sched_ack_pulse) irq_pending_q <= 1'b0;
             if (job_start) begin
@@ -762,21 +899,31 @@ module tdot_axi4 #(
                                   (weights_start_reg[2:0] != 3'h0) ||
                                   (result_addr_reg[2:0] != 3'h0));
                 cstate <= CS_RD_DATA;
-                rd_addr  <= data_start_reg[AW-1:0];
-                rd_total <= (n_total_legacy > NUM_MAC) ? NUM_MAC : n_total_legacy;
-                rd_start <= 1;
+                ctrl_rd_addr  <= data_start_reg[AW-1:0];
+                ctrl_rd_total <= (n_total_legacy > NUM_MAC) ? NUM_MAC : n_total_legacy;
+                ctrl_rd_start <= 1;
             end
             case (cstate)
                 CS_IDLE: begin
-                    if (sched_flush_q) begin
+                    // программный режим (DEVPROG_EN=1): старт батча по dprog_start_q
+                    if (DEVPROG_EN && dprog_start_q) begin
+                        dprog_active_q   <= 1'b1;
+                        dprog_complete_q <= 1'b0;
+                        dprog_go_q       <= 1'b1;        // go-импульс device_prog
+                        dp_wrptr         <= '0; dp_rdptr <= '0;
+                        use_dp_q         <= 1'b1;
+                        busy_q           <= 1'b1; done_q <= 1'b0;
+                        acc_valid_q      <= 1'b0;
+                        cstate           <= CS_DP_WAIT;
+                    end else if (sched_flush_q) begin
                         sched_rptr_q <= 10'h0;            // flush очереди // RING-1024 2026-10-20
                     end else if (sched_pull) begin
                         // fetch дескриптора: 4 слова (32 Б) с DESC_BASE+rptr*32
                         fetch_active <= 1;
                         fetch_cnt <= 0;
-                        rd_addr  <= desc_base_q[AW-1:0] + {17'h0, sched_rptr_q, 5'b0};  // RING-1024 2026-10-20
-                        rd_total <= 32'd4;
-                        rd_start <= 1;
+                        ctrl_rd_addr  <= desc_base_q[AW-1:0] + {17'h0, sched_rptr_q, 5'b0};  // RING-1024 2026-10-20
+                        ctrl_rd_total <= 32'd4;
+                        ctrl_rd_start <= 1;
                         cstate <= CS_FETCH_DESC;
                     end
                 end
@@ -813,17 +960,17 @@ module tdot_axi4 #(
     align_q       <= ((job_data_addr_q[2:0] != 3'h0) ||
                       (job_weights_addr_q[2:0] != 3'h0) ||
                       (job_result_addr_q[2:0] != 3'h0));
-    cstate <= CS_RD_DATA;
-    rd_addr  <= job_data_addr_q[AW-1:0];
-                    rd_total <= (n_total_sched > NUM_MAC) ? NUM_MAC
-                                                          : n_total_sched;
-                    rd_start <= 1;
+cstate <= CS_RD_DATA;
+    ctrl_rd_addr  <= job_data_addr_q[AW-1:0];
+                    ctrl_rd_total <= (n_total_sched > NUM_MAC) ? NUM_MAC
+                                                              : n_total_sched;
+                    ctrl_rd_start <= 1;
                 end
                 CS_RD_DATA: begin
                     if (align_q) begin
                         // адрес не кратен 8: burst-первый beat частичный -> данные
                         // смещены. Пропустить вычисление, завершить со статусом align.
-                        // ВАЖНО: rd_start уже выдан (job_start / CS_SCHED_KICK), поэтому
+                        // ВАЖНО: ctrl_rd_start уже выдан (job_start / CS_SCHED_KICK), поэтому
                         // read-мастер принял AR и продолжает наполнять FIFO. Прямой
                         // переход в CS_DONE снял бы busy_q, следующая задача сделала бы
                         // fifo_clr посреди активного burst и прочитала бы данные со
@@ -831,9 +978,9 @@ module tdot_axi4 #(
                         cstate <= CS_ABORT_WAIT;
                     end else if (rd_done) begin
                         cstate <= CS_RD_WEIGHTS;
-                        rd_addr  <= cur_weights_q[AW-1:0] + elems_done_q * SW;
-                        rd_total <= chunk_n;
-                        rd_start <= 1;
+                        ctrl_rd_addr  <= cur_weights_q[AW-1:0] + elems_done_q * SW;
+                        ctrl_rd_total <= chunk_n;
+                        ctrl_rd_start <= 1;
                     end
                 end
                 CS_RD_WEIGHTS: begin
@@ -900,11 +1047,11 @@ module tdot_axi4 #(
                                 n_left_q     <= n_left_q - chunk_n;
                                 elems_done_q <= elems_done_q + chunk_n;
                                 cstate <= CS_RD_DATA;
-                                rd_addr  <= cur_data_q[AW-1:0]
+                                ctrl_rd_addr  <= cur_data_q[AW-1:0]
                                             + (elems_done_q + chunk_n) * SW;
-                                rd_total <= (n_left_q - chunk_n > NUM_MAC) ?
+                                ctrl_rd_total <= (n_left_q - chunk_n > NUM_MAC) ?
                                             NUM_MAC : (n_left_q - chunk_n);
-                                rd_start <= 1;
+                                ctrl_rd_start <= 1;
                             end
                         end else begin
                             // pass k>0: сложение в аккумуляторе
@@ -928,11 +1075,11 @@ module tdot_axi4 #(
                             n_left_q     <= n_left_q - chunk_n;
                             elems_done_q <= elems_done_q + chunk_n;
                             cstate <= CS_RD_DATA;
-                            rd_addr  <= cur_data_q[AW-1:0]
+                            ctrl_rd_addr  <= cur_data_q[AW-1:0]
                                         + (elems_done_q + chunk_n) * SW;
-                            rd_total <= (n_left_q - chunk_n > NUM_MAC) ?
+                            ctrl_rd_total <= (n_left_q - chunk_n > NUM_MAC) ?
                                         NUM_MAC : (n_left_q - chunk_n);
-                            rd_start <= 1;
+                            ctrl_rd_start <= 1;
                         end
                     end
                 end
@@ -953,8 +1100,15 @@ module tdot_axi4 #(
                     end
                 end
                 CS_DONE: begin
-                    busy_q <= 0; done_q <= 1;
-                    cstate <= use_sched_q ? CS_CMP1 : CS_IDLE;
+                    if (DEVPROG_EN && use_dp_q) begin
+                        // программный режим: задача device_prog завершена; busy
+                        // держим, пока не исполнена ВСЯ программа (и mailbox)
+                        busy_q <= 1'b1; done_q <= 1'b0;
+                        cstate <= CS_DP_WAIT;
+                    end else begin
+                        busy_q <= 0; done_q <= 1;
+                        cstate <= use_sched_q ? CS_CMP1 : CS_IDLE;
+                    end
                 end
                 // ---- completion записи задачи планировщика ----
                 CS_CMP1: begin
@@ -984,6 +1138,92 @@ module tdot_axi4 #(
                             irq_pending_q <= 1'b1;
                         cstate <= CS_IDLE;
                     end
+                end
+                // ---- программный режим (DEVPROG_EN=1): исполнение батча ----
+                CS_DP_WAIT: begin
+                    // ждём задачу от device_prog (dp_fifo) ИЛИ конца программы
+                    if (DEVPROG_EN) begin
+                        if (!dp_fifo_empty) begin
+                            // НЕ ставим задачу, пока идёт table-чтение device_prog:
+                            // иначе table-чтение перехватывает read-мастер (rd_total=1)
+                            // и задача читает только 1 слово -> переполнение FIFO.
+                            if (dpt_state != DPT_IDLE) begin
+                                cstate <= CS_DP_WAIT;   // дожидаемся завершения чтения таблицы
+                            end else begin
+                                cstate <= CS_DP_KICK;
+                            end
+                        end else if (dprog_complete_q) begin
+                            // программа раскодирована + все задачи исполнены -> mailbox
+                            cstate <= CS_DP_MBOX1;
+                        end else begin
+                            cstate <= CS_DP_WAIT;   // держим: здесь разрешены table-чтения
+                        end
+                    end else begin
+                        cstate <= CS_IDLE;
+                    end
+                end
+                CS_DP_KICK: begin
+                    // постановка задачи из FIFO device_prog в ядро (общий путь
+                    // исполнения: те же cur_*/n_left_q, что и CS_SCHED_KICK)
+                    if (DEVPROG_EN) begin
+                        busy_q <= 1; done_q <= 0;
+                        acc_valid_q <= 0;
+                        use_dp_q      <= 1'b1;
+                        use_sched_q   <= 1'b0;
+                        cur_data_q    <= {16'h0, dp_z_a};
+                        cur_weights_q <= {16'h0, dp_z_w};
+                        cur_result_q  <= {16'h0, dp_z_r};
+                        n_left_q      <= {16'h0, dp_z_n};
+                        elems_done_q  <= 0;
+                        passes_q      <= 0;
+                        sat_q         <= (dp_z_n > MAX_N_TOTAL[15:0]);
+                        align_q       <= ((dp_z_a[2:0] != 3'h0) ||
+                                          (dp_z_w[2:0] != 3'h0) ||
+                                          (dp_z_r[2:0] != 3'h0));
+                        dp_rdptr      <= dp_rdptr + 1;    // pop FIFO
+                        cstate        <= CS_RD_DATA;
+                        ctrl_rd_addr  <= dp_z_a[AW-1:0];
+                        ctrl_rd_total <= ({16'h0, dp_z_n} > NUM_MAC) ? NUM_MAC
+                                                                     : {16'h0, dp_z_n};
+                        ctrl_rd_start <= 1;
+                    end else begin
+                        cstate <= CS_IDLE;
+                    end
+                end
+                CS_DP_MBOX1: begin
+                    if (DEVPROG_EN) begin
+                        // слово 0 mailbox (защёлкнуто у device_prog)
+                        wr_addr  <= (dp_mbox0_valid) ? dp_mbox0_addr : dprog_mailbox_base_q;
+                        wr_data  <= (dp_mbox0_valid) ? dp_mbox0_data
+                                                     : {48'h0, 16'(dprog_n_units_q)};
+                        wr_start <= 1;
+                        cstate  <= CS_DP_MBOX2;
+                    end else cstate <= CS_IDLE;
+                end
+                CS_DP_MBOX2: begin
+                    if (DEVPROG_EN) begin
+                        if (wr_done) begin
+                            // слово 1 mailbox ({40'h0, units[15:0], status=0})
+                            wr_addr  <= (dp_mbox1_valid) ? dp_mbox1_addr
+                                                         : (dprog_mailbox_base_q + 32'h8);
+                            wr_data  <= (dp_mbox1_valid) ? dp_mbox1_data
+                                                         : {40'h0, dprog_n_units_q, 8'd0};
+                            wr_start <= 1;
+                            cstate  <= CS_DP_DONE;
+                        end
+                    end else cstate <= CS_IDLE;
+                end
+                CS_DP_DONE: begin
+                    if (DEVPROG_EN) begin
+                        if (wr_done) begin
+                            busy_q  <= 0; done_q <= 1;
+                            use_dp_q <= 1'b0;
+                            dprog_active_q <= 1'b0;   // снять en у device_prog
+                            cstate  <= CS_IDLE;
+                        end else begin
+                            cstate  <= CS_DP_DONE;
+                        end
+                    end else cstate <= CS_IDLE;
                 end
                 default: cstate <= CS_IDLE;
             endcase
@@ -1099,5 +1339,117 @@ assign diag_done = done_q;
             snap_fifo_full <= cnt_fifo_full;
         end
     end
+
+    // ==================== устройственный интерпретатор (device_prog, DEVPROG_EN=1) ====
+    // Таблица юнитов читается из «DDR» через читающий радио/read-мастер (одно
+    // 64-бит слово за раз), чтобы table_rvalid/rdata подавались device_prog.
+    // При DEVPROG_EN=0 программный путь заземлён и не влияет на поведение
+    // (легали и кольцо работают по-старому).
+    generate
+    if (DEVPROG_EN) begin : gen_devprog_on
+        device_prog #(
+            .DEVPROG_EN   (1'b1),
+            .NUM_MAC      (NUM_MAC),
+            .ADDR_WIDTH   (AW),
+            .UNIT_BYTES   (32),
+            .ELEM_BYTES   (8)
+        ) u_devprog (
+            .clk             (clk),
+            .rst_n           (rst_n),
+            .en              (dprog_active_q),
+            .go              (dprog_go_q),
+            .data_base       (dprog_data_base_q),
+            .table_base      (dprog_table_base_q),
+            .mailbox_base    (dprog_mailbox_base_q),
+            .n_units         (dprog_n_units_q),
+            .desc_task_valid (dp_desc_task_valid),
+            .desc_task_a     (dp_desc_task_a),
+            .desc_task_w     (dp_desc_task_w),
+            .desc_task_r     (dp_desc_task_r),
+            .desc_task_n     (dp_desc_task_n),
+            .desc_task_tag   (dp_desc_task_tag),
+            .table_req       (dp_table_req),
+            .table_addr      (dp_table_addr),
+            .table_rvalid    (dp_table_rvalid),
+            .table_rdata     (dp_table_rdata),
+            .done            (dp_done),
+            .mailbox_wr_start(dp_mailbox_wr_start),
+            .mailbox_wr_addr (dp_mailbox_wr_addr),
+            .mailbox_wr_data (dp_mailbox_wr_data)
+        );
+
+        // ---- table-чтение через read-мастер (1 слово/запрос) ----
+        always_ff @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                dpt_state       <= DPT_IDLE;
+                dp_rd_start     <= 1'b0;
+                dp_rd_addr      <= '0;
+                dp_table_rvalid_q <= 1'b0;
+                dp_table_rdata_q  <= 64'h0;
+            end else begin
+                dp_rd_start <= 1'b0;
+                dp_table_rvalid_q <= 1'b0;
+                case (dpt_state)
+                    DPT_IDLE: begin
+                        if (dp_table_req) begin
+                            dp_rd_addr  <= dp_table_addr;   // защёлка адреса на всё чтение
+                            dpt_state   <= DPT_REQ;
+                        end
+                    end
+                    DPT_REQ: begin
+                        // разрешено читать таблицу только когда ядро не читает
+                        // данные (между задачами) и read-мастер свободен
+                        if (dp_table_permit && (rstate == RST_IDLE)) begin
+                            dp_rd_start <= 1'b1;
+                            dpt_state   <= DPT_WAIT;
+                        end
+                    end
+                    DPT_WAIT: begin
+                        // вернулось единственное слово таблицы
+                        if (fifo_push) begin
+                            dp_table_rdata_q  <= M_AXI_RDATA;
+                            dp_table_rvalid_q <= 1'b1;
+                            dpt_state <= DPT_IDLE;
+                        end
+                    end
+                    default: dpt_state <= DPT_IDLE;
+                endcase
+            end
+        end
+        assign dp_table_rvalid = dp_table_rvalid_q;
+        assign dp_table_rdata  = dp_table_rdata_q;
+    end else begin : gen_devprog_off
+        // 0-ветвь: программный путь заземлён (device_prog отсутствует).
+        always_ff @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                dpt_state         <= DPT_IDLE;
+                dp_rd_start       <= 1'b0;
+                dp_rd_addr        <= '0;
+                dp_table_rvalid_q <= 1'b0;
+                dp_table_rdata_q  <= 64'h0;
+            end else begin
+                dp_rd_start       <= 1'b0;
+                dp_table_rvalid_q <= 1'b0;
+                dpt_state         <= DPT_IDLE;
+            end
+        end
+        assign dp_table_rvalid = 1'b0;
+        assign dp_table_rdata  = 64'h0;
+        always_comb begin
+            dp_desc_task_valid = 1'b0;
+            dp_desc_task_a     = '0;
+            dp_desc_task_w     = '0;
+            dp_desc_task_r     = '0;
+            dp_desc_task_n     = '0;
+            dp_desc_task_tag   = '0;
+            dp_table_req       = 1'b0;
+            dp_table_addr      = '0;
+            dp_done            = 1'b0;
+            dp_mailbox_wr_start= 1'b0;
+            dp_mailbox_wr_addr = '0;
+            dp_mailbox_wr_data = '0;
+        end
+    end
+    endgenerate
 
 endmodule
