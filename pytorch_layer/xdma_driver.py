@@ -583,7 +583,25 @@ class TdotCore:
         self._reg_w(0x08, n)
 
     def start(self) -> None:
+        # FIX 2026-10-20 (OBS/GO safety, source-grounded): when sched_en=1 the RTL
+        # blocks the legacy GO pulse (go_accept = go_pulse && !busy_q && !sched_en_q),
+        # so start() would be a silent no-op -> OBS stays 0 and the result is garbage.
+        # Never do that silently: if the scheduler is active, fail fast and let the
+        # caller decide (disable sched via set_sched(False) or use TdotScheduler).
+        if (self._reg_r(SCHED_CTRL) & 0x1):
+            raise XdmaError("legacy GO disabled: scheduler active (sched_en=1). "
+                            "Call core.set_sched(False) before legacy dot(), or use "
+                            "TdotScheduler for scheduler-driven tasks.")
         self._reg_w(0x00, 0x1)  # GO
+
+    def set_sched(self, on: bool) -> None:
+        """Enables/disables the HW scheduler (SCHED_CTRL bit0) explicitly.
+
+        Safe only when no scheduler batch is in flight (engine idle, ring empty).
+        Use this to switch the core between scheduler mode (on) and the legacy
+        GO dot path (off)."""
+        v = self._reg_r(SCHED_CTRL) & ~0x1
+        self._reg_w(SCHED_CTRL, v | (1 if on else 0))
 
     def status(self) -> tuple:
         s = self._reg_r(0x04)

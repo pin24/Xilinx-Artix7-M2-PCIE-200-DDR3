@@ -17,6 +17,18 @@
 - Status: FIXED and verified on hardware (write/read 4B/1K/1M PASS, smoke OK; only perf_ioctl fails - IOCTL not present in this base).
 - Side note: addressing/registers/MSI-X config confirmed correct (6-agent audit); the issue was driver-only. Doc: docs/CHANGE_LOG_2026-10-20.md.
 
+
+### [BUG-56] OBS/legacy-GO: sched_en=1 silently disabled the GO path -> OBS counters stayed 0
+- Symptom: obs_smi.py --dot and legacy core.dot() reported OBS counters all-zero (BUSY/AR/BEAT/WR/JOB=0) and a garbage dot result; OBS looked "non-real".
+- Root cause (RTL tdot_axi4.sv): go_accept = go_pulse && !busy_q && !sched_en_q. When sched_en=1 (left set by a prior TdotScheduler batch / training session and never reset), the legacy GO pulse is ignored -> the core never runs, so OBS event counters legitimately stay 0 and the result is stale.
+- Fix (host, safe): TdotCore.start() now raises XdmaError if sched_en=1 (no more silent no-op); TdotCore.set_sched(on) added for explicit mode switch; obs_smi.py --dot calls set_sched(False) before its load (scoped to the monitor, engine idle). OBS counters verified working in BOTH legacy-GO mode (sched off) and scheduler mode (sched on): busy/ar/beat/wr/job increment exactly as expected.
+- Files: pytorch_layer/xdma_driver.py (TdotCore.start, set_sched), scripts/obs_smi.py. Status: FIXED, verified on hardware.
+
+### [BUG-57] tdot dot() result value vs naive expectation (RESOLVED - NOT A BUG: hardware matches the reference model)
+- Symptom (reported): dot() result value did not match the naive real-number expectation (canonical n=16 payload decodes to ~0.24417 vs a naive ~1e-2; an n=8 test returned 0).
+- Resolution: compared against the project reference model verify_tdot_axi4.dot_ref_raw(): hardware output 7048041332736 == model output (0x66900000000) EXACTLY for n=16, and the n=8 input also matches (model also returns 0). The core computes correctly in ternary TFloat arithmetic; the naive float expectation was wrong. DDR round-trip is bit-exact; data was never zero.
+- Status: CLOSED - not a hardware/firmware bug.
+
 ## 2026-09-09 — XDMA 64-bit @ 250 МГц не закрывает тайминг на Artix-7 → 128-bit @ 125 МГц
 
 ### [BUG-051] XDMA userclk1 internal timing violation WNS=-2.208ns

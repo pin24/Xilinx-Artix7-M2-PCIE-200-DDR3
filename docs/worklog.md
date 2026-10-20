@@ -724,3 +724,15 @@ Work Log:
 - РЕШЕНИЕ: чтобы не сломать 8-байт (verify 4/4) и не внести риск синтеза, РЕАЛИЗАЦИЯ 6-байт в RTL НЕ внесена сейчас; 8-байт сохранён (verify_tdot_axi4 32 = 0/4 PASS).
 - Проверено: tdot_axi4.sv не изменён, verify 4/4 PASS; драйвер P2 компилируется.
 Stage Summary: RTL 6-байт — спроектирован, внедрение отложено (отдельный этап: xsim barrel-стенд + решение BRAM dual-write); 8-байт стабилен. Установлен v1.1.32. PLAN-3 P2 в репо.
+
+---
+Task ID: 2026-10-20-obs-go-sched
+Agent: MultiTool
+Task: Diagnose OBS zeros + dot() result mismatch; safe sched_en handling; monitoring
+Work Log:
+- OBS counters verified working in BOTH modes (legacy GO when sched=0, and scheduler): busy/ar/beat/wr/job increment exactly.
+- Root cause of 'non-real' OBS: sched_en=1 (left by prior scheduler/training) silently disabled legacy GO (go_accept gate) -> core never ran -> counters 0, garbage result.
+- Fix: TdotCore.start() raises if sched_en=1; added set_sched(on); obs_smi.py --dot sets sched=False first. Reverted a riskier auto-disable in start() (could break a running scheduler batch at high throughput).
+- Correct monitoring: python scripts/obs_smi.py --num-mac 16 --dot 100 --interval 0.3 --clear  (verified: AR=+200, BEAT=+3200, WR=+100, JOB=+100).
+- dot() result value (BUG-57) RESOLVED - NOT A BUG: hardware output == verify_tdot_axi4.dot_ref_raw() reference exactly (n=16 -> 0x66900000000; n=8 -> 0); the naive float expectation was wrong, core computes correctly in ternary TFloat.
+- Recording: docs/CHANGE_LOG_2026-10-20.md (sec6), docs/ERROR_HISTORY.md [BUG-56][BUG-57].

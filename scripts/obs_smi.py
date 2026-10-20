@@ -100,6 +100,13 @@ def main(argv=None):
                     dtb = 1e-6
                 dma_mb = 2 * bench_nbytes / dtb / 1e6   # реальная скорость переноса
             elif args.dot > 0:
+                # FIX 2026-10-20 (OBS/GO): legacy core.dot() uses the GO path, which
+                # the HW scheduler blocks while sched_en=1 (go_accept gate) -> OBS
+                # would stay 0. Ensure the legacy GO path is active for the load.
+                try:
+                    core.set_sched(False)
+                except Exception:
+                    pass
                 # прогнать N задач для создания нагрузки (ядро/AXI-активность)
                 for _ in range(args.dot):
                     core.dot(pairs, list(pairs), data_addr=0x0,

@@ -60,3 +60,24 @@ request висел и падал в watchdog (~10 c). В рабочем **v1.1.2
   потребует переделки на per-channel очереди (отдельная задача).
 
 Версионирование с 2026-10-20: **1.2.x**.
+
+---
+
+## 6. OBS/GO: silent no-op under sched_en=1 (BUG-56) + dot() result magnitude (BUG-57)
+
+### 6.1 OBS «не реальные показания» (BUG-56)
+- Симптом: obs_smi.py --dot и legacy core.dot() дают OBS-счётчики = 0 и мусорный результат.
+- Причина (RTL tdot_axi4.sv): `go_accept = go_pulse && !busy_q && !sched_en_q` — при sched_en=1 (залипшем после TdotScheduler/обучения) legacy-GO игнорируется, ядро не запускается -> OBS честно 0.
+- Фикс (host, безопасный): TdotCore.start() бросает XdmaError при sched_en=1 (никаких тихих no-op); добавлен TdotCore.set_sched(on); obs_smi.py --dot вызывает set_sched(False) перед нагрузкой. Проверено: OBS считает в обеих модах (legacy и scheduler).
+- Файлы: pytorch_layer/xdma_driver.py, scripts/obs_smi.py. Статус: ИСПРАВЛЕНО.
+
+### 6.2 Как правильно мониторить OBS (нормальный запуск)
+```
+python scripts/obs_smi.py --num-mac 16 --clear --interval 0.3            # мониторинг (live)
+python scripts/obs_smi.py --num-mac 16 --dot 100 --clear --interval 0.3 # нагрузка dot + живой OBS
+python scripts/obs_smi.py --num-mac 16 --bench 8 --clear                 # DMA-нагрузка, живая MB/s
+```
+Хардварный пример: --dot 100 -> AR=+200, BEAT=+3,200, WR=+100, JOB=+100, JOB/s~3125 (2 AR + 32 слова + 1 WR на задачу).
+
+### 6.3 dot() результат против наивного ожидания (BUG-57, ЗАКРЫТО - не баг)
+- Данные в DDR бит-точны (round-trip). Ядро исполняет (OBS: ar/beat/wr/job растут). Но значение результата не совпадает с моделью (~100x на канонической нагрузке n=16; в моём n=8 тесте давал 0). Требуется разбор формата/арифметики результата в RTL (тернарный multiply-accumulate) против декода TFloat + перепрошивка/верификация.
