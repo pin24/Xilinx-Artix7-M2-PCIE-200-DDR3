@@ -75,10 +75,28 @@ def make_analytic_batch(n_pair, seed=0):
 # ---------------------------------------------------------------------------
 def _pad16(v):
     v = np.asarray(v, dtype=np.float32).ravel()
-    return np.concatenate([v, np.zeros(HIDDEN - v.shape[0], dtype=np.float32)])
+    return np.concatenate([v, np.zeros(16 - v.shape[0], dtype=np.float32)])
+
+def mul_chunked(x, w, fb):
+    """dot(x,w) длины L>16, разбитый на проходы по 16 («64 = 4x16»)."""
+    x = np.asarray(x, dtype=np.float32).ravel()
+    w = np.asarray(w, dtype=np.float32).ravel()
+    L = x.shape[0]
+    acc = 0.0
+    for s in range(0, L, 16):
+        ax = _pad16(x[s:s + 16])
+        aw = _pad16(w[s:s + 16])
+        acc += float(np.asarray(
+            fb.run_dot(np.array([ax], dtype=np.float32),
+                       np.array([aw], dtype=np.float32))[0]).ravel()[0])
+    return acc
 
 def matmul_w(X, W, backend, fb=None):
-    """X:(B,in) @ W:(in,out) -> (B,out). backend='cpu' (numpy) или 'fpga' (tdot)."""
+    """X:(B,in) @ W:(in,out) -> (B,out). backend='cpu' (numpy) или 'fpga' (tdot).
+
+    При backend='fpga' каждый выходной нейрон — dot на акселераторе. Если длина
+    входного вектора > 16 (напр. 64), dot дробится на проходы по 16 и суммируется —
+    это позволяет эмулировать широкие слои на 16-MAC части.""" 
     X = np.asarray(X, dtype=np.float32); W = np.asarray(W, dtype=np.float32)
     B, fin = X.shape
     fout = W.shape[1]
@@ -87,11 +105,9 @@ def matmul_w(X, W, backend, fb=None):
     assert fb is not None, "fpga требует fb"
     out = np.zeros((B, fout), dtype=np.float32)
     for o in range(fout):
-        wcol = _pad16(W[:, o])
+        wcol = W[:, o]
         for b in range(B):
-            out[b, o] = float(np.asarray(
-                fb.run_dot(np.array([_pad16(X[b])], dtype=np.float32),
-                           np.array([wcol], dtype=np.float32))[0]).ravel()[0])
+            out[b, o] = mul_chunked(X[b], wcol, fb)
     return out
 
 

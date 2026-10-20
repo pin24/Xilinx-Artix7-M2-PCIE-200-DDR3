@@ -19,6 +19,7 @@ import os, sys, time, argparse
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pytorch_layer"))
+import nn_audio_common as AC
 from nn_audio_common import HIDDEN, make_analytic_batch, save_model_npz, matmul_w
 
 def make_fpga_backend():
@@ -26,7 +27,7 @@ def make_fpga_backend():
     from xdma_driver import XdmaWinUpstream, TdotCore
     dev = XdmaWinUpstream(base=r"\\.\XDMA0dma")
     TdotCore(dev, num_mac=16).set_sched(False)   # legacy-GO path active
-    return FpgaBackend(mode="fpga", n=HIDDEN, device=dev, num_mac=16)
+    return FpgaBackend(mode="fpga", n=16, device=dev, num_mac=16)   # n=16: чанк dot'а
 
 def fpga_hidden(x, W1, b1, fb):
     """Скрытый признак одного сэмпла, считаемый НА FPGA (умножитель): relu(W1@x+b1)."""
@@ -34,10 +35,12 @@ def fpga_hidden(x, W1, b1, fb):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--hidden", type=int, default=AC.HIDDEN, help="ширина скрытого слоя (16/32/64; >16 = чанки по 16 MAC)")
     ap.add_argument("--pairs", type=int, default=300)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="audio_model_fpga.npz")
     args = ap.parse_args()
+    AC.HIDDEN = args.hidden   # ширина скрытого слоя (64 = чанки по 16 MAC)
 
     fb = make_fpga_backend()
     xs, ys = make_analytic_batch(args.pairs, args.seed)

@@ -13,17 +13,20 @@
 import os, sys, time, argparse
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nn_audio_common as AC
 from nn_audio_common import (load_model_npz, generate_samples, save_wav,
                              N_SAMPLES, SR, DURATION, norm_freq)
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--hidden", type=int, default=AC.HIDDEN, help="ширина скрытого слоя (16/32/64; >16 = чанки по 16 MAC)")
     ap.add_argument("--freq", type=float, default=440.0)
     ap.add_argument("--model", default="audio_model_cpu.npz")
     ap.add_argument("--out", default=None)
     ap.add_argument("--bench", action="store_true", help="замерить время на сэмпл")
     args = ap.parse_args()
+    AC.HIDDEN = args.hidden   # ширина скрытого слоя (64 = чанки по 16 MAC)
 
     model = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.model)
     W1, b1, W2, b2 = load_model_npz(model)

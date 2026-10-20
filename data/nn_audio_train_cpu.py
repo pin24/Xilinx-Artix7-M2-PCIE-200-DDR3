@@ -8,6 +8,7 @@
 import os, sys, time, argparse
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nn_audio_common as AC
 from nn_audio_common import (HIDDEN, init_weights, make_training_batch,
                              make_analytic_batch, save_model_npz, load_dataset)
 
@@ -37,6 +38,7 @@ def train(xs, ys, W1, b1, W2, b2, epochs, batch, lr):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--hidden", type=int, default=AC.HIDDEN, help="ширина скрытого слоя (16/32/64; >16 = чанки по 16 MAC)")
     ap.add_argument("--epochs", type=int, default=400)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=0.05)
@@ -45,6 +47,7 @@ def main():
     ap.add_argument("--use-dataset", action="store_true")
     ap.add_argument("--out", default="audio_model_cpu.npz")
     args = ap.parse_args()
+    AC.HIDDEN = args.hidden   # ширина скрытого слоя (64 = чанки по 16 MAC)
 
     items = load_dataset() if args.use_dataset else []
     xs, ys = (make_training_batch(items, args.pairs, args.seed) if items
