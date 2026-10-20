@@ -15,11 +15,11 @@ module tb_rtl_vs_arith48;
     initial begin
         #20 rst_n <= 1;
         #20;
-        f = $fopen("/home/z/my-project/repo/main/rtl/block/sim/rtl48_in.hex", "r");
-        g = $fopen("/home/z/my-project/repo/main/rtl/block/sim/rtl48_out.hex", "w");
+        f = $fopen("C:/A7_M2/Xilinx-Artix7-M2-PCIE-200-DDR3/rtl/block/sim/rtl48_in.hex", "r");
+        g = $fopen("C:/A7_M2/Xilinx-Artix7-M2-PCIE-200-DDR3/rtl/block/sim/rtl48_out.hex", "w");
         ncase = 0;
         while (!$feof(f)) begin
-            // Ð¾Ð´Ð¸Ð½ ÑÐ»ÑƒÑ‡Ð°Ð¹ = NUM_MAC Ð¿Ð°Ñ€
+            // îäèí ñëó÷àé = NUM_MAC ïàð
             npair = 0;
             for (k = 0; k < NUM_MAC; k = k + 1) begin
                 if ($fscanf(f, "%h", w) != 1) break;
@@ -28,7 +28,7 @@ module tb_rtl_vs_arith48;
                 weights[48*k +: 48] <= w;
                 npair = npair + 1;
             end
-            if (npair < NUM_MAC) break;   // ÐºÐ¾Ð½ÐµÑ† Ñ„Ð°Ð¹Ð»Ð°
+            if (npair < NUM_MAC) break;   // êîíåö ôàéëà
             @(posedge clk);
             valid_in <= 1;
             @(posedge clk);

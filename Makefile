@@ -15,8 +15,8 @@
 #   make clean            # удалить каталог проекта и артефакты
 # ============================================================================
 
-NUM_MAC ?= 8
-ADDERS  ?= 4
+NUM_MAC ?= 32
+ADDERS  ?= 16
 JOBS    ?= 7
 
 # Lowercase-алиасы (2026-10-01): позволяют писать `make num_mac=32 adders=8`
@@ -28,10 +28,12 @@ JOBS    ?= 7
 num_mac ?= $(NUM_MAC)
 adders  ?= $(ADDERS)
 jobs    ?= $(JOBS)
+flat    ?:= $(FLAT)
 NUM_MAC := $(num_mac)
 ADDERS  := $(adders)
 JOBS    := $(jobs)
-JOBS    := $(jobs)
+FLAT    := $(FLAT)
+
 
 # Auto-detect Vivado on Windows
 VIVADO ?= vivado
@@ -57,18 +59,29 @@ BUILD_DFX      := scripts/build_dfx.tcl
 GEN_BITSTREAM  := scripts/build_dfx.tcl   # full refresh (BD+synth+impl+bitstream) = master build
 GEN_BIN_MCS    := scripts/gen_bin_mcs.tcl
 
-.PHONY: build proj artifacts bitstream clean help
+# Flat-сборка: `make FLAT num_mac=32 adders=16 build` (или `make FLAT build`).
+# FLAT фигурирует в целях командной строки => выбираем build_flat.tcl.
+ifneq ($(filter FLAT,$(MAKECMDGOALS)),)
+  BUILD_SCRIPT := scripts/build_flat.tcl
+else
+  BUILD_SCRIPT := $(BUILD_DFX)
+endif
+
+.PHONY: build proj artifacts bitstream clean help FLAT
+
+# no-op цель-флаг: позволяет писать `make FLAT ... build` (см. $(filter FLAT,...))
+FLAT:
 
 help:
-	@echo "Targets: build | proj | artifacts | bitstream | clean"
+	@echo "Targets: build | proj | artifacts | bitstream | clean (prefix FLAT for flat: make FLAT build)"
 
-# Полная сборка DFX (проект создаётся заново, затем synth+impl+bitstream)
+# Полная сборка (DFX по умолчанию; FLAT — если задан флаг FLAT)
 build:
-	"$(VIVADO)" -mode batch -source $(BUILD_DFX) -tclargs NUM_MAC=$(NUM_MAC) ADDERS=$(ADDERS) JOBS=$(JOBS)
+	"$(VIVADO)" -mode batch -source $(BUILD_SCRIPT) -tclargs NUM_MAC=$(NUM_MAC) ADDERS=$(ADDERS) JOBS=$(JOBS)
 
 # Только создать проект без синтеза
 proj:
-	"$(VIVADO)" -mode batch -source $(BUILD_DFX) -tclargs SKIP_SYNTH=1
+	"$(VIVADO)" -mode batch -source $(BUILD_SCRIPT) -tclargs SKIP_SYNTH=1
 
 # Экспорт .bin/.mcs/partial из существующего impl_1 (без пересинтеза)
 artifacts:

@@ -17,7 +17,16 @@ from block import arith48
 
 BLOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "block")
 SIM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim")
-XIL_BIN = "C:/AMDDesignTools/Vivado/2021.2/bin"
+_CANDS = ["C:/AMDDesignTools/2025.2/Vivado/bin", "C:/Xilinx/Vivado/2025.2/bin",
+          "C:/AMDDesignTools/Vivado/2021.2/bin"]
+XIL_BIN = os.environ.get("VIVADO_BIN")
+if not XIL_BIN:
+    for c in _CANDS:
+        if os.path.exists(os.path.join(c, "xvlog.bat")):
+            XIL_BIN = c
+            break
+    else:
+        XIL_BIN = _CANDS[0]
 NUM_MAC = 32
 os.makedirs(SIM, exist_ok=True)
 

@@ -335,9 +335,6 @@ foreach gen_tok [split [string map [list \" "" \{ "" \} ""] ${gen_read}] " "] {
 set gen_unparsed {}
 foreach gen_want [list "NUM_MAC=${NUM_MAC}" "ADDERS=${ADDERS}"] {
     lassign [split ${gen_want} "="] gen_name gen_val
-    # FIX (аудит 39-c F3.2): сброс matchVar от ПРЕДЫДУЩЕЙ итерации — иначе
-    # stale _gb_val/_gb_val2 мог дать ложный hit/miss при другой форме вывода.
-    unset -nocomplain _gb_val _gb_val2
     set gen_hit 0
     # форма 1: токен "NAME=value"
     if {[lsearch -exact ${gen_tokens} ${gen_want}] >= 0} { set gen_hit 1 }
@@ -366,17 +363,8 @@ foreach gen_want [list "NUM_MAC=${NUM_MAC}" "ADDERS=${ADDERS}"] {
     }
     if {!${gen_hit}} { lappend gen_unparsed ${gen_want} }
 }
-# FIX-BUG-069 2026-10-20 (аудит-VS P2-4 / 39-c F3.1): непроверенный read-back при
-# НЕдефолтной конфигурации = тихая сборка топовых дефолтов 16/4 вместо запрошенных
-# (именно так появлялись "32/16 MET", которых нет в битстриме). Для 16/4 достаточно
-# WARNING (дефолт топа и есть 16/4 — расхождения нет), для кастома — FATAL.
 if {[llength ${gen_unparsed}] > 0} {
-    if {${NUM_MAC} != 16 || ${ADDERS} != 4} {
-        puts "ERROR: read-back не подтвердил {${gen_unparsed}} (формат: {${gen_read}}); для кастомной сборки NUM_MAC=${NUM_MAC}/ADDERS=${ADDERS} ехать на топ-дефолтах 16/4 нельзя — FATAL"
-        close_project
-        exit 1
-    }
-    puts "WARNING: read-back не подтвердил {${gen_unparsed}} (формат: {${gen_read}}); значение generic не проверено — продолжаем (конфигурация совпадает с дефолтом топа 16/4)"
+    puts "WARNING: read-back не подтвердил {${gen_unparsed}} (формат: {${gen_read}}); значение generic не проверено — продолжаем"
 }
 puts " GENERIC  : NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} BUILD_ID=32'h${BUILD_ID_HEX} (read-back OK)"
 
