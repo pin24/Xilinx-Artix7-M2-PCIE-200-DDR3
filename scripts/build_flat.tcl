@@ -257,7 +257,11 @@ update_compile_order -fileset constrs_1
 # FIX 2026-10-14: NUM_MAC/ADDERS (тип `int`) Vivado НЕ принимает как fileset-generic
 # (проверено минимальным тестом) — их передаём через STEPS.SYNTH_DESIGN.ARGS.GENERIC
 # в разделе 8 (см. ниже). BUILD_ID (logic[31:0]) через fileset работает.
-set_property generic BUILD_ID=32'h${BUILD_ID_HEX} [current_fileset]
+# FIX 2026-10-20 (v1.2.x, verified): fileset `generic` property DOES accept the
+# integer top parameters (probe: set/get OK on Vivado 2025.2). Set BUILD_ID +
+# NUM_MAC + ADDERS together on the FILESET (the run-level `generic` property and
+# STEPS.SYNTH_DESIGN.ARGS.GENERIC are READ-ONLY / not settable -> Common 17-54).
+set_property generic [list BUILD_ID=32'h${BUILD_ID_HEX} NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}] [current_fileset]
 puts " GENERIC  : NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} BUILD_ID=32'h${BUILD_ID_HEX}"
 
 # ---------- 6. Demote PCIe IP XDC ----------
@@ -281,13 +285,8 @@ puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
-# FIX 2026-10-20: NUM_MAC/ADDERS (тип `int`) Vivado не принимает как fileset-generic.
-# Передаём их в СИНТЕЗ через СВОЙСТВО `generic` run'а synth_1 (это свойство напрямую
-# идёт в synth_design -generic и корректно принимает int-параметры) ДО launch_runs
-# synth_1 (иначе синтез берёт дефолт топа 16/4, и битстрим 32/8 — «пустышка»).
-# НЕ использовать STEPS.SYNTH_DESIGN.ARGS.GENERIC — такого свойства нет ни у одного
-# run (Common 17-54), сборка падает.
-set_property generic [list NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}] [get_runs synth_1]
+# FIX 2026-10-20 (v1.2.x): NUM_MAC/ADDERS are passed on the FILESET generic
+# (see SECTION 5.1), NOT on the run (run-level generic is read-only -> 17-54).
 # BUG-047: apply set_clock_groups in PLACE_DESIGN.TCL.PRE (clocks exist in DCP).
 set_property STEPS.PLACE_DESIGN.TCL.PRE ${ROOT}/scripts/timing_exceptions_post.tcl [get_runs impl_1]
 

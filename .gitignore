@@ -70,3 +70,6 @@ _backup_*/
 *.bit
 xsim.dir/
 .taskqueue/
+
+data/audio_dataset_500_3s/
+data/gen_*.wav
