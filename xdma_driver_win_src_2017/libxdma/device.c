@@ -12,7 +12,7 @@
 *
 * References:
 * -----------
-*	[1] pg195-pcie-dma.pdf - DMA/Bridge Subsystem for PCI Express v3.0 - Product Guide
+*       [1] pg195-pcie-dma.pdf - DMA/Bridge Subsystem for PCI Express v3.0 - Product Guide
 *   [2] Windows Dev - Using Automatic Synchronization - https://msdn.microsoft.com/en-us/windows/hardware/drivers/wdf/using-automatic-synchronization
 */
 
@@ -282,6 +282,15 @@ NTSTATUS XDMA_DeviceOpen(WDFDEVICE wdfDevice,
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
 
+    // FIX-BUG-067 2026-10-20 (аудит-VS P2-6): interruptRegs проверялся только
+    // ASSERT'ом (в free-сборке no-op) -> при малом BAR SetupInterrupts/
+    // SetupMsixInterrupts разыменовывали NULL. Устройство без IRQ-блока
+    // неработоспособно — валим open громко, до подключения прерываний.
+    if (xdma->interruptRegs == NULL) {
+        TraceError(DBG_INIT, "XDMA_DeviceOpen: interruptRegs not found (BAR too small)");
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+
     // Confirm XDMA IP core version matches this driver
     UINT version = GetVersion(xdma);
     if (version != v2017_1) {
@@ -319,7 +328,23 @@ WdfDeviceSetAlignmentRequirement(xdma->wdfDevice, 8 - 1);
 
 void XDMA_DeviceClose(PXDMA_DEVICE xdma) {
 
-    // todo - stop every engine?
+    // FIX-BUG-068 2026-10-20 (аудит-VS P2-5 / реестр 39 P1-4): остановить все
+    // включённые движки ДО освобождения банков дескрипторов и MmUnmapIoSpace.
+    // Раньше (todo) при surprise-remove / ошибке PrepareHardware движок мог
+    // продолжать DMA в common-buffer, который XDMA_EngineDeleteDescriptorPool
+    // освобождает ниже, и в BAR, который вот-вот будет размаплен -> обращение
+    // к освобождённой памяти/устройству. EngineStop = одна запись controlW1C
+    // (RUN=0), валидна на PASSIVE_LEVEL, пока BAR ещё замаплен.
+    if (xdma != NULL) {
+        for (ULONG ch = 0; ch < XDMA_MAX_NUM_CHANNELS; ch++) {
+            for (ULONG dir = H2C; dir < XDMA_NUM_DIRECTIONS; dir++) {
+                XDMA_ENGINE* eng = &xdma->engines[ch][dir];
+                if (eng != NULL && eng->enabled) {
+                    EngineStop(eng);
+                }
+            }
+        }
+    }
 
     // PLAN-3 P1 2026-10-17: free the descriptor-block POOL of every engine we
     // created. Runs at PASSIVE_LEVEL (EvtDeviceReleaseHardware / PrepareHardware

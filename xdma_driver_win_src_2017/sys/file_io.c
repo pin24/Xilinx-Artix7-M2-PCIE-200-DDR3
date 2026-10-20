@@ -762,7 +762,13 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
             if (!NT_SUCCESS(status)) {
                 TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed (packet %u/%u): %!STATUS!",
                            packet + 1, (ULONG)XDMA_MAX_WDF_PACKETS);
-                break;
+                // FIX-BUG-064 2026-10-20: STATUS_CANCELLED = владение уже у DPC/
+                // cancel — IRP завершает владелец, трогать request/транзакцию
+                // ЗАПРЕЩЕНО (иначе двойное завершение, BSOD 0x10D).
+                if (status == STATUS_CANCELLED) {
+                    return;
+                }
+                break;   // STATUS_TIMEOUT: мы владелец (CAS в WaitCompletion) — завершаем ниже
             }
             BOOLEAN morePackets = TRUE;
             if (queue->engine->engineLock) {
@@ -782,6 +788,25 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
             TraceError(DBG_IO, "transaction exceeded %u WDF packets (IRP too large?); failing with timeout",
                        (ULONG)XDMA_MAX_WDF_PACKETS);
             status = STATUS_IO_TIMEOUT;
+        }
+        // FIX-BUG-064 2026-10-20 (D-5): исчерпание пакетов — выход с ещё работающей
+        // передачей (txnDone=FALSE после пере-вооружения хвоста BUG-060). Захватываем
+        // владение тем же CAS и глушим движок — иначе поздний DPC завершит уже
+        // завершённый IRP (0x10D). Если DPC/cancel успели раньше — выходим, не трогая.
+        {
+            BOOLEAN owner = FALSE;
+            if (queue->engine->engineLock) {
+                WdfSpinLockAcquire(queue->engine->engineLock);
+                owner = !queue->engine->txnDone;
+                if (owner) {
+                    queue->engine->txnDone = TRUE;
+                }
+                WdfSpinLockRelease(queue->engine->engineLock);
+            }
+            if (!owner) {
+                return;
+            }
+            EngineStop(queue->engine);
         }
         NTSTATUS uc = WdfRequestUnmarkCancelable(Request);
         if (uc == STATUS_CANCELLED) {
@@ -861,7 +886,12 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
             if (!NT_SUCCESS(status)) {
                 TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed (packet %u/%u): %!STATUS!",
                            packet + 1, (ULONG)XDMA_MAX_WDF_PACKETS);
-                break;
+                // FIX-BUG-064 2026-10-20: см. EvtIoWriteDma — STATUS_CANCELLED =
+                // владение уже у DPC/cancel, IRP завершает владелец.
+                if (status == STATUS_CANCELLED) {
+                    return;
+                }
+                break;   // STATUS_TIMEOUT: мы владелец (CAS в WaitCompletion) — завершаем ниже
             }
             BOOLEAN morePackets = TRUE;
             if (queue->engine->engineLock) {
@@ -877,6 +907,24 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
             TraceError(DBG_IO, "transaction exceeded %u WDF packets (IRP too large?); failing with timeout",
                        (ULONG)XDMA_MAX_WDF_PACKETS);
             status = STATUS_IO_TIMEOUT;
+        }
+        // FIX-BUG-064 2026-10-20 (D-5): см. EvtIoWriteDma — захват владения
+        // (CAS txnDone) + EngineStop перед Release/Complete на пути исчерпания
+        // пакетов; при чужом владении — выходим, не трогая request.
+        {
+            BOOLEAN owner = FALSE;
+            if (queue->engine->engineLock) {
+                WdfSpinLockAcquire(queue->engine->engineLock);
+                owner = !queue->engine->txnDone;
+                if (owner) {
+                    queue->engine->txnDone = TRUE;
+                }
+                WdfSpinLockRelease(queue->engine->engineLock);
+            }
+            if (!owner) {
+                return;
+            }
+            EngineStop(queue->engine);
         }
         NTSTATUS uc = WdfRequestUnmarkCancelable(Request);
         if (uc == STATUS_CANCELLED) {

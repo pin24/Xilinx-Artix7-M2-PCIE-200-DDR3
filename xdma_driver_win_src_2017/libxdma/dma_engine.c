@@ -1595,16 +1595,40 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG maxIteration
 
     // FIX-AUDIT-C2H 2026-09-30: on timeout, also clear the spurious-irq guard
     // so a late interrupt cannot touch a released transaction.
+    // FIX-BUG-064 2026-10-20 (аудит-VS P1-1 / реестр 39 D-4): на таймауте poll-путь
+    // обязан ЗАХВАТИТЬ владение транзакцией (CAS txnDone FALSE->TRUE под
+    // engineLock). Раньше гасился только isReqPending: поздний DPC (передача
+    // дошла сразу после истечения итераций) проходил txnDone-guard, делал
+    // Release/DmaCompleted уже ПОСЛЕ того, как вызывающий (EvtIoReadDma/
+    // EvtIoWriteDma) завершил IRP по STATUS_TIMEOUT -> двойное завершение
+    // (BSOD 0x10D/0xE6). Владелец дополнительно глушит движок EngineStop,
+    // чтобы зависшая передача не породила новых DPC после Release.
+    // Если txnDone уже TRUE (DPC/cancel успели стать владельцем между последней
+    // итерацией и этим спинлоком) — возвращаем STATUS_CANCELLED: вызывающий НЕ
+    // имеет права трогать request/транзакцию, IRP завершает владелец.
     TraceError(DBG_DMA, "XDMA_EngineWaitCompletion TIMEOUT %u descriptors "
                "(completed=%u, status=0x%08x) after %u iters",
                expected, engine->regs->completedDescCount,
                engine->regs->status, iter);
-    if (engine->engineLock) {
-        WdfSpinLockAcquire(engine->engineLock);
-        engine->isReqPending = FALSE;
-        WdfSpinLockRelease(engine->engineLock);
+    {
+        BOOLEAN owner = TRUE;   // нет спинлока — сохраняем прежнее поведение
+        if (engine->engineLock) {
+            WdfSpinLockAcquire(engine->engineLock);
+            engine->isReqPending = FALSE;
+            owner = !engine->txnDone;
+            if (owner) {
+                engine->txnDone = TRUE;   // poll-путь становится владельцем
+            }
+            WdfSpinLockRelease(engine->engineLock);
+        } else {
+            engine->isReqPending = FALSE;
+        }
+        if (owner) {
+            EngineStop(engine);
+            return STATUS_TIMEOUT;
+        }
+        return STATUS_CANCELLED;   // IRP завершает другой владелец — не трогаем
     }
-    return STATUS_TIMEOUT;
 }
 
 NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine) {

@@ -139,7 +139,12 @@ static NTSTATUS SetupSingleInterrupt(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST Resou
     ULONG numResources = WdfCmResourceListGetCount(ResourcesTranslated);
     UINT32 vectorValue = 0;
 
-    ASSERT(xdma->interruptRegs != NULL);
+    // FIX-BUG-067 2026-10-20: ASSERT молчит в free-сборке; при малом BAR здесь
+    // был NULL-deref. DeviceOpen теперь валил open заранее — дублируем защитой.
+    if (xdma->interruptRegs == NULL) {
+        TraceError(DBG_INIT, "SetupDeviceInterrupts: interruptRegs is NULL (BAR too small)");
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
 
     for (UINT i = 0; i < numResources; i++) {
         resource = WdfCmResourceListGetDescriptor(ResourcesTranslated, i);
@@ -192,7 +197,11 @@ static NTSTATUS SetupMsixInterrupts(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST Resour
     ULONG numResources = WdfCmResourceListGetCount(ResourcesTranslated);
     ULONG interruptCount = 0;
 
-    ASSERT(xdma->interruptRegs != NULL);
+    // FIX-BUG-067 2026-10-20: жёсткий guard вместо ASSERT (no-op в free-сборке).
+    if (xdma->interruptRegs == NULL) {
+        TraceError(DBG_INIT, "SetupMsixInterrupts: interruptRegs is NULL (BAR too small)");
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
 
     for (UINT i = 0; (i < numResources) && (interruptCount < XMDA_MAX_NUM_IRQ); i++) {
 
@@ -238,7 +247,11 @@ static NTSTATUS SetupMultiMsiInterrupts(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST Re
     NTSTATUS status = STATUS_INTERNAL_ERROR;
     ULONG numResources = WdfCmResourceListGetCount(ResourcesTranslated);
 
-    ASSERT(xdma->interruptRegs != NULL);
+    // FIX-BUG-067 2026-10-20: жёсткий guard вместо ASSERT (no-op в free-сборке).
+    if (xdma->interruptRegs == NULL) {
+        TraceError(DBG_INIT, "SetupMultiMsiInterrupts: interruptRegs is NULL (BAR too small)");
+        return STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
 
     for (UINT i = 0; i < numResources; i++) {
         resource = WdfCmResourceListGetDescriptor(ResourcesTranslated, i);
