@@ -810,3 +810,23 @@ Stage Summary:
 - НО: (1) дефолт 32/16 + безусловный pblock 16/4 = прод-сборка ненадёжна (главный новый риск, владелец предупреждён в своём же worklog, но скрипт не гарждится); (2) D-2 жив и жёстче описанного (silent IRP leak); (3) версия драйвера не поднята — правило нарушено; (4) фикс CS_ABORT_WAIT без единого закоммиченного регресс-теста; (5) регрессии отображения E-7/WPWS-вывод — косметика, не блокер.
 - Единый реестр: OPEN-критичные = D-2 (мультипакет-хэнг), P1-4 (ReleaseHardware), pblock-vs-32/16, P2-4 (таймауты), P2-2 (чужие RES при abort); OPEN-MAJOR = P2-3, D-3, C-3, C-6, C-7, C-9 (CAPS=15 vs CORE_PARAMS=16 теперь LIVE при ADDERS=16), SKIP_SYNTH-стирание; доки — COMPATIBILITY/REBUILD/ADDRESS_MAP/README-issues.
 - Коммит сессии: этот (worklog Task 39). Пуш — по явной команде.
+
+---
+Task ID: 2026-10-20-fix39-bug060-063
+Agent: Super Z
+Task: Правки по аудиту 39 (команда владельца «внеси эти правки и за пуш»): D-2 packet-aware completion (v1.2.5.0), pblock-гард, SKIP_SYNTH, TB align-регресс, реестры
+
+Work Log:
+- BUG-060 (D-2, CRITICAL-latent): корень — три слипшихся дефекта: (1) безусловный хвост EngineProcessTransfer гасил isReqPending + RtlZeroMemory(descBuffer) ПОСЛЕ синхронного программирования packet-2 внутри WdfDmaTransactionDmaCompleted(FALSE); (2) txnDone=TRUE блокировал CAS на повторном входе; (3) EvtIo*Dma — один WaitCompletion + безусловный return с незавершённым IRP. Фикс: txnReleased (уровень функции, TRUE по умолчанию, =completed в STOPPED_OK); хвост (isReqPending=FALSE, zero desc-банка, zero poll-wb) только при txnReleased; иначе txnDone пере-вооружается FALSE под спинлоком; EvtIoWriteDma/EvtIoReadDma — цикл по пакетам (критерий isReqPending==FALSE после WaitCompletion, bound XDMA_MAX_WDF_PACKETS=16 → STATUS_IO_TIMEOUT вместо вечного висяка). Одиночный пакет — поведение байт-в-бит прежнее. Проверено чтением: EnginePollTransfer мёртв (0 звонков), wb в SGDMA-пути не читается; ProgramDma выставляет numDescriptors=di на каждый пакет → expected цикла корректен; гонки DPC-vs-EvtIo покрыты CAS+Unmark.
+- Версия драйвера 1.2.4.0 → 1.2.5.0 (build.cmd:37, XDMA_DMA.inx DriverVer 10/20/2026,1.2.5.0) — правило «драйвер-изменение → bump» восстановлено.
+- BUG-061 (C-5): build_flat.tcl — pblock_flat_tdot.xdc подключается ТОЛЬКО при NUM_MAC=16 (регион 6642 SLICE заморожен по DCP 16/4; для 32/64 переполнение ~1.5-2×, владелец признавал в worklog:786); при иных — громкий WARNING, сборка без pblock (гейт 8.5 остаётся).
+- BUG-062: очистка артефактов 0-a под гардом !SKIP_SYNTH (раньше SKIP_SYNTH=1 стирал прод- .bit/.mcs); к шаблонам добавлен timing_FATAL.rpt (переживал сборку, путал — CHANGE_LOG_2026-10-13).
+- BUG-063: tb_tdot_axi4.sv TEST 5 — align-аборт (RESULT_ADDR=0x804, [2:0]≠0 → align_q, rd_start уже выдан) обязан дойти до DONE через CS_ABORT_WAIT, затем восстановительная задача (адреса case 0) обязана дать результат бит-в-бит vs золото case 0. Закрывает дыру «фикс без регресса» (align-покрытие TB было 0; directed-тест владельца существовал только локально).
+- Реестры: ERROR_HISTORY +BUG-060..063 (полные карточки); CHANGE_LOG_2026-10-20 §10 (аудит 39 + фиксы); README: открытые задачи пересобраны (закрытые [x] сняты с списка, добавлены WPWS-N/A, check_timing-парсер, XdmaWinUpstream-close, P2-2/3/4, док-хигиена), версии v1.2.4→v1.2.5 (4 места).
+- Проверки: Tcl info complete=1 (build_flat.tcl); C-файлы баланс скобок 0/0 после strip комментариев/строк (naive -1 был и в HEAD — скобка в строке); pyslang main 0 новых; pyslang TB (root=tb_tdot_axi4, файл последним токеном — quirk CLI) 0 новых, TEST 5 элаборируется; pytest 10/10; check_burst_4kb PASS; stress --mock PASS; compileall 0.
+- Вне скоупа осталось: WPWS N/A-парсинг (F4.4), check_timing-парсер (F4.5), is_fatal-проводка (C-1 вторая половина), XdmaWinUpstream close(), COMPATIBILITY/REBUILD rewrite, NUL-CHANGE_LOG'и. Всё зафиксировано в README-задачах.
+
+Stage Summary:
+- Коммиты: fix(build) BUG-061/062; fix(driver) v1.2.5.0 BUG-060; test(tb) BUG-063; docs §10+BUG-060..063+README+worklog. Пуш — по явной команде владельца.
+- Прошивка НЕ требует пересборки: правки влияют на будущие сборки (гард/порядок), драйвер пересобирается на Windows (v1.2.5.0), TB — только симуляция. Текущий битстрим жив.
+- На стенд: (1) xsim TEST 5; (2) регресс драйвера одиночным IRP >8MiB (до этого путь был гарантированным висяком — хуже не станет, но подтвердить); (3) первый прогон 32/16 без pblock с report_utilization.

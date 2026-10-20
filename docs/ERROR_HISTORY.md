@@ -793,3 +793,37 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 | **Причина** | Систематический феномен повреждения файлов (как docs/CHANGE_LOG_2026-09-27/29: NUL-паддинг + mojibake); на main файл появился уже битым в 6381f8a (08.10); добрая версия существовала только на 2ch-pipeline (R8-rebuild, 3fdda6e) |
 | **Исправление** | Коммит 6ec9f5b: портирован R8-rebuild с 2ch-pipeline на API main — DOT через канонический FpgaBackend.run_dot (float↔TFloat48 внутри бэкенда), NUM_MAC/BUILD_ID из CAPS/OBS с fallback 16, ELEM_FMT-ветки 2ch-линии убраны (в RTL main нет), device-fallback/XADC-монитор/CSV/--mock сохранены |
 | **Статус** | ИСПРАВЛЕНО (6ec9f5b). Верификация: py_compile, AST, --mock PASS, --help импорт-цепочка OK. Рекомендация: бинарный аудит остальных файлов на NUL-повреждения |
+
+### [BUG-060] KMD: WDF-мультипакет — packet-2 никогда не завершался, IRP утекал, queue wedged (D-2) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | Любой IRP > 8MiB (или HAL-фрагментация на ≤8MiB) зависал навсегда: WdfRequestComplete не вызывался, sequential queue блокировалась за ним |
+| **Причина** | Три слипшихся дефекта completion-пути: (1) безусловный хвост EngineProcessTransfer гасил isReqPending и делал RtlZeroMemory(descBuffer) ПОСЛЕ того как KMDF синхронно запрограммировал packet-2 внутри WdfDmaTransactionDmaCompleted(FALSE); (2) txnDone оставался TRUE — CAS-block на повторном входе; (3) EvtIo*Dma делал один XDMA_EngineWaitCompletion и безусловно возвращал SUCCESS с незавершённым IRP |
+| **Исправление** | v1.2.5.0 (FIX-DESC2): хвост EngineProcessTransfer выполняется только при txnReleased (последний пакет/ошибка); при промежуточном пакете txnDone пере-вооружается FALSE, флаги/банк не трогаются; EvtIo*Dma ждёт КАЖДЫЙ пакет циклом (критерий isReqPending==FALSE, bound XDMA_MAX_WDF_PACKETS=16 → STATUS_IO_TIMEOUT вместо вечного зависания) |
+| **Статус** | ИСПРАВЛЕНО (v1.2.5.0). Одиночный пакет (весь текущий host-трафик, DMA_CHUNK=1MiB) — поведение байт-в-бит прежнее. Требуется стенд-регресс: одиночный IRP >8MiB до постановки в прод |
+
+### [BUG-061] build_flat.tcl: pblock 6642 SLICE подключался безусловно при NUM_MAC≠16 — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | Дефолтная сборка 32/16 (и _flat32.bat) получала pblock, замороженный по routed-DCP 16/4 (45a8a24): либо Place-fail по overutilization (~1.5-2×), либо тихо-пустой pblock (get_cells -quiet → пусто, ограничение молча не работало); «32/16 MET» в README из git не воспроизводим |
+| **Причина** | add_files constrs_1 pblock_flat_tdot.xdc без условия на NUM_MAC; регион SLICE_X25Y4:X105Y85 подогнан под gen_ad[0..3]+gen_mac[0..15] |
+| **Исправление** | Гард: pblock подключается ТОЛЬКО при NUM_MAC=16; при иных — громкий WARNING + сборка без pblock (FATAL-гейт 8.5 остаётся) |
+| **Статус** | ИСПРАВЛЕНО. Открытый остаток (C-5): вопрос полезности pblock даже для 16/4 — решать по первому реальному прогону report_utilization -pblocks |
+
+### [BUG-062] build_flat.tcl: SKIP_SYNTH=1 стирал прод-артефакты; timing_FATAL.rpt переживал сборку — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | Прогон «only create the project» удалял .bit/.mcs без единого синтеза (очистка 0-a стояла выше exit по SKIP_SYNTH); stale timing_FATAL.rpt путал при разборе прошлой сессии (CHANGE_LOG_2026-10-13) |
+| **Исправление** | Очистка обёрнута в if {!SKIP_SYNTH}; к шаблонам добавлен timing_FATAL.rpt |
+| **Статус** | ИСПРАВЛЕНО |
+
+### [BUG-063] tb_tdot_axi4: ноль align/abort-покрытия — фикс CS_ABORT_WAIT был без закоммиченного регресса — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | TB содержал 0 упоминаний align/abort; «directed align FAIL→PASS» владельца существовал только локально (незакоммичен) — регресс фикса не воспроизводим из репо |
+| **Исправление** | TEST 5 в tb_tdot_axi4.sv: (1) задача с RESULT_ADDR=0x804 ([2:0]≠0 → align_q) обязана завершиться DONE (CS_ABORT_WAIT дренирует burst); (2) СРАЗУ следом восстановительная задача с адресами case 0 обязана дать результат ПОБИТОВО равный золоту case 0 (fifo_clr не попал в burst). Результаты: PASS/FAIL + $finish |
+| **Статус** | ИСПРАВЛЕНО (тест добавлен). Элаборация pyslang (top=tb_tdot_axi4): 0 новых ошибок. Прогон симуляции (xsim) — на стенде |

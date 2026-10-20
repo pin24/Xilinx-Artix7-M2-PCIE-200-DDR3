@@ -133,3 +133,21 @@ nn_audio_train_cpu.py / nn_audio_infer_cpu.py / nn_audio_train_fpga.py / nn_audi
 - Архитектура/адреса/сборка/драйвер/OBS-quickstart/открытые задачи по аудитам; DFX — историческая секция со ссылкой на ветку XDMA_DDR3_TMUL; Makefile помечен устаревшим (build→DFX, artifacts→C:/build_dfx).
 
 Версии: драйвер 1.2.4 (без изменений); RTL/BD не менялись; репо +3 коммита (6ec9f5b, 7748803, docs).
+
+## 10. Сессия Super Z: аудит 39 (ре-аудит фиксов владельца) + закрытие BUG-060..063 (v1.2.5.0)
+
+### 10.1 Аудит 39 (5 агентов 39-a..e, cc6ce3b)
+- Верифицированы фиксы владельца 7d6e74d: CS_ABORT_WAIT (логика/учёт/декоды чисты, pyslang 0 новых), банк дескрипторов 2048+1 (worst case ровно 2049, маржа 1 — «2048 max» в комментарии неточен), гейт hold+PW, generic read-back, E-1..E-5 выжили merge.
+- Критичные находки: pblock 6642 SLICE безусловно при дефолте 32/16 (владелец сам признал в worklog); D-2 жив и жёстче описанного (silent IRP leak); версия драйвера не поднята; CS_ABORT_WAIT без закоммиченного регресса; WPP-трейсы мертвы в release-бинарнике; SKIP_SYNTH стирает артефакты; WPWS печатается N/A ровно при нарушении; check_timing-парсер берёт номер пункта вместо счётчика.
+- P1-6 (экспонента tf48) ОПРОВЕРГНУТ для живого пути: E-high везде (fpga_backend/xdma_driver/все TB-генераторы); остаток — сериализационная ловушка ternary_sw/tfloat48.py + мёртвые E-low CSV.
+- Реестры двух аудитов объединены: 10 дублей (P1-1=C-1, P1-2=C-2, P1-3=D-1, P2-6=B-3, P2-7=C-4, P2-11=D-6, P2-15=E-8...). Отчёт: docs/worklog.md Task 2026-10-20-reaudit-39 (d5833b6).
+
+### 10.2 Фиксы (BUG-060..063, детали в ERROR_HISTORY)
+- **BUG-060 (D-2)**: dma_engine.c — хвост completion только при txnReleased; txnDone пере-вооружение при промежуточном пакете; dma_engine.h — XDMA_MAX_WDF_PACKETS=16; file_io.c — EvtIo* ждут каждый пакет (критерий isReqPending==FALSE). Одиночный пакет — поведение прежнее. **Драйвер v1.2.4.0 → v1.2.5.0** (build.cmd + INX DriverVer).
+- **BUG-061 (C-5)**: build_flat.tcl — pblock только при NUM_MAC=16, громкий WARNING при иных.
+- **BUG-062**: build_flat.tcl — очистка артефактов под гардом !SKIP_SYNTH; +timing_FATAL.rpt к шаблонам.
+- **BUG-063**: tb_tdot_axi4.sv — TEST 5 (align-abort + восстановление, бит-в-бит vs золото case 0); pyslang-элаборация TB: 0 новых ошибок (скрипт scripts/…/pyslang_check_tb.py вне репо).
+
+Проверки сессии: pyslang FLAT-набор 0 новых; TB-элаборация 0 новых; C-файлы (dma_engine/file_io) баланс скобок 0/0 после чистки комментариев; compileall 0; pytest 10/10; check_burst_4kb PASS; stress --mock PASS.
+
+Версии: драйвер 1.2.5.0 (банк FIX-DESC владельца + FIX-DESC2 completion); RTL не менялся (только TB); симуляция TEST 5 и стенд-регресс >8MiB IRP — на стенде; пуш по явной команде.

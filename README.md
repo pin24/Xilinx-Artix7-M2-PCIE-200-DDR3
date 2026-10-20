@@ -17,7 +17,7 @@
 ## Архитектура FLAT (main, прошивки с 2026-10-13)
 
 ```
-host (Python/Windows, XDMA_DMA.sys v1.2.4)
+host (Python/Windows, XDMA_DMA.sys v1.2.5)
   └ PCIe Gen2 x4, BAR0 128 МБ @0x40000000
      ├ AXI-Lite (32b @125): GPIO 0x40020000 · DataMover 0x40010000/0x40018000 ·
      │                      TDOT 0x40023000 · XADC 0x46000000
@@ -56,7 +56,7 @@ xdma_ddr3_core_top (FLAT: NUM_MAC=16, ADDERS=4 в прошивках; DIAG-сн�
 | `third_party/m2-artix7-accelerator-card/` | Встроенные HDL из [rigoorozco/m2-artix7-accelerator-card](https://github.com/rigoorozco/m2-artix7-accelerator-card) (up_axi.v, datamover_ctrl.v) |
 | `pytorch_layer/` | Хост-софт: `xdma_driver.py` (TdotCore + TdotScheduler + OBS), `fpga_backend.py`, `test_dma_win.py`, `stress_platform.py`, `monitor_temp.py` |
 | `ternary_sw/` | Python-эталон арифметики TFloat48 (arith48/block) и тесты |
-| `driver/dma/` + `xdma_driver_win_src_2017/` | **Windows KMD `XDMA_DMA.sys` v1.2.4** (KMDF, DMA→DDR3) + libxdma-стек |
+| `driver/dma/` + `xdma_driver_win_src_2017/` | **Windows KMD `XDMA_DMA.sys` v1.2.5** (KMDF, DMA→DDR3) + libxdma-стек |
 | `driver/` (корень) | Legacy MMIO-драйвер XDMA.sys 1.1.4 (без DMA!) + журналы аудита |
 | `docs/` | `ADDRESS_MAP.md`, `OBSERVABILITY.md`, `ERROR_HISTORY.md` (BUG-001…059), `CHANGE_LOG_*.md` |
 
@@ -84,13 +84,13 @@ selftest 0x1000000. Данные — TFloat48 в младших 48 битах 64
 
 ## Драйвер Windows и производительность
 
-- **`driver/dma/build.cmd` → `XDMA_DMA.sys` v1.2.4** — актуальный DMA-драйвер
+- **`driver/dma/build.cmd` → `XDMA_DMA.sys` v1.2.5** — актуальный DMA-драйвер (FIX-DESC банк 2049 + FIX-DESC2 мультипакет BUG-060)
   (`\\.\XDMA0dma\{control,user,h2c_0..1,c2h_0..1}`), узлы: MMIO-бары + DMA.
   SG-движок: `XDMA_DESC_MAX_BYTES=8192`, `XDMA_MAX_TRANSFER_SIZE=8MiB`.
 - `driver/build.cmd` → legacy `XDMA.sys` 1.1.4 (MMIO-only, без DMA) — не использовать
   для DMA; HW-ID совпадает, не держите оба пакета в driver store.
 - **Полоса (Gen2 x4)**: 275/262 MB/s при дескрипторах 512Б (over-fetch дескрипторов)
-  → **932/699 MB/s** (write/read) после 512→4096 (v1.2.3) → 8192 (v1.2.4); WHEA/ROF нет.
+  → **932/699 MB/s** (write/read) после 512→4096 (v1.2.3) → 8192 (v1.2.4); WHEA/ROF нет. v1.2.5: банк дескрипторов 2049 (худшая фрагментация 4К) + packet-aware completion (BUG-060).
   Потолок — не линк (2 ГБ/s) и не DDR3 (~1.6 ГБ/s), а был в дескрипторах; `pcieMRRS` read-only.
 - Dual-channel (h2c_0/1+c2h_0/1 параллельно): работает, выигрыша нет — общие
   PCIe/DDR; для параллелизма нужны per-channel очереди (очереди per-engine уже Sequential).
@@ -181,22 +181,41 @@ shutdown/decouple через DFX Socket (0x40022000) → partial-битстри�
 (в main присутствует, но производственной не является). Hot-flash полного образа через
 ICAP не применялся (проверено 12.09.2026) — ICAP только для RP-образов.
 
-## Открытые задачи (по аудитам 2026-10-20)
+## Открытые задачи (по аудитам 2026-10-20; обновлено после аудита 39 + фиксов BUG-060..063)
 - [x] FLAT-сборка + BUILD_ID/CAPS + OBS-наблюдаемость + 4KB-кламп (прошивка MET, стенд)
-- [x] Драйвер v1.2.4: BSOD-сага закрыта, полоса 275→932/699 MB/s
-- [x] README/доки синхронизированы с FLAT-реальностью (этот коммит)
+- [x] Драйвер v1.2.5: BSOD-сага закрыта, полоса 275→932/699 MB/s; банк дескрипторов 2049
+      под худшую фрагментацию (FIX-DESC); мультипакетный hang D-2 закрыт (FIX-DESC2,
+      BUG-060) — стенд-регресс >8MiB IRP перед продом
 - [x] `nn_audio_infer_fpga.py` + `stress_platform.py` восстановлены (6ec9f5b)
-- [ ] TB: покрыть 4KB-кламп и OBS при BURST_RD_LEN=32 (TB всё ещё 16, без OBS-кейсов)
-- [ ] Драйвер: length-guard >8MiB в EvtIo*Dma; fail-fast вместо молчаливого клампа банка
-      дескрипторов (аудит 38-d: D-1/D-2 — латентные, маскируются DMA_CHUNK=1MiB)
-- [ ] Драйвер: включить WaitCompletion-timeout и ErrExit в txnDone-CAS (D-4/D-5); IOCTL
-      GET_VERSION/PERF_STOP (D-7); решить судьбу мёртвого watchdog (D-3)
-- [ ] Сборка: FATAL-гейт только setup — добавить hold/pulse-width (C-1); `ui_clk` вне
-      async-групп (`-include_generated_clocks`, C-3); синхронизировать дефолты build_flat
-      32/16 vs заголовок vs RTL 16/4 (C-2); `_flat64` нежизнеспособен (C-4); Makefile/flash
-      → artifacts_flat (C-6/C-7); BUILD_ID dirty-маркировка (C-8)
+- [x] FATAL-гейт: setup+hold+pulse-width (C-1 половина); generic read-back; pblock только
+      при NUM_MAC=16 (BUG-061); SKIP_SYNTH не стирает артефакты (BUG-062); TB TEST 5 —
+      align-abort регресс (BUG-063)
+- [ ] Сим/стенд: прогнать TEST 5 в xsim (align-abort регресс CS_ABORT_WAIT); разовый
+      стенд-регресс драйвера v1.2.5 одиночным IRP >8MiB
+- [ ] Сборка: первый реальный прогон 32/16 с report_utilization -pblocks (pblock для 32/16
+      теперь пропущен — подтвердить утилизацию/WNS); WPWS печатает N/A ровно при нарушении
+      (парсинг VIOLATED-строк, 39-c F4.4); check_timing-парсер берёт номер пункта вместо
+      счётчика и ищет несуществующую секцию (F4.5); is_fatal/пустой-отчёт не подключены
+      (C-1 вторая половина); `ui_clk` вне async-групп (`-include_generated_clocks`, C-3);
+      `_flat64` нежизнеспособен (C-4); Makefile/flash → artifacts_flat (C-6/C-7); BUILD_ID
+      dirty-маркировка (C-8); CAPS ADDERS=15 vs CORE_PARAMS=16 при ADDERS=16 (C-9, live)
+- [ ] Драйвер: watchdog мёртв (D-3); WaitCompletion-timeout/ErrExit вне txnDone-CAS
+      (D-4/D-5); IOCTL GET_VERSION/PERF_STOP (D-7); ReleaseHardware без остановки DMA
+      (P1-4 — disable/enable при активном DMA = BSOD-окно); loud-трейсы мертвы в
+      release-сборке (WPP off) — продублировать через DbgPrint
+- [ ] Host: XdmaWinUpstream без close()/__del__ (утечка хендлов); bw_profile.py — n не
+      проверяется, ResetEvent argtypes, дублирует bench_dma_*; E-7: сравнение CAPS vs
+      флага --num-mac удалено из obs_smi/monitor_obs; monitor_obs delta без wrap-обработки
+- [ ] RTL-резервы: P2-2 (чужие RES0/RES1 при abort-completion), P2-3 (sched_flush
+      глотается в задаче), P2-4 (нет таймаутов AXI-мастеров — CS_ABORT_WAIT новый сайт
+      вечного busy при зависшей DDR3); TB: 4KB-кламп и OBS при BURST_RD_LEN=32
+- [ ] Док-хигиена: COMPATIBILITY.md («DMA не работает» — ложь с v1.2.x) и
+      REBUILD_INSTRUCTION.md (эпоха 03.10, v1.1.22, 16/8) переписать; ADDRESS_MAP (M05 vs
+      M04, DFX-active); NUL-повреждённые CHANGE_LOG 09-27/09-29 (87%/58% NUL) вычистить;
+      CHANGE_LOG_2026-09-* / 10-13 перенести в читаемый вид; ternary_sw/tfloat48.py
+      docstring (E-low сериализация) + мёртвые op_*.csv пометить deprecated
 - [ ] BD: host-доступ к diag_axi_sniffer (S_AXI_DIAG @0x40007000, B-2); синхронизатор на
       XADC-телеметрию clk50→fab125 (B-3); разовая верификация clock-ассоциаций SmartConnect (B-4)
 - [ ] Ветка `2ch-pipeline`: стенд-проверка PACKED6 (p6_a4) и слияние линий драйвера
-      v1.1.34 ↔ v1.2.4
+      v1.1.34 ↔ v1.2.5
 - [ ] Подпись драйвера / инсталлятор; UPSTREAM: 4KB-кламп полезен и для main-line ARM/XDMA-стека
