@@ -777,3 +777,17 @@ Stage Summary:
 - Верdict аудита: функциональный стек согласован (регистры/адреса/маршрутизация/OBS-RTL — 0 MISMATCH, каждый OBS-байт сходится с задокументированной эмпирикой AR=+200/BEAT=+3200); OBS-показания были искажены ОТОБРАЖЕНИЕМ и докой — исправлено в 7748803.
 - Критичные латентные риски (к устранению до расширения DMA): D-1/D-2 (драйвер), C-1/C-3 (сборка). Отчёты агентов: docs/worklog (эта запись), подробности в чат-отчёте сессии.
 - Коммиты сессии: 6ec9f5b (fix host), 7748803 (fix OBS), этот коммит (README+журналы). Пуш — по явной команде.
+
+---
+Task ID: 2026-10-20-audit-flat-fixes-merge
+Agent: MultiTool
+Task: Independent re-audit of AUDIT_FULL_2026-10-20.md, fix confirmed defects (agents), sync+merge with origin/main
+Work Log:
+- Re-verified the audit report against the code myself: corrected default params (core_top=16/4, not 32/4), P1-4 path (driver\dma\dma_driver.c:316), downgraded P1-5/P1-6 (fpga_backend packs E high; ASSERT guards), pblock 6642 SLICE < NUM_MAC=32 need, obs_read CYCLES race, XdmaWinUpstream leak.
+- Agent fixes committed: 7d6e74d (9 files: build_flat.tcl gate/generic/stale-clean, dma_engine.h/.c 4KB-desc-bank 2048, tdot_axi4 CS_ABORT_WAIT, xdma_driver RMW+close+obs_read wrap, obs_smi AR_STALL+dt_safe+d32, monitor_obs delta-frame, nn_audio_infer_fpga indent+BWARN, add bw_profile.py). Sim: verify_tdot_axi4 32 PASS (4/4), directed align FAIL->PASS; py_compile clean; Tcl info complete=1.
+- origin/main was ahead 3 commits (audit 38: 6ec9f5b fix host, 7748803 fix OBS, 7f5e2b0 docs). Local had 4 same bugs (nn_audio indent, stress NUL in HEAD, obs_smi AR_STALL label, monitor_obs absolute-CYCLES); 3 already fixed by us (OBS RMW, dt guard, obs_read race).
+- Merge: efac977 (take remote canonical stress_platform; local restore backed up to C:\Temp\gigatool\stress_platform_local_12808.py) + 022ff7a (resolved 4 conflicts keeping ours + porting remote bw_label/FIFO baseline into obs_smi).
+- Push on explicit command.
+Stage Summary:
+- Resulting tree verified: bw_label, delta(), HI->LO->HI present; py_compile all touched exit 0.
+- Uncommitted WIP left untouched (Makefile, _full32.bat, dfx_runtime.txt, rtl/block/*, *.bak*, npz/wav, .gigatool/).
