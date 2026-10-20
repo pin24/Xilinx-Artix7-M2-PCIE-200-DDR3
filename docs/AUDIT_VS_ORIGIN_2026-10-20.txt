@@ -1,0 +1,172 @@
+АУДИТ ПРОЕКТА И СРАВНЕНИЕ С УДАЛЁННЫМ РЕПОЗИТОРИЕМ
+Дата: 2026-10-20
+Объект: A7_M2 (xc7a200t, PCIe Gen2 x4, XDMA + DDR3), сборка FLAT, драйвер 1.2.4.0
+Корень: C:\A7_M2\Xilinx-Artix7-M2-PCIE-200-DDR3
+Режим: только чтение. Vivado, сборка драйвера и железо не запускались.
+
+
+1. СОСТОЯНИЕ РЕПОЗИТОРИЯ
+--------------------------------------------------------------------------
+HEAD == origin/main == cc6ce3b
+git diff HEAD origin/main: пусто
+
+История:
+  cc6ce3b  docs: record session - flat full-audit report, area reports, worklog
+  022ff7a  Merge remote-tracking branch 'origin/main'
+  efac977  chore: take remote canonical stress_platform.py rebuild
+  7d6e74d  fix(local): audit 2026-10-20 fixes + sync with remote
+  7f5e2b0  docs: README rewritten for FLAT reality            (remote)
+  7748803  fix(obs): truthful OBS readings                     (remote)
+  6ec9f5b  fix(host): nn_audio_infer_fpga + stress_platform    (remote)
+  ff7a18b  perf(driver): XDMA_DESC_MAX_BYTES 4096->8192
+
+Наши правки аудита закоммичены в 7d6e74d, коммиты remote влиты в 022ff7a.
+Сравнивать локальное с remote по diff больше нечего: код общий.
+
+Незакоммиченный остаток (10 файлов, старый WIP):
+  Makefile, _full32.bat, data/audio_model_fpga.npz(.json),
+  data/nn_audio_train_fpga.py, dfx_runtime.txt, rtl/block/dfx_runtime.txt,
+  rtl/block/rtl_vs_arith48.py, rtl/block/sim/tb_rtl_vs_arith48.sv,
+  rtl/integration/sim/tb_tdot_axi4_expected.hex
+
+
+2. РЕГРЕСС MERGE: ПОТЕРЯНЫ 3 ФИКСА REMOTE
+--------------------------------------------------------------------------
+2.1 obs_smi.py:159
+    Потерян фикс E-7: шапка печатает "build {--num-mac} MAC" как истину,
+    CAPS NUM_MAC из битстрима не сверяется. В origin/main сравнение есть.
+    Следствие: шапка может молча врать о конфигурации ядра.
+
+2.2 monitor_obs.py:83-84
+    Потерян тот же WARN "CAPS NUM_MAC != --num-mac": CAPS читается и
+    печатается, но расхождение не проверяется. В origin/main проверка есть.
+
+2.3 xdma_driver.py:728 (obs_clear)
+    read-back шины из remote заменён нашим shadow-вариантом (_obs_ctrl).
+    Функционально эквивалентно (FREEZE сохраняется), но при будущей смене
+    бита в RTL разойдётся с железом молча. P3.
+
+Итог: origin/main полнее локального в двух местах (2.1, 2.2).
+
+
+3. НАХОДКИ В ИТОГОВОМ КОДЕ (общий для local и remote)
+--------------------------------------------------------------------------
+P1
+
+  P1-1  sys/file_io.c:750-757 + libxdma/dma_engine.c:1560
+        Poll-таймаут не выставляет txnDone=TRUE перед Release+Complete,
+        в отличие от EvtCancelDma (file_io.c:884) и watchdog (dma_engine.c:530).
+        Сценарий: задержанный MSI-X/DPC приходит после таймаута, транзакция
+        уже освобождена -> второе завершение -> 0x10D / 0xE6.
+        Статус: PLAUSIBLE (окно узкое, но механизм подтверждён по коду).
+
+P2
+
+  P2-1  rtl/integration/tdot_axi4.sv:950-953
+        CS_ABORT_WAIT (наш фикс) ждёт rstate == RST_IDLE без таймаута.
+        При отсутствии ARREADY busy_q остаётся 1 навсегда.
+        Класс "нет таймаута" сохраняется и в остальных состояниях ожидания AXI.
+
+  P2-2  pytorch_layer/xdma_driver.py:431
+        XdmaWinUpstream - класс, которым реально пользуются скрипты - без
+        close()/__del__: утечка 4 handle + event на объект.
+        Наш close() добавлен в неиспользуемый XdmaWinDriver (:266-292).
+
+  P2-3  scripts/obs_smi.py:159, scripts/monitor_obs.py:83-84
+        Потерянные CAPS-warn (см. раздел 2): шапка может врать о NUM_MAC.
+
+  P2-4  scripts/build_flat.tcl:319-323
+        Readback generic при нераспознанном формате возврата Vivado даёт только
+        WARNING, сборка продолжается с дефолтами топа #(16,4)
+        (xdma_ddr3_core_top.sv:5) вместо запрошенных 32/16.
+
+  P2-5  libxdma/device.c:320-364
+        XDMA_DeviceClose не останавливает движки перед освобождением банков
+        дескрипторов и MmUnmapIoSpace. Surprise-remove или ошибка
+        PrepareHardware -> обращение к освобождённой памяти.
+
+  P2-6  libxdma/device.c:244-248, interrupt.c:142/177
+        При малом BAR interruptRegs = NULL, а проверка только ASSERT
+        (в free build отключён) -> NULL-deref.
+
+  P2-7  constraints/pblock_flat_tdot.xdc:38
+        Регион SLICE_X25Y4:X105Y85 = 81x82 = 6642 slice (<= 26 568 LUT).
+        Не параметризован по NUM_MAC: для 32 (~55k LUT по README) и 64 тесен.
+
+  P2-8  _flat32.bat (JOBS=13)
+        При general.maxThreads 4 (build_flat.tcl:45) до 52 процессов,
+        риск OOM/свопа.
+
+  P2-9  rtl/integration/tdot_axi4.sv:1022
+        4-КБ кламп может выдать 8-байтовый beat за границу страницы
+        на невыровненном адресе.
+
+  P2-10 rtl/integration/tdot_axi4.sv:761-763
+        align_q учитывает result_addr; для AXI достаточно проверять
+        data_addr и weights_addr -> abort строже, чем нужно.
+
+P3
+
+  - Makefile:35: FLAT := $(FLAT) - самоссылка, no-op.
+    Форма "make FLAT build" работает через $(filter FLAT,$(MAKECMDGOALS)):64.
+    Форма "make FLAT=1 build" молча уйдёт в DFX-скрипт.
+  - dma_engine.c:951: мёртвая заглушка if (descBankLens < COUNT) { }.
+  - build/XDMA_DMA.inf = 1.1.34.0 при целевой 1.2.4.0 (build.cmd:37).
+  - IOCTL с FILE_ANY_ACCESS без SDDL (inc/xdma_public.h:63).
+  - docs/ADDRESS_MAP.md:7 описывает DFX как активную сборку; активна FLAT,
+    ICAP/SPI/DFX-socket в коде отсутствуют.
+  - tf48: RTL [47:40] = e, ternary_sw/block/tfloat48.py держит E в младшем
+    байте. Реальный путь не затронут (fpga_backend._to_bits48 пакует
+    в RTL-конвенции), но это ловушка для будущего кода.
+  - Гигиена: в индексе 47,8 МБ, из них 2 x .bit (~15 МБ), .mcs (~14 МБ),
+    ternary_sw/reference/*.csv (~17,5 МБ) - вопреки *.bit/*.mcs в .gitignore
+    (файлы добавлены до правила).
+    Не покрыты .gitignore: .gigatool/ (52,5 МБ), *.bak_*, *.npz, *.substituted.
+
+
+4. ПРОВЕРЕНО И В ПОРЯДКЕ
+--------------------------------------------------------------------------
+  - Синхронное завершение DMA и владение транзакцией: txnDone, UnmarkCancelable
+    первым, isReqPending; дефектов в механизме нет.
+  - FIX-DESC: 2048 дескрипторов покрывают 8 МБ при 4-КБ страницах
+    (2048 <= 2049 слотов), переполнений ULONG/SIZE_T нет,
+    банк ~64 КБ на буфер, ~2 МБ на 8 движков.
+  - 4-КБ кламп read-burst в штатном пути; FIFO глубиной 2*NUM_MAC;
+    zero-fill слотов (BUG-050 не регрессировал).
+  - Кольцо планировщика mod-256, IRQ по опустошению, W1C-ack.
+  - Карта регистров RTL <-> драйвер <-> ADDRESS_MAP: 0 расхождений.
+  - После merge: Δ-frame в monitor_obs, раздельные AR_STALL/R_WAIT,
+    перечитывание CYCLES HI->LO->HI, nn_audio_infer_fpga компилируется.
+  - stress_platform.py: канонический remote-вариант (13669 б),
+    локальный restore сохранён в бэкапе (efac977).
+
+
+5. ПРИОРИТЕТЫ
+--------------------------------------------------------------------------
+Сразу (регресс merge, ~15 минут):
+  1. Вернуть CAPS-vs---num-mac WARN в obs_smi.py и monitor_obs.py
+     (перенести из origin/main).
+  2. Добавить close()/__del__ в XdmaWinUpstream - реально используемый класс.
+
+Ближайшее (драйвер, нужна пересборка и тест):
+  3. В poll-таймауте выставлять txnDone=TRUE до Release+Complete.
+  4. Остановка движков в XDMA_DeviceClose до MmUnmapIoSpace.
+
+RTL (нужна симуляция):
+  5. Watchdog/таймаут в CS_ABORT_WAIT и в состояниях ожидания AXI.
+  6. Убрать result_addr из условия align_q.
+
+Сборка и гигиена:
+  7. JOBS в _flat32.bat привести к 4; pblock параметризовать по NUM_MAC
+     или сделать условным.
+  8. git rm --cached для битстримов и CSV; дополнить .gitignore.
+
+
+6. ПРИЛОЖЕНИЯ
+--------------------------------------------------------------------------
+  docs/AUDIT_VS_ORIGIN_2026-10-20.md          - версия отчёта в Markdown
+  C:\Temp\gigatool\audit-vs-remote\build.md   - сборка и гигиена (18 находок)
+  C:\Temp\gigatool\audit-vs-remote\rtl.md     - RTL
+  C:\Temp\gigatool\audit-vs-remote\driver.md  - драйвер
+  C:\Temp\gigatool\audit-vs-remote\host.md    - host-софт
+  docs/AUDIT_FULL_2026-10-20.md               - предыдущий аудит

@@ -984,7 +984,6 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
 
     // safety clamp: never write past the allocated double-freeze bank
     SIZE_T descBankLens = WdfCommonBufferGetLength(engine->descBuffer) / sizeof(DMA_DESCRIPTOR);
-    if ((ULONG)descBankLens < XDMA_MAX_DESC_COUNT) { /* buffer is at least that big */ }
     if (total > (ULONG)descBankLens) {
         // FIX-DESC 2026-10-20: kept as a hard clamp - writing past the bank would
         // corrupt host memory - but it must never fire silently. A legal <=8 MB
@@ -1566,6 +1565,12 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG maxIteration
 
     const ULONG expected = engine->numDescriptors;
     ULONG iter = 0;
+    // FIX-AUDIT-VS 2026-10-20 (D4): 50us * maxIterations (200000) is ~10 s of a
+    // fully busy core, and this poll runs at PASSIVE (queue thread). Sleep
+    // instead: 50us*20 == 1 ms, so cap the sleeps at maxIterations/20 to keep the
+    // same ~10 s bound. At DISPATCH_LEVEL sleeping is illegal -> busy-wait there.
+    const ULONG passiveMaxIter = maxIterations / 20;
+    ULONG passiveIters = 0;
 
     // BUSY clears via reading statusRC: the XDMA engine clears its BUSY status
     // when software reads the read-and-clear status register. If we poll the
@@ -1589,8 +1594,17 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG maxIteration
             return STATUS_SUCCESS;
         }
 
-        // short busy-wait; each iteration ~50-100us via KeStallExecutionProcessor
-        KeStallExecutionProcessor(50); // 50us
+        // FIX-AUDIT-VS 2026-10-20 (D4): sleep at PASSIVE, busy-wait at DISPATCH.
+        if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+            LARGE_INTEGER interval;     // MSVC C mode: no designated initializer
+            interval.QuadPart = -10000; // relative, 100-ns units => 1 ms
+            KeDelayExecutionThread(KernelMode, FALSE, &interval);
+            if (++passiveIters >= passiveMaxIter) {
+                break; // PASSIVE bound reached (same ~10 s as the 50us path)
+            }
+        } else {
+            KeStallExecutionProcessor(50); // 50us
+        }
     }
 
     // FIX-AUDIT-C2H 2026-09-30: on timeout, also clear the spurious-irq guard
