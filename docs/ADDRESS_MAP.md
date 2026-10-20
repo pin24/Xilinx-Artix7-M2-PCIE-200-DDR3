@@ -1,5 +1,13 @@
 # ADDRESS MAP — единый источник истины (DFX-вариант)
 
+> **АКТУАЛИЗАЦИЯ 2026-10-20 (аудит-VS P3): активная сборка — FLAT**
+> (`scripts/build_flat.tcl`; без DFX-машины: нет dfx_partition.bd/апертур/pblock,
+> pblock_flat_tdot.xdc подключается только при NUM_MAC=16 — BUG-061).
+> DFX-ветка `XDMA_DDR3_TMUL` (build_dfx.tcl → xdma_ddr3_dfx_bd.tcl,
+> ICAP/SPI/DFX-socket) **законсервирована**: адреса периферии ниже актуальны,
+> статус DFX-узлов (ICAP `0x40004000`, DFX Socket `0x40002000`) — см.
+> README и COMPATIBILITY.md.
+
 > **Служебный файл**: единственная согласованная карта адресов, регистров и
 > BAR-конфигурации проекта **XDMA + DDR3 + DFX (TFloat48)** на Artix-7
 > XC7A200T (ветка `XDMA_DDR3_TMUL`).

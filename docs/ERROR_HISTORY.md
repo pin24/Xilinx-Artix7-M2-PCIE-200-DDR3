@@ -827,3 +827,43 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 | **Симптом** | TB содержал 0 упоминаний align/abort; «directed align FAIL→PASS» владельца существовал только локально (незакоммичен) — регресс фикса не воспроизводим из репо |
 | **Исправление** | TEST 5 в tb_tdot_axi4.sv: (1) задача с RESULT_ADDR=0x804 ([2:0]≠0 → align_q) обязана завершиться DONE (CS_ABORT_WAIT дренирует burst); (2) СРАЗУ следом восстановительная задача с адресами case 0 обязана дать результат ПОБИТОВО равный золоту case 0 (fifo_clr не попал в burst). Результаты: PASS/FAIL + $finish |
 | **Статус** | ИСПРАВЛЕНО (тест добавлен). Элаборация pyslang (top=tb_tdot_axi4): 0 новых ошибок. Прогон симуляции (xsim) — на стенде |
+
+### [BUG-064] KMD: poll-таймаут не владел транзакцией — поздний DPC завершал IRP второй раз (аудит-VS P1-1 / реестр 39 D-4/D-5) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | `XDMA_EngineWaitCompletion` на таймауте гасил только `isReqPending`, не трогая `txnDone`; fail-ветки и путь исчерпания `XDMA_MAX_WDF_PACKETS` в `EvtIoWriteDma`/`EvtIoReadDma` делали `Release+Complete` без CAS. Поздний MSI-X/DPC (передача дошла сразу после истечения итераций) проходил txnDone-guard и делал `DmaCompleted`/`Release` уже ПОСЛЕ завершения IRP по STATUS_TIMEOUT → двойное завершение → BSOD 0x10D/0xE6. Окно узкое, механизм подтверждён по коду (внешний аудит; проверен мной на ce42d17). |
+| **Исправление** | (1) Таймаут WaitCompletion: CAS `txnDone` FALSE→TRUE под engineLock; владелец дополнительно `EngineStop`; при чужом владении — `STATUS_CANCELLED` (вызывающий не трогает request/транзакцию). (2) Обе fail-ветки poll-циклов (W/R): `STATUS_CANCELLED` → немедленный return. (3) Путь исчерпания пакетов: тот же CAS + `EngineStop` перед `Unmark/Release/Complete`. |
+| **Статус** | ИСПРАВЛЕНО (драйвер v1.2.6.0). Стенд-проверка таймаут-ветки (мёртвая FPGA / изъятие платы: без BSOD, IRP завершён ровно один раз) — на стенде. |
+
+### [BUG-065] host: E-7 CAPS-vs---num-mac WARN потерян в мерже 022ff7a (аудит-VS §2.1/2.2) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | `obs_smi.py` печатал в шапке `build {--num-mac} MAC` как истину, не сверяя с CAPS битстрима; `monitor_obs.py` читал CAPS, но расхождение с флагом молча не проверял. Фикс существовал в 7748803 (аудит 38, E-7) и был потерян при локальном мерже владельца 022ff7a. Подтверждено независимо: моим аудитом 39-d и внешним аудит-VS. |
+| **Исправление** | Дословный возврат из 7748803: блок CAPS/`mac_note` в obs_smi.py (шапка `CAPS NUM_MAC=N` + WARN при расхождении) и WARN-принт в monitor_obs.py. |
+| **Статус** | ИСПРАВЛЕНО. |
+
+### [BUG-066] host: XdmaWinUpstream — основной бэкенд скриптов — без close()/__del__ (аудит-VS P2-2 / аудит 39-d) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | `XdmaWinUpstream` (obs_smi, monitor_obs, stress_platform, bench_dma_serial, nn_fpga_*, nn_audio_*, program_spi_flash) открывает до 4 HANDLE (`\control`, `\user`, `\h2c_0`, `\c2h_0`) + event и никогда их не закрывал: утечка 4-5 хендлов на объект. close() ранее был только у неиспользуемого `XdmaWinDriver`. |
+| **Исправление** | `close()` (идемпотентный, безопасен при частичной инициализации `__init__`) + `__del__` по образцу XdmaWinDriver:273-293. Попутно r-string для raise с «\c» (последний SyntaxWarning, аудит 39-d). |
+| **Статус** | ИСПРАВЛЕНО. |
+
+### [BUG-067] KMD: interruptRegs при малом BAR — deref после ASSERT (no-op в free-сборке) (аудит-VS P2-6) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | `device.c:GetRegisterModules` ставит `interruptRegs=NULL` при коротком config-BAR; `SetupDeviceInterrupts`/`SetupMsixInterrupts`/`SetupMultiMsiInterrupts` проверяли только ASSERT (в free-сборке компилируется в пусто) → NULL-deref при записи векторов. |
+| **Исправление** | `XDMA_DeviceOpen`: громкий fail (STATUS_DEVICE_CONFIGURATION_ERROR) рядом с проверкой configRegs, ДО подключения прерываний; в трёх Setup-функциях жёсткие guard-возвраты вместо ASSERT. |
+| **Статус** | ИСПРАВЛЕНО (v1.2.6.0). На реальной плате практически недостижимо (BAR всегда содержит IRQ-блок) — защита в глубину. |
+
+### [BUG-068] KMD: XDMA_DeviceClose не останавливал движки до освобождения банков/размапливания (аудит-VS P2-5 / реестр 39 P1-4) — 2026-10-20
+
+| Поле | Значение |
+|------|----------|
+| **Симптом** | DeviceClose содержал `// todo - stop every engine?`: при surprise-remove / ошибке PrepareHardware движок мог продолжать DMA в common-buffer, освобождаемый ниже `XDMA_EngineDeleteDescriptorPool`, и в BAR, размапливаемый в конце Close. |
+| **Исправление** | В начале `XDMA_DeviceClose`: `EngineStop` каждого включённого движка (запись controlW1C RUN=0; валидна на PASSIVE_LEVEL, пока BAR ещё замаплен). |
+| **Статус** | ИСПРАВЛЕНО (v1.2.6.0). Стенд: surprise-remove тест — по возможности. |

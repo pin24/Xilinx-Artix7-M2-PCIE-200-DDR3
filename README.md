@@ -181,7 +181,7 @@ shutdown/decouple через DFX Socket (0x40022000) → partial-битстри�
 (в main присутствует, но производственной не является). Hot-flash полного образа через
 ICAP не применялся (проверено 12.09.2026) — ICAP только для RP-образов.
 
-## Открытые задачи (по аудитам 2026-10-20; обновлено после аудита 39 + фиксов BUG-060..063)
+## Открытые задачи (по аудитам 2026-10-20; обновлено после аудита 39 + фиксов BUG-060..063 + перекрёстного аудита-VS: BUG-064..069, v1.2.6)
 - [x] FLAT-сборка + BUILD_ID/CAPS + OBS-наблюдаемость + 4KB-кламп (прошивка MET, стенд)
 - [x] Драйвер v1.2.5: BSOD-сага закрыта, полоса 275→932/699 MB/s; банк дескрипторов 2049
       под худшую фрагментацию (FIX-DESC); мультипакетный hang D-2 закрыт (FIX-DESC2,
@@ -191,7 +191,8 @@ ICAP не применялся (проверено 12.09.2026) — ICAP толь
       при NUM_MAC=16 (BUG-061); SKIP_SYNTH не стирает артефакты (BUG-062); TB TEST 5 —
       align-abort регресс (BUG-063)
 - [ ] Сим/стенд: прогнать TEST 5 в xsim (align-abort регресс CS_ABORT_WAIT); разовый
-      стенд-регресс драйвера v1.2.5 одиночным IRP >8MiB
+      стенд-регресс драйвера v1.2.6 одиночным IRP >8MiB + таймаут-ветка (изъятие платы —
+      BUG-064: владение транзакцией на таймауте, стенд: без BSOD, IRP завершён один раз)
 - [ ] Сборка: первый реальный прогон 32/16 с report_utilization -pblocks (pblock для 32/16
       теперь пропущен — подтвердить утилизацию/WNS); WPWS печатает N/A ровно при нарушении
       (парсинг VIOLATED-строк, 39-c F4.4); check_timing-парсер берёт номер пункта вместо
@@ -199,23 +200,32 @@ ICAP не применялся (проверено 12.09.2026) — ICAP толь
       (C-1 вторая половина); `ui_clk` вне async-групп (`-include_generated_clocks`, C-3);
       `_flat64` нежизнеспособен (C-4); Makefile/flash → artifacts_flat (C-6/C-7); BUILD_ID
       dirty-маркировка (C-8); CAPS ADDERS=15 vs CORE_PARAMS=16 при ADDERS=16 (C-9, live)
-- [ ] Драйвер: watchdog мёртв (D-3); WaitCompletion-timeout/ErrExit вне txnDone-CAS
-      (D-4/D-5); IOCTL GET_VERSION/PERF_STOP (D-7); ReleaseHardware без остановки DMA
-      (P1-4 — disable/enable при активном DMA = BSOD-окно); loud-трейсы мертвы в
-      release-сборке (WPP off) — продублировать через DbgPrint
-- [ ] Host: XdmaWinUpstream без close()/__del__ (утечка хендлов); bw_profile.py — n не
-      проверяется, ResetEvent argtypes, дублирует bench_dma_*; E-7: сравнение CAPS vs
-      флага --num-mac удалено из obs_smi/monitor_obs; monitor_obs delta без wrap-обработки
+- [x] Драйвер v1.2.6 (аудит-VS): poll-таймаут владеет транзакцией (CAS txnDone + EngineStop,
+      BUG-064 = D-4/D-5); DeviceClose останавливает движки до освобождения банков
+      (BUG-068 = P1-4); interruptRegs guard вместо ASSERT (BUG-067); E-7 CAPS-WARN
+      восстановлен в obs_smi/monitor_obs (BUG-065, потерян в мерже 022ff7a);
+      XdmaWinUpstream close()/__del__ (BUG-066); read-back generic: кастомная конфигурация
+      ≠16/4 без подтверждения = FATAL (BUG-069); _flat32.bat JOBS 13→4
+- [ ] Драйвер (остаток): watchdog мёртв (D-3); IOCTL GET_VERSION/PERF_STOP (D-7);
+      loud-трейсы мертвы в release-сборке (WPP off) — продублировать через DbgPrint
+- [ ] Host (остаток): bw_profile.py — n не проверяется, ResetEvent argtypes, дублирует
+      bench_dma_*; monitor_obs delta без wrap-обработки
 - [ ] RTL-резервы: P2-2 (чужие RES0/RES1 при abort-completion), P2-3 (sched_flush
       глотается в задаче), P2-4 (нет таймаутов AXI-мастеров — CS_ABORT_WAIT новый сайт
-      вечного busy при зависшей DDR3); TB: 4KB-кламп и OBS при BURST_RD_LEN=32
-- [ ] Док-хигиена: COMPATIBILITY.md («DMA не работает» — ложь с v1.2.x) и
-      REBUILD_INSTRUCTION.md (эпоха 03.10, v1.1.22, 16/8) переписать; ADDRESS_MAP (M05 vs
-      M04, DFX-active); NUL-повреждённые CHANGE_LOG 09-27/09-29 (87%/58% NUL) вычистить;
-      CHANGE_LOG_2026-09-* / 10-13 перенести в читаемый вид; ternary_sw/tfloat48.py
-      docstring (E-low сериализация) + мёртвые op_*.csv пометить deprecated
+      вечного busy при зависшей DDR3; внешние P2-9 «4KB-кламп» и P2-10 «result в align_q»
+      ОПРОВЕРГНУТЫ — см. CHANGE_LOG §11); TB: 4KB-кламп и OBS при BURST_RD_LEN=32
+- [ ] Док-хигиена: COMPATIBILITY.md и REBUILD_INSTRUCTION.md — баннер устарелости
+      поставлен (аудит-VS), полная перезапись матрицы/шагов — в очереди; ADDRESS_MAP
+      (заголовок актуализирован: FLAT активна, DFX законсервирована); NUL-повреждённые
+      CHANGE_LOG 09-27/09-29 (87%/58% NUL) вычистить; CHANGE_LOG_2026-09-* / 10-13
+      перенести в читаемый вид; ternary_sw/tfloat48.py docstring (E-low сериализация) +
+      мёртвые op_*.csv пометить deprecated
+- [ ] Из аудита-VS (P3, решение владельца): Makefile `FLAT=1` молча уходит в DFX-скрипт
+      (самоссылка FLAT := $(FLAT), :35); IOCTL FILE_ANY_ACCESS без SDDL; в индексе
+      47,8 МБ битстримов/CSV вопреки .gitignore (добавлены до правила; git rm --cached
+      удалит их из checkout — без явного разрешения не делаем)
 - [ ] BD: host-доступ к diag_axi_sniffer (S_AXI_DIAG @0x40007000, B-2); синхронизатор на
       XADC-телеметрию clk50→fab125 (B-3); разовая верификация clock-ассоциаций SmartConnect (B-4)
 - [ ] Ветка `2ch-pipeline`: стенд-проверка PACKED6 (p6_a4) и слияние линий драйвера
-      v1.1.34 ↔ v1.2.5
+      v1.1.34 ↔ v1.2.6
 - [ ] Подпись драйвера / инсталлятор; UPSTREAM: 4KB-кламп полезен и для main-line ARM/XDMA-стека

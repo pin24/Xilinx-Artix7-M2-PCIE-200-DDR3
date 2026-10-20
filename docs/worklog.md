@@ -830,3 +830,27 @@ Stage Summary:
 - Коммиты: fix(build) BUG-061/062; fix(driver) v1.2.5.0 BUG-060; test(tb) BUG-063; docs §10+BUG-060..063+README+worklog. Пуш — по явной команде владельца.
 - Прошивка НЕ требует пересборки: правки влияют на будущие сборки (гард/порядок), драйвер пересобирается на Windows (v1.2.5.0), TB — только симуляция. Текущий битстрим жив.
 - На стенд: (1) xsim TEST 5; (2) регресс драйвера одиночным IRP >8MiB (до этого путь был гарантированным висяком — хуже не станет, но подтвердить); (3) первый прогон 32/16 без pblock с report_utilization.
+
+---
+Task ID: 2026-10-20-fix-audit-vs
+Agent: Super Z
+Task: Перекрёстная проверка внешнего аудита (AUDIT_VS_ORIGIN_2026-10-20) и внесение подтверждённых правок (продолжение «внеси эти правки и за пуш»)
+
+Work Log:
+- Верификация каждого пункта внешнего аудита по коду ce42d17: подтверждены §2.1/2.2 (E-7 потерян в мерже 022ff7a), §2.3 (shadow — принято, док), P1-1, P2-2, P2-4, P2-5, P2-6, P2-8; опровергнуты P2-9 (SW=DW/8=8 + align_q делают невыровненные AR-старты недостижимыми) и P2-10 (чек result_addr нужен AW/W-каналу).
+- BUG-064: dma_engine.c XDMA_EngineWaitCompletion — CAS txnDone на таймауте, EngineStop владельцем, STATUS_CANCELLED при чужом владении; file_io.c — обе fail-ветки poll-циклов W/R + путь исчерпания XDMA_MAX_WDF_PACKETS (CAS + EngineStop до Release/Complete).
+- BUG-065: obs_smi.py (caps/mac_note + шапка BUILD_ID/mac_note) и monitor_obs.py (WARN) — дословный возврат из 7748803.
+- BUG-066: XdmaWinUpstream.close()/__del__ (5 хендлов, идемпотентно, частичная инициализация) + r-string «\c».
+- BUG-067: device.c XDMA_DeviceOpen — fail при interruptRegs==NULL; interrupt.c — 3 guard'а вместо ASSERT (SetupDeviceInterrupts/SetupMsixInterrupts/SetupMultiMsiInterrupts).
+- BUG-068: device.c XDMA_DeviceClose — EngineStop всех включённых движков до освобождения банков/размапливания (todo закрыт).
+- BUG-069: build_flat.tcl — read-back непроверен при кастомной конфигурации (≠16/4) → FATAL; 16/4 — WARNING (дефолт топа совпадает); unset -nocomplain stale _gb_val/_gb_val2.
+- _flat32.bat JOBS 13→4 (+REM-пояснение). Версия KMD 1.2.5.0→1.2.6.0 (build.cmd:37, XDMA_DMA.inx DriverVer).
+- Доки: ERROR_HISTORY BUG-064..068, CHANGE_LOG_2026-10-20 §11, README (версии v1.2.6, открытые/закрытые задачи, опровергнутые P2-9/P2-10), COMPATIBILITY (§3.2/§4 актуализированы: DMA работает с v1.2.x), REBUILD_INSTRUCTION (баннер устарелости + пересборка обязательна из-за CS_ABORT_WAIT), OBSERVABILITY (obs_clear single-write тень), ADDRESS_MAP (FLAT активна, DFX законсервирована).
+- Статика: compileall -W error::SyntaxWarning OK (пойман и исправлен собственный backslash-u escape в новом docstring); pytest = baseline 7f/10p/7e (стендозависимые test_dma_win/emulate_test); pyslang 0 новых ошибок; Tcl-баланс OK.
+
+Stage Summary:
+- KMD v1.2.6.0: владение транзакцией на таймаутах (BUG-064), EngineStop в DeviceClose (BUG-068), IRQ-guards (BUG-067) — сборка WDK и стенд на стороне владельца.
+- Host: E-7 CAPS-WARN восстановлен (BUG-065), XdmaWinUpstream без утечки хендлов (BUG-066).
+- Сборка: FATAL read-back для кастома (BUG-069), JOBS=4; pblock-гард/SKIP_SYNTH — волна cd4f294.
+- Опровергнуты P2-9/P2-10 внешнего аудита (обоснование в CHANGE_LOG §11).
+- Ответ владельцу: пересборка прошивки ОБЯЗАТЕЛЬНА (RTL CS_ABORT_WAIT в 7d6e74d); после pull — переустановить XDMA_DMA.sys v1.2.6; следующая сборка — только с новым build_flat.tcl.
