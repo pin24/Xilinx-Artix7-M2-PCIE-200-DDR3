@@ -745,9 +745,44 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
     // Restore the reliable 1.1.29-style poll: wait until hwDone && cdc>=numDescriptors
     // (bounded, ~10s worst case), then EngineProcessTransfer -> DmaCompleted ->
     // EvtTransferCompleteCb retires the request with the REAL byte count.
-    status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max
-    if (!NT_SUCCESS(status)) {
-        TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed: %!STATUS!", status);
+    // FIX-DESC2 2026-10-20 (BUG-060 / D-2): WDF-транзакция может состоять из
+    // нескольких пакетов (IRP > XDMA_MAX_TRANSFER_SIZE=8MB или фрагментация HAL).
+    // EngineProcessTransfer завершает request ТОЛЬКО на последнем пакете
+    // (WdfDmaTransactionDmaCompleted==TRUE); на промежуточном пакете он
+    // пере-вооружает txnDone и оставляет isReqPending=TRUE — значит, нужно
+    // дождаться следующий пакет тем же bounded-поллом. Критерий выхода:
+    // isReqPending==FALSE (его сбрасывает хвост последнего пакета). Для
+    // одиночного пакета поведение идентично прежнему (один WaitCompletion и
+    // сразу return). Ранее: один WaitCompletion + безусловный return оставляли
+    // IRP незавершённым, а sequential queue — wedged навсегда.
+    {
+        ULONG packet;
+        for (packet = 0; packet < XDMA_MAX_WDF_PACKETS; packet++) {
+            status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max на пакет
+            if (!NT_SUCCESS(status)) {
+                TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed (packet %u/%u): %!STATUS!",
+                           packet + 1, (ULONG)XDMA_MAX_WDF_PACKETS);
+                break;
+            }
+            BOOLEAN morePackets = TRUE;
+            if (queue->engine->engineLock) {
+                WdfSpinLockAcquire(queue->engine->engineLock);
+                morePackets = queue->engine->isReqPending;
+                WdfSpinLockRelease(queue->engine->engineLock);
+            }
+            if (!morePackets) {
+                return; // success: request завершён синхронно в EngineProcessTransfer (последний пакет)
+            }
+            // isReqPending ещё стоит: KMDF запрограммировал следующий пакет —
+            // ждём его завершение следующей итерацией цикла.
+        }
+        if (packet >= XDMA_MAX_WDF_PACKETS) {
+            // Не сошлось за XDMA_MAX_WDF_PACKETS пакетов — громко падаем вместо вечного
+            // зависания; request ещё НЕ завершён, путь ниже корректно завершит его с ошибкой.
+            TraceError(DBG_IO, "transaction exceeded %u WDF packets (IRP too large?); failing with timeout",
+                       (ULONG)XDMA_MAX_WDF_PACKETS);
+            status = STATUS_IO_TIMEOUT;
+        }
         NTSTATUS uc = WdfRequestUnmarkCancelable(Request);
         if (uc == STATUS_CANCELLED) {
             return; // cancel-путь завершит request (не освобождаем повторно)
@@ -756,7 +791,6 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
         WdfRequestComplete(Request, status);
         return;
     }
-    return; // success: EngineProcessTransfer завершил request синхронно с реальным byte count.
 ErrExit:
     WdfDmaTransactionRelease(queue->engine->dmaTransaction);
     WdfRequestComplete(Request, status);
@@ -816,9 +850,34 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
 
     // FIX 2026-10-20 (v1.2.2): Bounded completion poll (see EvtIoWriteDma).
     // C2H ResetIdle for the next read is done inside EngineProcessTransfer.
-    status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max
-    if (!NT_SUCCESS(status)) {
-        TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed: %!STATUS!", status);
+    // FIX-DESC2 2026-10-20 (BUG-060 / D-2): multi-packet wait loop — см.
+    // развёрнутый комментарий в EvtIoWriteDma: ждём КАЖДЫЙ пакет транзакции,
+    // выход по isReqPending==FALSE (последний пакет), иначе IRP утекал,
+    // а queue wedged навсегда. Одиночный пакет — поведение прежнее.
+    {
+        ULONG packet;
+        for (packet = 0; packet < XDMA_MAX_WDF_PACKETS; packet++) {
+            status = XDMA_EngineWaitCompletion(queue->engine, 200000); // ~10s max на пакет
+            if (!NT_SUCCESS(status)) {
+                TraceError(DBG_IO, "XDMA_EngineWaitCompletion failed (packet %u/%u): %!STATUS!",
+                           packet + 1, (ULONG)XDMA_MAX_WDF_PACKETS);
+                break;
+            }
+            BOOLEAN morePackets = TRUE;
+            if (queue->engine->engineLock) {
+                WdfSpinLockAcquire(queue->engine->engineLock);
+                morePackets = queue->engine->isReqPending;
+                WdfSpinLockRelease(queue->engine->engineLock);
+            }
+            if (!morePackets) {
+                return; // success: request завершён синхронно в EngineProcessTransfer (последний пакет)
+            }
+        }
+        if (packet >= XDMA_MAX_WDF_PACKETS) {
+            TraceError(DBG_IO, "transaction exceeded %u WDF packets (IRP too large?); failing with timeout",
+                       (ULONG)XDMA_MAX_WDF_PACKETS);
+            status = STATUS_IO_TIMEOUT;
+        }
         NTSTATUS uc = WdfRequestUnmarkCancelable(Request);
         if (uc == STATUS_CANCELLED) {
             return; // cancel-путь завершит request (не освобождаем повторно)
@@ -827,7 +886,6 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
         WdfRequestComplete(Request, status);
         return;
     }
-    return; // success: EngineProcessTransfer завершил request синхронно с реальным byte count.
 ErrExit:
     WdfDmaTransactionRelease(queue->engine->dmaTransaction);
     WdfRequestComplete(Request, status);

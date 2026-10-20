@@ -12,7 +12,7 @@
 *
 * References:
 * -----------
-*	[1] pg195-pcie-dma.pdf - DMA/Bridge Subsystem for PCI Express v3.0 - Product Guide
+*       [1] pg195-pcie-dma.pdf - DMA/Bridge Subsystem for PCI Express v3.0 - Product Guide
 */
 
 // ========================= include dependencies =================================================
@@ -298,6 +298,13 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
     NTSTATUS status = STATUS_SUCCESS;
     WDFREQUEST request;
     UINT32 engineStatus;
+    // FIX-DESC2 2026-10-20 (BUG-060 / D-2): "транзакция больше не владеет
+    // банком дескрипторов". TRUE по умолчанию (ошибочные пути завершают request
+    // и освобождают транзакцию — хвост нужен); в ветке STOPPED_OK уточняется
+    // фактом WdfDmaTransactionDmaCompleted: при completed == FALSE KMDF уже
+    // синхронно запрограммировал следующий WDF-пакет — хвост затер бы его
+    // состояние (см. комментарий у хвоста).
+    BOOLEAN txnReleased = TRUE;
 
     if (engine == NULL) {
         TraceError(DBG_DMA, "engine=NULL");
@@ -363,6 +370,9 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
         // depends on the async callback. txnDone keeps it single-shot.
         BOOLEAN completed = WdfDmaTransactionDmaCompleted(engine->dmaTransaction, &status);
         size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(engine->dmaTransaction);
+        // FIX-DESC2 (BUG-060/D-2): only a fully-completed (last-packet) transaction
+        // releases the descriptor bank; intermediate packets keep it programmed.
+        txnReleased = completed;
 
         TraceInfo(DBG_DMA, "%s_%u transaction%scomplete, bytesTransferred=%llu",
                   DirectionToString(engine->dir), engine->channel,
@@ -401,26 +411,52 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
         WdfRequestComplete(request, STATUS_INTERNAL_ERROR);
     }
 
-    // request handled -> clear pending flag (spurious-irq guard)
-    if (engine->engineLock) {
-        WdfSpinLockAcquire(engine->engineLock);
-        engine->isReqPending = FALSE;
-        // NOTE FIX 2026-10-15: НЕ сбрасываем engine->txnDone здесь — иначе
-        // хвостовой DPC от той же транзакции снова пройдёт guard. txnDone
-        // сбрасывается в начале следующего request (EvtIoWrite/ReadDma).
-        WdfSpinLockRelease(engine->engineLock);
-    }
+    // ============================================================================
+    // FIX-DESC2 2026-10-20 (BUG-060 / D-2, аудит 39-b): хвост валиден ТОЛЬКО когда
+    // транзакция реально завершена (txnReleased == TRUE). При completed == FALSE
+    // KMDF УЖЕ синхронно запрограммировал следующий WDF-пакет внутри
+    // WdfDmaTransactionDmaCompleted (EvtProgramDma -> XDMA_EngineProgramDma):
+    // свежие дескрипторы лежат в descBuffer, isReqPending=TRUE выставлен,
+    // EngineStart выполнен. Прежний БЕЗУСЛОВНЫЙ хвост: (a) гасил isReqPending —
+    // spurious-irq guard отбрасывал завершение packet-2; (b) RtlZeroMemory затирал
+    // банк дескрипторов ПОД работающим packet-2; (c) оставлял txnDone=TRUE — CAS
+    // блокировал повторный вход => packet-2 никогда не завершался, IRP утекал,
+    // sequential queue навсегда wedged (маскировалось host-чанкингом
+    // DMA_CHUNK=1MiB: WDF-пакет всегда один). При txnReleased == FALSE: флаги и
+    // банк НЕ трогаем, txnDone пере-вооружается FALSE, чтобы completion packet-2
+    // прошёл CAS и обработался этим же EngineProcessTransfer (там выполнится
+    // полный хвост). EvtIo* параллельно ждёт остальные пакеты циклом.
+    // ============================================================================
+    if (txnReleased) {
+        // request handled -> clear pending flag (spurious-irq guard)
+        if (engine->engineLock) {
+            WdfSpinLockAcquire(engine->engineLock);
+            engine->isReqPending = FALSE;
+            // NOTE FIX 2026-10-15: НЕ сбрасываем engine->txnDone здесь — иначе
+            // хвостовой DPC от той же транзакции снова пройдёт guard. txnDone
+            // сбрасывается в начале следующего request (EvtIoWrite/ReadDma).
+            WdfSpinLockRelease(engine->engineLock);
+        }
 
-    // clear descriptor buffer
-    DMA_DESCRIPTOR* descriptorBuffer = (DMA_DESCRIPTOR*)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
-    size_t descBufferLength = WdfCommonBufferGetLength(engine->descBuffer);
-    RtlZeroMemory(descriptorBuffer, descBufferLength);
+        // clear descriptor buffer
+        DMA_DESCRIPTOR* descriptorBuffer = (DMA_DESCRIPTOR*)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
+        size_t descBufferLength = WdfCommonBufferGetLength(engine->descBuffer);
+        RtlZeroMemory(descriptorBuffer, descBufferLength);
 
-    // clear poll writeback buffer
-    if (engine->poll) {
-        XDMA_POLL_WB* wbBuffer = (XDMA_POLL_WB*)WdfCommonBufferGetAlignedVirtualAddress(engine->pollWbBuffer);
-        size_t wbBufferLength = WdfCommonBufferGetLength(engine->pollWbBuffer);
-        RtlZeroMemory(wbBuffer, wbBufferLength);
+        // clear poll writeback buffer
+        if (engine->poll) {
+            XDMA_POLL_WB* wbBuffer = (XDMA_POLL_WB*)WdfCommonBufferGetAlignedVirtualAddress(engine->pollWbBuffer);
+            size_t wbBufferLength = WdfCommonBufferGetLength(engine->pollWbBuffer);
+            RtlZeroMemory(wbBuffer, wbBufferLength);
+        }
+    } else {
+        // multi-packet: packet N+1 уже программируется/выполняется — пере-вооружаем
+        // single-shot CAS под его completion (см. комментарий выше).
+        if (engine->engineLock) {
+            WdfSpinLockAcquire(engine->engineLock);
+            engine->txnDone = FALSE;
+            WdfSpinLockRelease(engine->engineLock);
+        }
     }
 }
 

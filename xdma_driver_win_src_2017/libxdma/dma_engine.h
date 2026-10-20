@@ -46,6 +46,14 @@
 // 4096 below is the page/MDL granularity, NOT the slice size.
 #define XDMA_MAX_DESC_COUNT     (XDMA_MAX_TRANSFER_SIZE / 4096UL)
 
+// FIX-DESC2 2026-10-20 (BUG-060 / D-2): maximum WDF packets per transaction that
+// EvtIo* is willing to wait for. One packet = up to XDMA_MAX_TRANSFER_SIZE (8 MB),
+// so 16 packets cap a single IRP at 128 MB; beyond that EvtIo fails the IRP with
+// STATUS_IO_TIMEOUT instead of hanging the sequential queue forever (the old
+// multi-packet behavior). Host stacks (Python XdmaWinDriver) chunk at DMA_CHUNK
+// = 1 MiB, so the normal path sees exactly one packet and never hits this bound.
+#define XDMA_MAX_WDF_PACKETS    (16UL)
+
 // PLAN-3 P1 2026-10-17: descriptor-block POOL size. Slots 1..N-1 are extra
 // WDFCOMMONBUFFER blocks pre-allocated now so a future increment can give each
 // WDFDMATRANSACTION its own descriptor buffer (no more one shared
