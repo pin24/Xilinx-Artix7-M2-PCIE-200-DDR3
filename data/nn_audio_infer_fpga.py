@@ -20,10 +20,11 @@ from nn_audio_common import (load_model_npz, save_wav, N_SAMPLES, SR, DURATION,
 
 def make_fpga_backend():
     from fpga_backend import FpgaBackend
-    from xdma_driver import XdmaWinUpstream, TdotCore
-    dev = XdmaWinUpstream(base=r"\\.\XDMA0dma")
-    TdotCore(dev, num_mac=16).set_sched(False)   # legacy-GO path active
-    return FpgaBackend(mode="fpga", n=16, device=dev, num_mac=16)   # n=16: chank dot
+    # Для ring-планировщика нужен прямой DMA — XdmaWinDma (не XdmaWinUpstream и
+    # НЕ set_sched(False): sched_en должен быть включён, иначе кольцо не крутится).
+    from test_dma_win import XdmaWinDma
+    dev = XdmaWinDma(base=r"\\.\XDMA0dma")
+    return FpgaBackend(mode="fpga", n=16, device=dev, num_mac=16)   # n=16: чанк dot'а
 
 def main():
     ap = argparse.ArgumentParser()
@@ -53,11 +54,14 @@ def main():
 
     X = np.stack([np.full(n, norm_freq(float(args.freq))),
                   phase_frac(float(args.freq), np.arange(n))], axis=1).astype(np.float32)
-    # по умножителю идём по батчам (память/скорость): здесь батч в 1 сэмпл (ускоритель batch=1)
+    # Генерация батчами через кольцо планировщика (batch>1). Пачки <=200 задач,
+    # чтобы не переполнять кольцо глубины 256.
+    BATCH = 200
     t0 = time.time()
     outs = np.zeros((n, 1), dtype=np.float32)
-    for i in range(n):
-        outs[i] = forward_batch(X[i:i+1], W1, b1, W2, b2, backend="fpga", fb=fb)
+    for s0 in range(0, n, BATCH):
+        s1 = min(n, s0 + BATCH)
+        outs[s0:s1] = forward_batch(X[s0:s1], W1, b1, W2, b2, backend="fpga", fb=fb)
     dt = time.time() - t0
     if args.bench or args.limit > 0:
         print(f"time={dt:.1f}с  {dt/n*1000:.2f} мс/сэмпл  {n/dt:.1f} сэмпл/с")

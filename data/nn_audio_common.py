@@ -103,11 +103,23 @@ def matmul_w(X, W, backend, fb=None):
     if backend == "cpu":
         return X @ W
     assert fb is not None, "fpga требует fb"
+    n = int(fb.n)
     out = np.zeros((B, fout), dtype=np.float32)
+    # Батч через fpga: по каждой выходной нейроне — один вызов run_dot на ВСЕ
+    # строки (B задач в кольце) вместо поточечно. По оси in идём чанками по n
+    # (long-dot в RTL суммаризует сам, но здесь дробится явно для нулевой маски).
     for o in range(fout):
         wcol = W[:, o]
-        for b in range(B):
-            out[b, o] = mul_chunked(X[b], wcol, fb)
+        acc = np.zeros(B, dtype=np.float32)
+        for co in range(0, fin, n):
+            xe = X[:, co:co + n]
+            L = xe.shape[1]
+            xb = np.zeros((B, n), dtype=np.float32)
+            xb[:, :L] = xe
+            wb = np.zeros(n, dtype=np.float32)
+            wb[:L] = wcol[co:co + L]
+            acc += fb.run_dot(xb, np.broadcast_to(wb, (B, n)))
+        out[:, o] = acc
     return out
 
 

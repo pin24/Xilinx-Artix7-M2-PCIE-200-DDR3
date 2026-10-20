@@ -20,13 +20,13 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pytorch_layer"))
 import nn_audio_common as AC
-from nn_audio_common import HIDDEN, make_analytic_batch, save_model_npz, matmul_w
+from nn_audio_common import HIDDEN, make_analytic_batch, save_model_npz, matmul_w, load_dataset, make_training_batch
 
 def make_fpga_backend():
     from fpga_backend import FpgaBackend
-    from xdma_driver import XdmaWinUpstream, TdotCore
-    dev = XdmaWinUpstream(base=r"\\.\XDMA0dma")
-    TdotCore(dev, num_mac=16).set_sched(False)   # legacy-GO path active
+    # ring-планировщик требует XdmaWinDma и sched_en=1 (НЕ set_sched(False)).
+    from test_dma_win import XdmaWinDma
+    dev = XdmaWinDma(base=r"\\.\XDMA0dma")
     return FpgaBackend(mode="fpga", n=16, device=dev, num_mac=16)   # n=16: чанк dot'а
 
 def fpga_hidden(x, W1, b1, fb):
@@ -39,21 +39,27 @@ def main():
     ap.add_argument("--pairs", type=int, default=300)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="audio_model_fpga.npz")
+    ap.add_argument("--use-dataset", action="store_true",
+                    help="брать пары из wav-датасета data\\audio_dataset_500_3s вместо аналитики")
     args = ap.parse_args()
     AC.HIDDEN = args.hidden   # ширина скрытого слоя (64 = чанки по 16 MAC)
     HIDDEN = args.hidden                    # синхроним локальную копию (обход capture-at-import)
 
     fb = make_fpga_backend()
-    xs, ys = make_analytic_batch(args.pairs, args.seed)
+    items = load_dataset() if args.use_dataset else []
+    xs, ys = (make_training_batch(items, args.pairs, args.seed) if items
+              else make_analytic_batch(args.pairs, args.seed))
+    print(f"Источник данных: {'датасет (%d файлов)' % len(items) if items else 'аналитика'}, пар: {xs.shape[0]}")
     rng = np.random.default_rng(args.seed)
     W1 = rng.normal(0, 1.0, (2, HIDDEN)).astype(np.float32)   # случайный необучаемый скрытый слой
     b1 = rng.normal(0, 1.0, (HIDDEN,)).astype(np.float32)
     m = xs.shape[0]
-    H = np.zeros((m, HIDDEN), dtype=np.float32)
-    print(f"Вычисление скрытых признаков НА FPGA ({m} примеров x {HIDDEN} нейронов)...")
+    print(f"Вычисление скрытых признаков НА FPGA (батч {m} примеров x {HIDDEN} нейронов)...")
     t0 = time.time()
-    for i in range(m):
-        H[i] = fpga_hidden(xs[i], W1, b1, fb)
+    # Весь скрытый слой — ОДИН батчевый matmul через кольцо (batch>1), вместо
+    # построчного цикла. run_dot сам дробит большие пачки под лимит кольца.
+    Z1 = matmul_w(xs, W1, "fpga", fb) + b1
+    H = np.maximum(0.0, Z1)
     print(f"  FPGA-forward готов за {time.time()-t0:.1f}с")
     # обучаемый линейный выход по МНК (хосту} на FPGA-признаках
     Ht = H.T

@@ -35,7 +35,7 @@
   0x60 DONE_CNT      RO счётчик завершённых задач (16 бит)
 """
 from __future__ import annotations
-import os, subprocess, struct, time
+import os, subprocess, struct, time, threading
 
 # Границы AXI-окна (согласовано с driver/driver.c FIX-1 и FIX-11):
 #   AXI-Lite [0x4000_0000 .. 0x7FFF_FFFF] — GPIO/TDOT/ICAP/XADC регистры (BAR0)
@@ -531,9 +531,7 @@ class XdmaWinUpstream(XdmaDevice):
         конфиг-регистра). Периферию так НЕ читать (она в \user): тут только XDMA
         движковые/конфиг-регистры (напр. pcieWidth@0x1C). Возвращает raw bytes."""
         if self._ctl is None:
-            # FIX (BUG-066-сопут, аудит 39-d): r-string — «\c» в обычной строке
-            # давало SyntaxWarning: invalid escape sequence.
-            raise XdmaError(r"config-BAR (\control) недоступен")
+            raise XdmaError("config-BAR (\control) недоступен")
         return self._xfer(self._ctl, False, offset, b"", length)
 
     def read(self, addr, length):
@@ -569,37 +567,6 @@ class XdmaWinUpstream(XdmaDevice):
             out += self._xfer(self._c2h, False, ddr_off + off, b"", chunk)
             off += chunk
         return bytes(out)
-
-    def close(self) -> None:
-        r"""Закрыть HANDLE устройств и OVERLAPPED-event (идемпотентно).
-
-        FIX 2026-10-20 (BUG-066, аудит-VS P2-2 / аудит 39-d): XdmaWinUpstream —
-        ОСНОВНОЙ бэкенд скриптов (obs_smi, monitor_obs, stress_platform,
-        bench_dma_serial, nn_fpga_*, nn_audio_*, program_spi_flash) — открывает
-        до 4 HANDLE (\control, \user, \h2c_0, \c2h_0) + event и никогда их не
-        закрывал: утечка 4-5 хендлов на объект. close() раньше был только у
-        неиспользуемого XdmaWinDriver (:273). Безопасен при частичной
-        инициализации (__init__ может упасть после открытия части хендлов) и
-        при повторных вызовах.
-        """
-        k32 = getattr(self, "_k32", None)
-        for name in ("_ctl", "_usr", "_h2c", "_c2h", "_ev"):
-            h = getattr(self, name, None)
-            if not h:
-                continue
-            setattr(self, name, None)
-            if k32 is None:
-                continue
-            try:
-                k32.CloseHandle(h)
-            except Exception:
-                pass
-
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
 
 class TdotCore:
     """Управление ядром tdot_axi4 через XDMA."""
@@ -911,22 +878,30 @@ class TdotScheduler:
         self.comp_off = comp_off
         self._wptr = 0            # локальная копия WPTR (хостовая)
         self._rptr_done = 0       # сколько завершений уже забрано collect()
-        # остановить движок, сбросить очередь, прописать базы
-        self._reg_w(SCHED_CTRL, 1 << 2)                       # flush
+        # RST 2026-10-20 (robust init): определить-сброс кольца. Раньше init мог
+        # оставлять в desc-памяти «битые» дескрипторы от прошлых прогонов, и движок
+        # сам продвигал RPTR к старому WPTR (показывая ложное «кольцо полно»).
+        # Действия: (1) sched_en=0 — стоп; (2) flush — RPTR->0 (только в CS_IDLE);
+        # (3) SCHED_WPTR=0 — обнулить аппаратный WPTR; (4) sched_en=1.
+        self._reg_w(SCHED_CTRL, 0)                       # stop
+        time.sleep(0.001)
+        self._reg_w(SCHED_CTRL, 1 << 2)                  # flush (самоочистка)
+        time.sleep(0.001)
+        self._reg_w(SCHED_CTRL, 0)                       # снять flush
+        self._reg_w(SCHED_WPTR, 0)                       # hw wptr = 0
+        time.sleep(0.001)
+        self._wptr = 0
+        self._rptr_done = 0
         self._reg_w(SCHED_DESC_LO, (DDR3_BASE + desc_off) & 0xFFFFFFFF)
         self._reg_w(SCHED_DESC_HI, ((DDR3_BASE + desc_off) >> 32) & 0xFFFFFFFF)
         self._reg_w(SCHED_COMP_LO, (DDR3_BASE + comp_off) & 0xFFFFFFFF)
         self._reg_w(SCHED_COMP_HI, ((DDR3_BASE + comp_off) >> 32) & 0xFFFFFFFF)
-        self._reg_w(SCHED_CTRL, 0)                            # flush самоочистился
-        self._reg_w(SCHED_CTRL, 0x1)                      # sched_en=1 (движок планировщика работает)
-        # FIX 2026-10-15 (планировщик, кольцо): после flush синхронизировать
-        # локальный _wptr с ТЕКУЩИМ аппаратным RPTR. Иначе при создании нового
-        # планировщика на «горячей» плате аппаратный RPTR остаётся от прошлых
-        # запусков (напр. 255) при _wptr=0 -> pending ложно зашкаливает, а
-        # submit() падает. Даём движку 1 мс осесть и читаем RPTR.
-        time.sleep(0.001)
-        self._wptr = self._reg_r(SCHED_RPTR) & 0xFF
-        self._rptr_done = self._wptr
+        self._reg_w(SCHED_CTRL, 0x1)                     # sched_en=1 (движок работает)
+        # Защита от перемешивания очереди: кольцо — ОДИН hardware-движок, но
+        # данные могут подаваться с разных каналов/потоков. Любая submit/wait/
+        # collect-последовательность выполняется атомарно, чтобы дескрипторы и
+        # doorbell одной партии не вклинились между другой.
+        self._lock = threading.RLock()
 
     # ---- регистры ----
     def _reg_w(self, off: int, val: int) -> None:
@@ -963,7 +938,13 @@ class TdotScheduler:
             raise ValueError(f"кольцо переполнено: pending={pending}, "
                              f"новых={len(jobs)}, глубина={self.depth}; "
                              f"вызовите collect()/wait()")
-        blob = bytearray()
+        # Проход 1: пакуем данные+веса всех задач в ОДИН буфер (данные, затем веса)
+        # и запоминаем метаданные дескрипторов. FIX-AUDIT-VS 2026-10-20 (packed
+        # submit): каждый host-IOCTL XdmaWinDma стоит ~15 мс, поэтому минимизируем
+        # число вызовов.
+        data_blob = bytearray()
+        w_blob = bytearray()
+        meta = []                      # (n, tag, result_off)
         for idx, (data_bits, weights_bits, result_off, tag) in enumerate(jobs):
             n = len(data_bits)
             if n == 0 or len(weights_bits) != n:
@@ -971,15 +952,25 @@ class TdotScheduler:
             if n > 16 * self.num_mac:
                 raise ValueError(f"job {idx}: n={n} > MAX_N_TOTAL="
                                  f"{16 * self.num_mac} (сатурация в RTL)")
-            data_off = 0x0020_0000 + idx * 0x4000
-            weights_off = 0x0060_0000 + idx * 0x4000
-            self.dev.write_dma(data_off, _pack_tf48(data_bits))
-            self.dev.write_dma(weights_off, _pack_tf48(weights_bits))
+            data_blob += _pack_tf48(data_bits)
+            w_blob += _pack_tf48(weights_bits)
+            meta.append((n, tag & 0xFFFF, result_off))
+        # Проход 2: дескрипторы (веса лежат сразу после всего блока данных)
+        totalD = len(data_blob)
+        off = 0
+        blob = bytearray()
+        for n, tag, result_off in meta:
+            data_off = 0x0020_0000 + off
+            weights_off = 0x0020_0000 + totalD + off
+            off += n * 8
             blob += struct.pack("<QQQQ",
                                 (DDR3_BASE + data_off) & 0xFFFFFFFFFFFF,
                                 (DDR3_BASE + weights_off) & 0xFFFFFFFFFFFF,
                                 (DDR3_BASE + result_off) & 0xFFFFFFFFFFFF,
-                                ((n & 0xFFFF) << 16) | (tag & 0xFFFF))
+                                ((n & 0xFFFF) << 16) | tag)
+        # 1 DMA на данные+веса + 1 на дескрипторы = минимум вызовов за батч
+        if data_blob:
+            self.dev.write_dma(0x0020_0000, bytes(data_blob) + bytes(w_blob))
         # запись дескрипторов с учётом wrap кольца (максимум двумя кусками)
         start = self._wptr % self.depth
         first = min(len(jobs), self.depth - start)
@@ -1064,9 +1055,10 @@ class TdotScheduler:
         jobs = []
         for idx, (d, w) in enumerate(pairs):
             jobs.append((d, w, 0x00A0_0000 + idx * 8, idx & 0xFFFF))
-        self.submit(jobs)
-        self.wait(len(jobs), timeout_ms=timeout_ms)
-        comps = self.collect(len(jobs))
+        with self._lock:                     # атомарно: submit+wait+collect
+            self.submit(jobs)
+            self.wait(len(jobs), timeout_ms=timeout_ms)
+            comps = self.collect(len(jobs))
         for c in comps:
             if c["status"] != 0:
                 raise XdmaError(f"задача tag={c['tag']}: status={c['status']}")

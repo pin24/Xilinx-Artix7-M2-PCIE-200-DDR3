@@ -37,6 +37,7 @@ class FpgaBackend:
         self.n = n            # размерность dot
         self.device = device  # XdmaDevice или None (fpga -> авто)
         self.num_mac = num_mac
+        self._sched = None    # кэш TdotScheduler (батч через ring)
 
     def run_dot(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """dot по последней оси: a[batch,N] @ b[batch,N] -> [batch]."""
@@ -80,30 +81,38 @@ class FpgaBackend:
             out[i] = products[0].to_float()
         return out
 
-    # --- FPGA-вызов через XDMA ---
+    # --- FPGA-вызов через XDMA (аппаратный планировщик, batch>1) ---
+    def _ensure_device(self):
+        if self.device is not None:
+            return self.device
+        from xdma_driver import XdmaLinux, XdmaError
+        try:
+            self.device = XdmaLinux()
+        except XdmaError:
+            # Windows: прямой DMA делает XdmaWinDma (test_dma_win), а НЕ
+            # XdmaWindows/xdma_rw.exe (того бинаря в проекте нет).
+            from test_dma_win import XdmaWinDma
+            self.device = XdmaWinDma(base=r"\\.\XDMA0dma")
+        return self.device
+
     def _run_fpga(self, a, b, batch):
-        if batch > 1:
-            raise NotImplementedError(
-                "FPGA-бэкенд пока обрабатывает batch=1 за вызов; "
-                "подавайте по одному вектору.")
-        if self.n > self.num_mac:
-            raise ValueError(f"n={self.n} > NUM_MAC={self.num_mac}")
-
-        from xdma_driver import XdmaLinux, XdmaWindows, TdotCore, XdmaError
-
-        if self.device is None:
-            try:
-                self.device = XdmaLinux()
-            except XdmaError:
-                self.device = XdmaWindows()
-        core = TdotCore(self.device, num_mac=self.num_mac)
-
-        data_bits = self._batch_to_bits(a)[0]
-        weights_bits = self._batch_to_bits(b)[0]
-        res = core.dot(data_bits, weights_bits,
-                       data_addr=DDR_DATA, weights_addr=DDR_WEIGHTS,
-                       result_addr=DDR_RESULT)
-        return np.array([self._bits_to_float(res)], dtype=np.float32)
+        # Каждая строка батча = одна задача планировщика (ring). Длина n до
+        # 16*NUM_MAC покрывается long-dot в RTL сама.
+        if self.n > 16 * self.num_mac:
+            raise ValueError(f"n={self.n} > MAX_N_TOTAL={16 * self.num_mac}")
+        from xdma_driver import TdotScheduler
+        dev = self._ensure_device()
+        if self._sched is None or getattr(self._sched, "dev", None) is not dev:
+            self._sched = TdotScheduler(dev, num_mac=self.num_mac)
+        a_bits = self._batch_to_bits(a)
+        b_bits = self._batch_to_bits(b)
+        pairs = [(a_bits[i], b_bits[i]) for i in range(batch)]
+        # лимит кольца планировщика: не более depth-1 задач за батч
+        RING_MAX = 200
+        res_bits = []
+        for s in range(0, batch, RING_MAX):
+            res_bits += self._sched.dot_batch(pairs[s:s + RING_MAX])
+        return np.array([self._bits_to_float(rb) for rb in res_bits], dtype=np.float32)
 
     def throughput_gflops(self, freq_hz: float = 125e6) -> float:
         """Теоретическая производительность (для сравнения)."""
