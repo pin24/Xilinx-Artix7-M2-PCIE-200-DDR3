@@ -125,7 +125,8 @@ DDR3 **не сконфигурирован**, поэтому:
 Полная регистровая карта и семантика — `docs/OBSERVABILITY.md`. Кратко:
 - `CYCLES` — 64-бит free-running (не подчиняется FREEZE);
 - событийные 32-бит счётчики (MEM/LOAD/COMPUTE/AR/BEAT/AR_STALL/R_WAIT/WR/JOB/FIFO_FULL) считаются
-  в такт события; `CLEAR` обнуляет всё и тени; `FREEZE` паузит события, но не CYCLES;
+  в такт события; `CLEAR` обнуляет только их (CYCLES и SNAP-тени не трогает); `FREEZE` паузит
+  события, но не CYCLES;
 - `SNAP` → `0xB0..0xE0` — консистентный атомарный снимок;
 - host-API: `xdma_driver.TdotCore.{read_build_id, read_caps, obs_clear, obs_freeze, obs_snap, obs_read, obs_read_shadow}`.
 - Вместе с OBS внесён **4KB-кламп read-burst** (AXI4 A4.3.1) — закрывает латентный дефект
@@ -284,8 +285,8 @@ weights `0x1000`, result `0x2000` (смещения от `0x80000000`).
 | Таблица дескрипторов | `0x0010_0000` | 8 KB (256×32 Б) | Кольцо команд (mod 256) |
 | Область завершений | `0x0011_0000` | 4 KB (256×16 Б) | Completion-записи |
 | Selftest-паттерн | `0x0100_0000` | — | `xdma_driver.py --selftest` |
-| data (планировщик) | `0x0020_0000` | 2 MB (256×16 KB) | Слоты data, `idx*0x4000` |
-| weights (планировщик) | `0x0060_0000` | 2 MB (256×16 KB) | Слоты weights |
+| data (планировщик) | `0x0020_0000` | 4 MiB (256×16 KiB) | Слоты data, `idx*0x4000` |
+| weights (планировщик) | `0x0060_0000` | 4 MiB (256×16 KiB) | Слоты weights |
 | results (планировщик) | `0x00A0_0000` | 2 KB | `idx*8` |
 
 ---

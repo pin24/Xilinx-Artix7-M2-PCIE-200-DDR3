@@ -688,8 +688,14 @@ class TdotCore:
         }
 
     def obs_clear(self) -> None:
-        """Обнулить все OBS-счётчики (импульс CLEAR)."""
-        self._reg_w(self.OBS_CTRL, 0x1)
+        """Обнулить событийные OBS-счётчики (импульс CLEAR).
+
+        RMW с сохранением FREEZE (фикс 187dc69, перенесён с TMUL): RTL на запись
+        0x6C обновляет ОБА бита (obs_freeze_q <= wdata[1]; obs_clear_q <= wdata[0],
+        tdot_axi4.sv:328-331), поэтому прямая запись 0x1 молча снимала бы заморозку.
+        CLEAR не трогает CYCLES и SNAP-тени (tdot_axi4.sv:1039-1046, 1073-1081)."""
+        v = self._reg_r(self.OBS_CTRL)
+        self._reg_w(self.OBS_CTRL, (v & 0x2) | 0x1)
 
     def obs_freeze(self, on: bool) -> None:
         """Пауза событийного счёта (CYCLES продолжает идти)."""
@@ -703,9 +709,15 @@ class TdotCore:
         """Прочитать все счётчики (последовательно; для консистентного
         снимка вызывайте obs_snap() и читайте obs_read_shadow())."""
         r = lambda off: self._reg_r(off)
+        # CYCLES 64-бит: HI->LO->HI с повтором при переносе (иначе кадр с ошибкой
+        # ±2^32 каждые ~34 с @125 МГц, если LO переполнился между чтениями).
+        hi = r(self.OBS_CYCLES_HI)
         lo = r(self.OBS_CYCLES_LO)
+        if r(self.OBS_CYCLES_HI) != hi:   # был перенос LO — перечитываем пару
+            hi = r(self.OBS_CYCLES_HI)
+            lo = r(self.OBS_CYCLES_LO)
         return {
-            "cycles":     (r(self.OBS_CYCLES_HI) << 32) | lo,
+            "cycles":     (hi << 32) | lo,
             "busy":       r(self.OBS_BUSY),
             "mem":        r(self.OBS_MEM),
             "load":       r(self.OBS_LOAD),

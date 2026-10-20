@@ -85,6 +85,16 @@ def main(argv=None):
         d.read_dma(off, bench_nbytes)
         print(f"  DMA-нагрузка запущена: блок {args.bench} МБ (write+read через плату)")
 
+    # CAPS (факт прошивки) vs --num-mac (флаг): E-7 — не даём флагу молча врать в шапке
+    try:
+        caps = core.read_caps()
+        caps_mac = caps.get("num_mac") or None
+    except Exception:
+        caps, caps_mac = None, None
+    mac_note = f"CAPS NUM_MAC={caps_mac}" if caps_mac else "CAPS недоступны (старая прошивка?)"
+    if caps_mac and args.num_mac != caps_mac:
+        mac_note += f"  WARN: --num-mac={args.num_mac} != CAPS"
+
     prev = None
     prev_t = None
     try:
@@ -134,21 +144,26 @@ def main(argv=None):
                 mem_p  = 100.0 * (cur["mem"]  - prev["mem"])  / dcyc
                 load_p = 100.0 * (cur["load"] - prev["load"]) / dcyc
                 comp_p = 100.0 * (cur["compute"] - prev["compute"]) / dcyc
+                ars_p  = 100.0 * (cur["ar_stall"] - prev["ar_stall"]) / dcyc
                 rwait_p = 100.0 * (cur["r_wait"] - prev["r_wait"]) / dcyc
             else:
-                busy_p = mem_p = load_p = comp_p = rwait_p = 0.0
+                busy_p = mem_p = load_p = comp_p = ars_p = rwait_p = 0.0
                 dj = dar = dbeat = dwr = dfifo = 0
 
             # ---- отрисовка кадра ----
             # dt_real вычислен выше (между двумя чтениями счётчиков prev_t->cur_t)
+            # E-3: в live/--dot dbeat*8 — это ЧТЕНИЕ ЯДРА из DDR3 (AXI-биты data+weights),
+            # а НЕ host-DMA через XDMA; не подписываем это как "DMA".
             if dma_mb is not None:
-                dmamb = dma_mb                       # реальная скорость переноса (--bench)
+                dmamb = dma_mb                       # реальный host-DMA (--bench)
+                bw_label = "DMA host (write+read)"
             else:
-                dmamb = dbeat * 8 / dt_real / 1e6    # по прочитанным словам (ΔBEAT)
+                dmamb = dbeat * 8 / dt_real / 1e6    # AXI-биты ядра из DDR3 (ΔBEAT)
+                bw_label = "CORE RD (AXI, ядро из DDR3; не host-DMA)"
             job_s = (dj / dt_real) if dj > 0 else 0.0
             s = (f"\x1b[2J\x1b[H"
                  f"  tdot OBS console  "
-                 f"(BUILD_ID=0x{core.read_build_id():08X}  /  build {args.num_mac} MAC)  "
+                 f"(BUILD_ID=0x{core.read_build_id():08X}  /  {mac_note})  "
                  f"[flat, live]   Ctrl+C для выхода\n"
                  f"  {('-'*56)}\n"
                  f"  CYCLES (такты)  {cur['cycles']:>14,d}   кадр {dt_real*1000:.0f} мс\n"
@@ -161,8 +176,9 @@ def main(argv=None):
                  f"  ТЕКУЩАЯ АКТИВНОСТЬ (Δ за кадр):\n"
                  f"  AR (чтение)=+{dar:,d}   BEAT (слова)=+{dbeat:,d}   "
                  f"WR (запись)=+{dwr:,d}   JOB (задачи)=+{dj:,d}\n"
-                 f"  DMA (живая, реал. время) = {dmamb:8.1f} MB/s   "
-                 f"AR_STALL (бэкпрешер)={rwait_p:.3f}%  FIFO_FULL (Δ)=+{dfifo:,d}\n"
+                 f"  {bw_label} = {dmamb:8.1f} MB/s\n"
+                 f"  AR_STALL (бэкпрешер)={ars_p:.3f}%   R_WAIT (латентность/дыры)={rwait_p:.3f}%\n"
+                 f"  FIFO_FULL (Δ)=+{dfifo:,d}  (база ~2-4/проход при n=NUM_MAC; рост = деградация)\n"
                  f"  {('-'*56)}\n"
                  f"  КУМУЛЯТИВНО (с --clear): AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  "
                  f"WR={cur['wr']:,d}  JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"
