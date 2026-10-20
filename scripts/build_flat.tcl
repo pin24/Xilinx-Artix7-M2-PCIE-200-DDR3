@@ -81,22 +81,32 @@ puts "============================================================"
 
 # ---------- 0-a. Очистка устаревших артефактов ----------
 # Прошлый УСПЕШНЫЙ .bit/.mcs не должен маскировать провал текущей сборки:
-# битстрим и mcs удаляем ДО синтеза, чтобы в build/artifacts_flat не осталось
-# файла от предыдущего прогона (иначе «артефакт на месте» при FATAL-гейте).
-puts "=== 0-a. CLEAN STALE ARTIFACTS: ${ARTIFACTS_DIR} ==="
-set stale_n 0
-foreach stale_pat {*.bit *.mcs} {
-    set stale_files [glob -nocomplain -directory ${ARTIFACTS_DIR} -types f ${stale_pat}]
-    foreach stale_f ${stale_files} {
-        if {[catch {file delete -force ${stale_f}} stale_err]} {
-            puts "WARNING: Cannot delete ${stale_f}: ${stale_err}"
-        } else {
-            puts "  removed: ${stale_f}"
-            incr stale_n
+# битстрим, mcs и timing_FATAL.rpt удаляем ДО синтеза, чтобы в
+# build/artifacts_flat не осталось файла от предыдущего прогона (иначе
+# «артефакт на месте» при FATAL-гейте; stale timing_FATAL.rpt уже путал —
+# см. CHANGE_LOG_2026-10-13).
+# FIX 2026-10-20 (BUG-062, аудит 39-c F2.5/F2.4): (1) гард SKIP_SYNTH — раньше
+# очистка стояла ВЫШЕ exit по SKIP_SYNTH и прогон «only create the project»
+# стирал прод-артефакты; (2) timing_FATAL.rpt добавлен к шаблонам — он
+# переживал успешную сборку и маскировал свежие отчёты.
+if {!${SKIP_SYNTH}} {
+    puts "=== 0-a. CLEAN STALE ARTIFACTS: ${ARTIFACTS_DIR} ==="
+    set stale_n 0
+    foreach stale_pat {*.bit *.mcs timing_FATAL.rpt} {
+        set stale_files [glob -nocomplain -directory ${ARTIFACTS_DIR} -types f ${stale_pat}]
+        foreach stale_f ${stale_files} {
+            if {[catch {file delete -force ${stale_f}} stale_err]} {
+                puts "WARNING: Cannot delete ${stale_f}: ${stale_err}"
+            } else {
+                puts "  removed: ${stale_f}"
+                incr stale_n
+            }
         }
     }
+    puts "=== 0-a. CLEAN STALE ARTIFACTS: removed ${stale_n} file(s) (*.bit/*.mcs/timing_FATAL.rpt) ==="
+} else {
+    puts "=== 0-a. CLEAN STALE ARTIFACTS: SKIPPED (SKIP_SYNTH=1 — прод-артефакты не трогаем) ==="
 }
-puts "=== 0-a. CLEAN STALE ARTIFACTS: removed ${stale_n} file(s) (*.bit/*.mcs) ==="
 
 # ---------- 1. Create project (full cache cleanup) ----------
 puts "=== 1. CREATE PROJECT ==="
@@ -257,10 +267,24 @@ set_property PROCESSING_ORDER NORMAL [get_files ${pins_xdc}]
 # РЎРѓР В¶Р С‘Р СР В°Р ВµРЎвЂљ РЎР‚Р В°Р В·Р СР ВµРЎвЂ°Р ВµР Р…Р С‘Р Вµ u_tdot/u_core (gen_ad + gen_mac) Р Р† Р С•Р Т‘Р С‘Р Р… Р С•Р В±РЎвЂ°Р С‘Р в„– РЎР‚Р ВµР С–Р С‘Р С•Р Р… Р Т‘Р В»РЎРЏ
 # РЎРѓР С•Р С”РЎР‚Р В°РЎвЂ°Р ВµР Р…Р С‘РЎРЏ Р СР В°РЎР‚РЎв‚¬РЎР‚РЎС“РЎвЂљР В° Р С”РЎР‚Р С‘РЎвЂљР С‘РЎвЂЎР ВµРЎРѓР С”Р С‘РЎвЂ¦ Р С—РЎС“РЎвЂљР ВµР в„–. Р вЂ”Р В°Р С–РЎР‚РЎС“Р В¶Р В°Р ВµРЎвЂљРЎРѓРЎРЏ LATE (Р С—Р С•РЎРѓР В»Р Вµ РЎРѓР С‘Р Р…РЎвЂљР ВµР В·Р В°),
 # РЎвЂЎРЎвЂљР С•Р В±РЎвЂ№ Р С”Р В»Р ВµРЎвЂљР С”Р С‘ u_tdot/u_core РЎС“Р В¶Р Вµ РЎРѓРЎС“РЎвЂ°Р ВµРЎРѓРЎвЂљР Р†Р С•Р Р†Р В°Р В»Р С‘ Р Т‘Р В»РЎРЏ add_cells_to_pblock.
-set pblock_flat_xdc ${ROOT}/constraints/pblock_flat_tdot.xdc
-add_files -fileset constrs_1 ${pblock_flat_xdc}
-set_property PROCESSING_ORDER LATE [get_files ${pblock_flat_xdc}]
-update_compile_order -fileset constrs_1
+# FIX 2026-10-20 (BUG-061, аудит 39-c F1.1-F1.4 / C-5): pblock подключался
+# БЕЗУСЛОВНО, но регион 6642 SLICE (SLICE_X25Y4:SLICE_X105Y85) заморожен по
+# routed-DCP сборки NUM_MAC=16/ADDERS=4 (45a8a24, 2026-10-07). Для NUM_MAC=32/64
+# ядро физически не помещается (потребность 32/16 ~2x; признано владельцем в
+# docs/worklog «pblock 6642 SLICE < NUM_MAC=32 need») -> либо Place-fail, либо
+# тихо-пустой pblock (get_cells -quiet -> пусто, ограничение молча не работает).
+# Гард: подключаем ТОЛЬКО при NUM_MAC=16 (конфигурация, под которую регион
+# подогнан); для остальных — громкий WARNING и сборка БЕЗ pblock (тайминг
+# всё равно проверяет FATAL-гейт 8.5).
+if {${NUM_MAC} == 16} {
+    set pblock_flat_xdc ${ROOT}/constraints/pblock_flat_tdot.xdc
+    add_files -fileset constrs_1 ${pblock_flat_xdc}
+    set_property PROCESSING_ORDER LATE [get_files ${pblock_flat_xdc}]
+    update_compile_order -fileset constrs_1
+    puts " PBLOCK    : pblock_flat_tdot.xdc подключён (NUM_MAC=16 — регион подогнан под 16/4)"
+} else {
+    puts "=== WARNING: pblock_flat_tdot.xdc ПРОПУЩЕН: регион 6642 SLICE подогнан под NUM_MAC=16/ADDERS=4, текущая сборка NUM_MAC=${NUM_MAC}/ADDERS=${ADDERS} — ядро в регион не помещается. Сборка идёт БЕЗ pblock; после place проверь report_utilization -pblocks ==="
+}
 
 # Vivado 2025.2 DRC REQP-123 benign trigger for clk200_clk_wiz
 set_property SEVERITY {Warning} [get_drc_checks REQP-123]
