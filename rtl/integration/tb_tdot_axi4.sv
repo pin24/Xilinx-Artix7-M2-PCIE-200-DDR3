@@ -308,6 +308,75 @@ module tb_tdot_axi4;
         end
         $fclose(f);
 
+        // ------------------------------------------------------------------
+        // TEST 5 (BUG-063, 2026-10-20): регресс CS_ABORT_WAIT — align-аборт
+        // больше не снимает busy при активном read-burst. Старый прямой
+        // переход CS_RD_DATA -> CS_DONE позволял СЛЕДУЮЩЕЙ задаче сделать
+        // fifo_clr посреди недочитанного burst -> её результат был битым
+        // (данные со смещением). Проверка: (1) задача с невыровненным
+        // RESULT_ADDR (0x804, [2:0]!=0 -> align_q) завершается DONE;
+        // (2) СРАЗУ следом та же задача с выровненными адресами даёт
+        // ПОБИТОВО правильный результат (равен золоту case 0).
+        // Адреса case 0: data=0, weights=NUM_MAC*8, result=0x800.
+        // ------------------------------------------------------------------
+        $display("=== TEST 5: align-abort + recovery (CS_ABORT_WAIT) ===");
+        begin
+            integer k5;
+            logic [31:0] st5;
+            logic [63:0] golden0, rec5;
+            golden0 = mem[32'h0800 >> 3];   // эталон: результат case 0 (0x800 ещё не перезаписан)
+
+            // (1) align-аборт: только RESULT_ADDR не кратен 8
+            axi_lite_write(8'h14, 32'(0));                        // DATA_ADDR_LO  = 0 (case 0)
+            axi_lite_write(8'h18, 32'h0000_0000);                 // DATA_ADDR_HI
+            axi_lite_write(8'h1c, 32'(NUM_MAC * 8));              // WEIGHTS_ADDR_LO = case 0
+            axi_lite_write(8'h20, 32'h0000_0000);                 // WEIGHTS_ADDR_HI
+            axi_lite_write(8'h24, 32'h0000_0804);                 // RESULT_ADDR_LO — НЕ кратно 8 -> align_q
+            axi_lite_write(8'h28, 32'h0000_0000);                 // RESULT_ADDR_HI
+            axi_lite_write(8'h08, 32'(NUM_MAC));                  // N_IN
+            axi_lite_write(8'h00, 32'h0000_0001);                 // GO
+            k5 = 0;
+            do begin
+                axi_lite_read(8'h04, st5);
+                k5 = k5 + 1;
+                if (k5 > 20000) begin
+                    $display("FAIL T5: TIMEOUT ожидания DONE после align-аборта, STATUS=%08h cstate=%0d rstate=%0d",
+                             st5, dut.cstate, dut.rstate);
+                    $finish;
+                end
+            end while (!(st5 & 2));
+            $display("T5 [1/2] abort-задача DONE (STATUS=%08h) — busy снят после дренирования burst (CS_ABORT_WAIT)", st5);
+
+            // (2) восстановление: та же задача, что case 0, выровненный result 0x800
+            axi_lite_write(8'h14, 32'(0));
+            axi_lite_write(8'h18, 32'h0000_0000);
+            axi_lite_write(8'h1c, 32'(NUM_MAC * 8));
+            axi_lite_write(8'h20, 32'h0000_0000);
+            axi_lite_write(8'h24, 32'h0000_0800);
+            axi_lite_write(8'h28, 32'h0000_0000);
+            axi_lite_write(8'h08, 32'(NUM_MAC));
+            axi_lite_write(8'h00, 32'h0000_0001);                 // GO
+            k5 = 0;
+            do begin
+                axi_lite_read(8'h04, st5);
+                k5 = k5 + 1;
+                if (k5 > 20000) begin
+                    $display("FAIL T5: TIMEOUT ожидания DONE на восстановительной задаче, STATUS=%08h cstate=%0d",
+                             st5, dut.cstate);
+                    $finish;
+                end
+            end while (!(st5 & 2));
+            rec5 = mem[32'h0800 >> 3];
+            if (rec5[47:0] === golden0[47:0]) begin
+                $display("PASS T5: результат восстановления %012h == золоту case0 %012h (fifo_clr не попал в burst)",
+                         rec5[47:0], golden0[47:0]);
+            end else begin
+                $display("FAIL T5: результат восстановления %012h != золоту case0 %012h — fifo_clr попал в середину burst?",
+                         rec5[47:0], golden0[47:0]);
+                $finish;
+            end
+        end
+
         repeat (10) @(posedge clk);
         $finish;
     end
