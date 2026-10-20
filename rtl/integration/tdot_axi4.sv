@@ -660,6 +660,7 @@ module tdot_axi4 #(
     localparam int CS_CMP1        = 11;
     localparam int CS_CMP2        = 12;
     localparam int CS_CMP3        = 13;
+    localparam int CS_ABORT_WAIT  = 14;   // abort по align: ждём освобождения read-мастера
 
     logic [3:0] cstate;
     logic go_q;
@@ -822,7 +823,12 @@ module tdot_axi4 #(
                     if (align_q) begin
                         // адрес не кратен 8: burst-первый beat частичный -> данные
                         // смещены. Пропустить вычисление, завершить со статусом align.
-                        cstate <= CS_DONE;
+                        // ВАЖНО: rd_start уже выдан (job_start / CS_SCHED_KICK), поэтому
+                        // read-мастер принял AR и продолжает наполнять FIFO. Прямой
+                        // переход в CS_DONE снял бы busy_q, следующая задача сделала бы
+                        // fifo_clr посреди активного burst и прочитала бы данные со
+                        // смещением -> сначала дожидаемся освобождения мастера.
+                        cstate <= CS_ABORT_WAIT;
                     end else if (rd_done) begin
                         cstate <= CS_RD_WEIGHTS;
                         rd_addr  <= cur_weights_q[AW-1:0] + elems_done_q * SW;
@@ -935,6 +941,17 @@ module tdot_axi4 #(
                         cstate <= CS_DONE;
                     end
                 end
+                // Abort по align: задача завершается, но только когда read-мастер
+                // реально свободен — burst дочитан и автомат вернулся в RST_IDLE
+                // (ar_valid_r погашен в RST_DONE). Только после этого уходим в
+                // CS_DONE, т.е. busy_q снимается уже при отпущенной шине, и fifo_clr
+                // следующей задачи не может попасть в середину burst. Данные abort-
+                // burst не используются: указатели FIFO сбрасывает fifo_clr.
+                CS_ABORT_WAIT: begin
+                    if ((rstate == RST_IDLE) && !ar_valid_r) begin
+                        cstate <= CS_DONE;
+                    end
+                end
                 CS_DONE: begin
                     busy_q <= 0; done_q <= 1;
                     cstate <= use_sched_q ? CS_CMP1 : CS_IDLE;
@@ -1016,8 +1033,10 @@ assign diag_done = done_q;
     // ==================== OBS: фазовые признаки и счётчики ====================
     // Семантика повторяет openTPU (docs/OBSERVABILITY.md): событие считается
     // в такт, когда оно произошло; CYCLES free-running и FREEZE не подчиняется.
+    // CS_ABORT_WAIT — тоже мемориальная фаза: read-burst физически ещё в шине,
+    // эти такты иначе выпадали бы из учёта cnt_mem.
     wire obs_mem_c      = (cstate == CS_RD_DATA)   || (cstate == CS_RD_WEIGHTS) ||
-                          (cstate == CS_FETCH_DESC);
+                          (cstate == CS_FETCH_DESC) || (cstate == CS_ABORT_WAIT);
     wire obs_load_c     = (cstate == CS_LOAD);
     wire obs_compute_c  = (cstate == CS_RUN)       || (cstate == CS_WAIT) ||
                           (cstate == CS_ACCUM_WAIT);

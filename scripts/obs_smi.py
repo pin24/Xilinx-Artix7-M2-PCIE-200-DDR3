@@ -20,6 +20,10 @@ def bar(pct, width=20, filled="#", empty="-"):
     n = int(round(pct / 100.0 * width))
     return filled * n + empty * (width - n)
 
+def d32(cur, prev):
+    """Разность 32-битных счётчиков OBS с учётом переполнения (wrap-around)."""
+    return (cur - prev) & 0xFFFFFFFF
+
 def main(argv=None):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -122,30 +126,32 @@ def main(argv=None):
                 dt_real = (cur_t - prev_t) if (prev_t is not None) else 1.0
                 if dt_real <= 0.0:
                     dt_real = 1e-3
-                dcyc = cur["cycles"] - prev["cycles"]
-                dj = cur["job"] - prev["job"]
-                dar   = cur["ar"]          - prev["ar"]
-                dbeat = cur["beat"]        - prev["beat"]
-                dwr   = cur["wr"]          - prev["wr"]
-                dfifo = cur["fifo_full"]   - prev["fifo_full"]
+                dcyc = cur["cycles"] - prev["cycles"]   # CYCLES 64-бит: маска НЕ применяется
+                dj = d32(cur["job"],  prev["job"])
+                dar   = d32(cur["ar"],    prev["ar"])
+                dbeat = d32(cur["beat"],  prev["beat"])
+                dwr   = d32(cur["wr"],    prev["wr"])
+                dfifo = d32(cur["fifo_full"], prev["fifo_full"])
                 if dcyc <= 0:
                     dcyc = 1
-                busy_p = 100.0 * (cur["busy"] - prev["busy"]) / dcyc
-                mem_p  = 100.0 * (cur["mem"]  - prev["mem"])  / dcyc
-                load_p = 100.0 * (cur["load"] - prev["load"]) / dcyc
-                comp_p = 100.0 * (cur["compute"] - prev["compute"]) / dcyc
-                rwait_p = 100.0 * (cur["r_wait"] - prev["r_wait"]) / dcyc
+                busy_p = 100.0 * d32(cur["busy"],    prev["busy"])    / dcyc
+                mem_p  = 100.0 * d32(cur["mem"],     prev["mem"])     / dcyc
+                load_p = 100.0 * d32(cur["load"],    prev["load"])    / dcyc
+                comp_p = 100.0 * d32(cur["compute"], prev["compute"]) / dcyc
+                ars_p   = 100.0 * d32(cur["ar_stall"], prev["ar_stall"]) / dcyc
+                rwait_p = 100.0 * d32(cur["r_wait"], prev["r_wait"])  / dcyc
             else:
-                busy_p = mem_p = load_p = comp_p = rwait_p = 0.0
+                busy_p = mem_p = load_p = comp_p = ars_p = rwait_p = 0.0
                 dj = dar = dbeat = dwr = dfifo = 0
 
             # ---- отрисовка кадра ----
             # dt_real вычислен выше (между двумя чтениями счётчиков prev_t->cur_t)
+            dt_safe = max(dt_real, 1e-9)             # защита: dt=0 не должен давать inf/деление на 0
             if dma_mb is not None:
                 dmamb = dma_mb                       # реальная скорость переноса (--bench)
             else:
-                dmamb = dbeat * 8 / dt_real / 1e6    # по прочитанным словам (ΔBEAT)
-            job_s = (dj / dt_real) if dj > 0 else 0.0
+                dmamb = dbeat * 8 / dt_safe / 1e6    # по прочитанным словам (ΔBEAT)
+            job_s = (dj / dt_safe) if dj > 0 else 0.0
             s = (f"\x1b[2J\x1b[H"
                  f"  tdot OBS console  "
                  f"(BUILD_ID=0x{core.read_build_id():08X}  /  build {args.num_mac} MAC)  "
@@ -162,7 +168,8 @@ def main(argv=None):
                  f"  AR (чтение)=+{dar:,d}   BEAT (слова)=+{dbeat:,d}   "
                  f"WR (запись)=+{dwr:,d}   JOB (задачи)=+{dj:,d}\n"
                  f"  DMA (живая, реал. время) = {dmamb:8.1f} MB/s   "
-                 f"AR_STALL (бэкпрешер)={rwait_p:.3f}%  FIFO_FULL (Δ)=+{dfifo:,d}\n"
+                 f"FIFO_FULL (Δ)=+{dfifo:,d}\n"
+                 f"  AR_STALL (бэкпрешер)={ars_p:.3f}%   R_WAIT (латентность/дыры)={rwait_p:.3f}%\n"
                  f"  {('-'*56)}\n"
                  f"  КУМУЛЯТИВНО (с --clear): AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  "
                  f"WR={cur['wr']:,d}  JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"

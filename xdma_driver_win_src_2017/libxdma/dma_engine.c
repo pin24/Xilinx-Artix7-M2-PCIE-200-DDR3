@@ -66,8 +66,12 @@ static NTSTATUS EngineCreatePollWriteBackBuffer(IN OUT XDMA_ENGINE *engine);
 
 static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine) {
     // allocate host-side buffer for descriptors.
-    // FIX-ROF 2026-10-05: sized for slicing every transfer into <=512-B descriptors
-    // (XDMA_MAX_DESC_COUNT), not one descriptor per 4K-page. ~512 KB for 8 MB cap.
+    // FIX-ROF 2026-10-05: descriptor bank for one full transfer, sliced into
+    // <=XDMA_DESC_MAX_BYTES slices.
+    // FIX-DESC 2026-10-20: bank size = XDMA_MAX_DESC_COUNT * sizeof(DMA_DESCRIPTOR)
+    // + 1 spare = 2048 * 32 + 32 = 65568 B (~64.0 KB) per buffer, which covers the
+    // worst case of one 4-KB MDL page per SG element. 4 such buffers exist per
+    // engine (slot 0 legacy + 3 pool slots) = ~256 KB, ~2 MB for 8 engines.
     SIZE_T bufferSize = (SIZE_T)XDMA_MAX_DESC_COUNT * sizeof(DMA_DESCRIPTOR) + sizeof(DMA_DESCRIPTOR);
 
     NTSTATUS status = WdfCommonBufferCreate(engine->parentDevice->dmaEnabler, bufferSize,
@@ -925,31 +929,45 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
                  deviceOffset, SgList->NumberOfElements);
 
     // ============================================================================
-    // FIX-ROF 2026-10-05: build ONE descriptor chain of <=512-B slices so the XDMA
-    // receiver is never flooded (prevents PCIe Receiver-Overflow / WHEA 0x124, see
-    // CHANGE_LOG_2026-09-27 §6N). This is a single engine run (one WDF packet per
-    // request), so it does NOT reload the engine between packets (no >512B hang).
+    // FIX-ROF 2026-10-05: build ONE descriptor chain of <=XDMA_DESC_MAX_BYTES
+    // slices so the XDMA receiver is never flooded (prevents PCIe Receiver-Overflow
+    // / WHEA 0x124, see CHANGE_LOG_2026-09-27 §6N). This is a single engine run
+    // (one WDF packet per request), so it does NOT reload the engine between
+    // packets. The bank is sized for the worst-case 4-KB SG fragmentation
+    // (XDMA_MAX_DESC_COUNT = 2048), so the clamp below is unreachable for legal
+    // <=8 MB packets (see FIX-DESC 2026-10-20 in dma_engine.h).
     // ============================================================================
     const ULONG ne = SgList->NumberOfElements;
     ULONG total = 0;
     ULONG i;
+    UINT64 reqBytes = 0;    // FIX-DESC 2026-10-20: payload the SG list actually asks for
     for (i = 0; i < ne; i++) {
         total += (ULONG)((SgList->Elements[i].Length + XDMA_DESC_MAX_BYTES - 1) / XDMA_DESC_MAX_BYTES);
+        reqBytes += SgList->Elements[i].Length;
     }
 
     // safety clamp: never write past the allocated double-freeze bank
     SIZE_T descBankLens = WdfCommonBufferGetLength(engine->descBuffer) / sizeof(DMA_DESCRIPTOR);
     if ((ULONG)descBankLens < XDMA_MAX_DESC_COUNT) { /* buffer is at least that big */ }
     if (total > (ULONG)descBankLens) {
-        TraceError(DBG_DMA, "FIX-ROF: %llu bytes need %u descs, buffer holds %Iu - clamping", 
-                   (ULONGLONG)WdfDmaTransactionGetBytesTransferred(Transaction),
-                   total, descBankLens);
+        // FIX-DESC 2026-10-20: kept as a hard clamp - writing past the bank would
+        // corrupt host memory - but it must never fire silently. A legal <=8 MB
+        // packet needs <=2048 descs (worst case one 4-KB MDL page per SG element)
+        // and the bank now holds 2049, so reaching here means the SG list is
+        // pathological and the TAIL OF THE PAYLOAD WILL NOT BE TRANSFERRED while
+        // the request still reports success.
+        TraceError(DBG_DMA,
+                   "FIX-DESC: TRANSFER WILL BE INCOMPLETE - %llu bytes need %u descs, bank holds %Iu (max %Iu);"
+                   " clamping, %u descs = tail of payload NOT programmed",
+                   (unsigned long long)reqBytes, total, descBankLens, (SIZE_T)XDMA_MAX_DESC_COUNT,
+                   total - (ULONG)descBankLens);
         total = (ULONG)descBankLens;
     }
 
     PHYSICAL_ADDRESS descBase = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
     ULONG di = 0;                       // current descriptor index
     UINT64 devAddr = deviceOffset;      // running card address (AXI base already added)
+    UINT64 progBytes = 0;               // FIX-DESC 2026-10-20: bytes actually described
 
     for (i = 0; i < ne && di < total; i++) {
         ULONG len = SgList->Elements[i].Length;
@@ -999,8 +1017,20 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
                 TraceWarning(DBG_DMA, "Error: Dma Transfer is not aligned");
             }
             off += cur;
+            progBytes += cur;
             di++;
         }
+    }
+
+    // FIX-DESC 2026-10-20: exact, loud accounting if the clamp above fired. The
+    // descriptor loop stops at `total`, so a truncated build shows up as
+    // progBytes < reqBytes (SG list not fully consumed), not as di < total.
+    // Flow unchanged - the engine still runs, but the loss is now visible.
+    if (progBytes < reqBytes) {
+        TraceError(DBG_DMA,
+                   "FIX-DESC: TRANSFER INCOMPLETE - programmed %llu of %llu bytes (%llu bytes LOST) in %u descs",
+                   (unsigned long long)progBytes, (unsigned long long)reqBytes,
+                   (unsigned long long)(reqBytes - progBytes), di);
     }
 
     TraceVerbose(DBG_DMA, "progDma: %u SG -> %u desc descriptors (max %u B each)",

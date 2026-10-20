@@ -242,6 +242,10 @@ class XdmaWinDriver(XdmaDevice):
         k32.CreateEventW.restype = wintypes.HANDLE
         k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
                                      wintypes.LPCWSTR]
+        # HANDLE — 64-битный указатель: без явных argtypes ctypes усечёт его
+        # до c_int и CloseHandle закроет чужой/невалидный handle.
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
 
         class _OVERLAPPED(ctypes.Structure):
             _fields_ = [("Internal", ctypes.c_void_p),
@@ -262,7 +266,31 @@ class XdmaWinDriver(XdmaDevice):
         self._h = h
         self._ev = k32.CreateEventW(None, True, False, None)
         if not self._ev:
+            k32.CloseHandle(h)
+            self._h = None
             raise XdmaError("CreateEventW failed")
+
+    def close(self) -> None:
+        """Закрыть handle устройства и OVERLAPPED-event (идемпотентно).
+
+        Безопасен при частичной инициализации и при повторных вызовах:
+        недостающие/уже закрытые handle пропускаются, ошибки не всплывают.
+        """
+        for name in ("_h", "_ev"):
+            h = getattr(self, name, None)
+            if not h:
+                continue
+            setattr(self, name, None)
+            try:
+                self._k32.CloseHandle(h)
+            except Exception:
+                pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _xfer(self, is_write: bool, addr: int, data: bytes, length: int) -> bytes:
         c = self._c
@@ -547,6 +575,11 @@ class TdotCore:
         self.dev = dev
         self.num_mac = num_mac
         self.ddr = ddr_base
+        # Теневое состояние OBS_CTRL: RTL пишет freeze_q уровнем (wdata_q[1]),
+        # а CLEAR (wdata_q[0]) — импульс с самоочисткой (tdot_axi4.sv:329-338),
+        # поэтому слепая запись 0x1/0x2 сбрасывает соседний бит. Храним ТОЛЬКО
+        # бит FREEZE (0x0/0x2); бит CLEAR сюда не попадает никогда.
+        self._obs_ctrl = 0
 
     # ---- регистры ----
     def _reg_w(self, off: int, val: int) -> None:
@@ -688,12 +721,19 @@ class TdotCore:
         }
 
     def obs_clear(self) -> None:
-        """Обнулить все OBS-счётчики (импульс CLEAR)."""
-        self._reg_w(self.OBS_CTRL, 0x1)
+        """Обнулить все OBS-счётчики (импульс CLEAR).
+
+        FREEZE (бит1) сохраняется: пишем сохранённое состояние + импульс.
+        Бит CLEAR в self._obs_ctrl НЕ залипает — RTL гасит его сам."""
+        self._reg_w(self.OBS_CTRL, self._obs_ctrl | 0x1)
 
     def obs_freeze(self, on: bool) -> None:
-        """Пауза событийного счёта (CYCLES продолжает идти)."""
-        self._reg_w(self.OBS_CTRL, 0x2 if on else 0x0)
+        """Пауза событийного счёта (CYCLES продолжает идти).
+
+        Обновляем только бит1 в сохранённом состоянии, чтобы не потерять
+        текущий режим (и не выдать случайный импульс CLEAR)."""
+        self._obs_ctrl = 0x2 if on else 0x0
+        self._reg_w(self.OBS_CTRL, self._obs_ctrl)
 
     def obs_snap(self) -> None:
         """Атомарно защёлкнуть все счётчики в теневые регистры."""
@@ -703,9 +743,15 @@ class TdotCore:
         """Прочитать все счётчики (последовательно; для консистентного
         снимка вызывайте obs_snap() и читайте obs_read_shadow())."""
         r = lambda off: self._reg_r(off)
+        # CYCLES 64-бит: HI->LO->HI с повтором при переносе (иначе кадр с ошибкой
+        # ±2^32 каждые ~34 с @125 МГц, если LO переполнился между чтениями).
+        hi = r(self.OBS_CYCLES_HI)
         lo = r(self.OBS_CYCLES_LO)
+        if r(self.OBS_CYCLES_HI) != hi:   # был перенос LO — перечитываем пару
+            hi = r(self.OBS_CYCLES_HI)
+            lo = r(self.OBS_CYCLES_LO)
         return {
-            "cycles":     (r(self.OBS_CYCLES_HI) << 32) | lo,
+            "cycles":     (hi << 32) | lo,
             "busy":       r(self.OBS_BUSY),
             "mem":        r(self.OBS_MEM),
             "load":       r(self.OBS_LOAD),

@@ -30,12 +30,21 @@
 #define XDMA_RING_NUM_BLOCKS    (258U)
 #define XDMA_RING_BLOCK_SIZE    (PAGE_SIZE)
 #define XDMA_MAX_TRANSFER_SIZE  (8UL * 1024UL * 1024UL)
-// FIX-ROF 2026-10-05: cap every SGDMA descriptor at 512 B so the XDMA receiver
-// never gets one huge transaction (prevents PCIe Receiver-Overflow / WHEA 0x124,
-// see CHANGE_LOG_2026-09-27 §6N and DIAG_MULTIPACKET). ProgramDma slices each
-// SG element into <=512-B descriptors in a single engine run.
+// FIX-ROF 2026-10-05: cap every SGDMA descriptor at XDMA_DESC_MAX_BYTES (8192 B
+// since v1.2.4; was 512 B) so the XDMA receiver never gets one huge transaction
+// (prevents PCIe Receiver-Overflow / WHEA 0x124, see CHANGE_LOG_2026-09-27 §6N
+// and DIAG_MULTIPACKET). ProgramDma slices each SG element into
+// <=XDMA_DESC_MAX_BYTES descriptors in a single engine run.
 #define XDMA_DESC_MAX_BYTES     (8192UL)
-#define XDMA_MAX_DESC_COUNT     (XDMA_MAX_TRANSFER_SIZE / XDMA_DESC_MAX_BYTES)
+// FIX-DESC 2026-10-20: the descriptor bank must be sized for the WORST-CASE
+// FRAGMENTATION of a transfer, not for the slice size above. A host buffer is
+// handed to ProgramDma as SG elements that are MDL pages (4 KB granularity), so
+// an 8 MB packet arrives as up to 2048 elements of <=4 KB each, i.e. one 8192-B
+// slice per element = 2048 descriptors. Deriving the count from
+// XDMA_DESC_MAX_BYTES (8MB/8192) gave only 1024, and ProgramDma then silently
+// clamped 2048 -> 1024: half of the payload was never programmed, with no error.
+// 4096 below is the page/MDL granularity, NOT the slice size.
+#define XDMA_MAX_DESC_COUNT     (XDMA_MAX_TRANSFER_SIZE / 4096UL)
 
 // PLAN-3 P1 2026-10-17: descriptor-block POOL size. Slots 1..N-1 are extra
 // WDFCOMMONBUFFER blocks pre-allocated now so a future increment can give each

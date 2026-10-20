@@ -8,9 +8,13 @@
 #
 # Выводит:
 #   * BUILD_ID / CAPS (конфигурация битстрима), REGMAP-версия;
-#   * фазы ядра в % времени (BUSY/MEM/LOAD/COMPUTE) от CYCLES;
-#   * AXI-активность (AR/BEAT/WR) и задержки (AR_STALL, R_WAIT, FIFO_FULL);
-#   * JOB, среднее время задачи.
+#   * фазы ядра в % кадра (BUSY/MEM/LOAD/COMPUTE от ΔCYCLES кадра);
+#   * AXI-активность (ΔAR/ΔBEAT/ΔWR) и задержки (AR_STALL%, R_WAIT%);
+#   * ΔJOB, JOB/s, среднее время задачи по ΔCYCLES (такт = 1/частоты).
+#
+# ВАЖНО (фикс 2026-10-20): проценты фаз считаются от ΔCYCLES кадра (base → cur),
+# а НЕ от абсолютного CYCLES — он free-running и obs_clear() его не обнуляет,
+# поэтому при долгом аптайме деление на абсолют давало ~0%.
 #   * "--once": один кадр; "--loop": периодический опрос (по умолчанию).
 #   * "--dot n": прогнать n-парный dot перед каждым кадром (нагрузка).
 #
@@ -33,6 +37,7 @@ def main(argv=None):
     ap.add_argument("--dot", type=int, default=0,
                     help="число пар для dot перед каждым кадром (0 = не гонять)")
     ap.add_argument("--interval", type=float, default=1.0, help="сек между кадрами")
+    ap.add_argument("--freq", type=float, default=125.0, help="частота ядра, МГц (для времени задачи)")
     ap.add_argument("--loop", dest="loop", action="store_true", default=True,
                     help="периодический опрос (по умолч.)")
     ap.add_argument("--once", dest="loop", action="store_false",
@@ -78,6 +83,23 @@ def main(argv=None):
     caps = core.read_caps()
     print(f"BUILD_ID = 0x{bid:08X}  CAPS = {caps}\n")
 
+    tick_ns = 1e9 / (args.freq * 1e6)   # нс на такт ядра
+
+    def snapshot():
+        core.obs_snap()
+        return core.obs_read_shadow()
+
+    def delta(cur, base):
+        """Прирост счётчиков кадра; <0 (после obs_clear) клампим в 0."""
+        d = {}
+        for k in ("busy", "mem", "load", "compute", "ar", "beat",
+                  "ar_stall", "r_wait", "wr", "job", "fifo_full"):
+            d[k] = max(0, cur[k] - base[k])
+        d["cycles"] = max(1, cur["cycles"] - base["cycles"])
+        return d
+
+    base = snapshot()          # база кадра (до нагрузки / предыдущий кадр)
+    base_t = time.monotonic()
     first = True
     try:
         while True:
@@ -97,24 +119,32 @@ def main(argv=None):
                          data_addr=0x0, weights_addr=0x1000, result_addr=0x2000)
                 core.wait_done(timeout_ms=6000)
 
-            core.obs_snap()
-            s = core.obs_read_shadow()
-            cyc = s["cycles"] or 1
-            busy = s["busy"]; mem = s["mem"]; load = s["load"]; comp = s["compute"]
+            cur = snapshot()
+            d = delta(cur, base)
+            dt_real = time.monotonic() - base_t
+            dcyc = d["cycles"]
+
+            busy_p  = 100.0 * d["busy"]      / dcyc
+            mem_p   = 100.0 * d["mem"]       / dcyc
+            load_p  = 100.0 * d["load"]      / dcyc
+            comp_p  = 100.0 * d["compute"]   / dcyc
+            ars_p   = 100.0 * d["ar_stall"]  / dcyc
+            rwait_p = 100.0 * d["r_wait"]    / dcyc
+            job_s   = d["job"] / dt_real if dt_real > 0 else 0.0
+            avg_task_us = (d["job"] and (dcyc * tick_ns / d["job"] / 1000.0)) or 0.0
 
             line = (
-                f"CYCLES={cyc:>10}  "
-                f"BUSY%={100.0*busy/cyc:5.1f}  "
-                f"MEM%={100.0*mem/cyc:5.1f}  "
-                f"LOAD%={100.0*load/cyc:5.1f}  "
-                f"COMPUTE%={100.0*comp/cyc:5.1f}  "
-                f"AR={s['ar']:<6} BEAT={s['beat']:<7} "
-                f"AR_STALL%={100.0*s['ar_stall']/cyc:5.2f} "
-                f"R_WAIT%={100.0*s['r_wait']/cyc:5.2f} "
-                f"WR={s['wr']:<5} JOB={s['job']:<5} "
-                f"FIFO_FULL={s['fifo_full']}"
+                f"ΔCYC={dcyc:>10}  "
+                f"BUSY%={busy_p:5.1f}  MEM%={mem_p:5.1f}  LOAD%={load_p:5.1f}  "
+                f"COMPUTE%={comp_p:5.1f}  "
+                f"ΔAR={d['ar']:<5} ΔBEAT={d['beat']:<6} "
+                f"AR_STALL%={ars_p:5.2f} R_WAIT%={rwait_p:5.2f} "
+                f"ΔWR={d['wr']:<4} ΔJOB={d['job']:<4} "
+                f"JOB/s={job_s:7.1f} task_avg={avg_task_us:7.1f}us "
+                f"FIFO_FULL(Δ)={d['fifo_full']}"
             )
             print(line, flush=True)
+            base, base_t = cur, time.monotonic()
             if not args.loop:
                 break
     except KeyboardInterrupt:

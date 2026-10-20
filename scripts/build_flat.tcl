@@ -9,8 +9,8 @@
 #   vivado.bat -mode batch -source scripts/build_flat.tcl
 #
 # Optional args (via -tclargs):
-#   NUM_MAC=<16|32|64>   (default 16)
-#   ADDERS=<N>           (default 4)
+#   NUM_MAC=<16|32|64>   (default 32)
+#   ADDERS=<N>           (default 16)
 #   JOBS=<N>             (default 8)
 #   SKIP_SYNTH=1         (only create the project, no build)
 #
@@ -78,6 +78,25 @@ puts " ADDERS     : ${ADDERS}"
 puts " JOBS       : ${JOBS}"
 puts " SKIP_SYNTH : ${SKIP_SYNTH}"
 puts "============================================================"
+
+# ---------- 0-a. Очистка устаревших артефактов ----------
+# Прошлый УСПЕШНЫЙ .bit/.mcs не должен маскировать провал текущей сборки:
+# битстрим и mcs удаляем ДО синтеза, чтобы в build/artifacts_flat не осталось
+# файла от предыдущего прогона (иначе «артефакт на месте» при FATAL-гейте).
+puts "=== 0-a. CLEAN STALE ARTIFACTS: ${ARTIFACTS_DIR} ==="
+set stale_n 0
+foreach stale_pat {*.bit *.mcs} {
+    set stale_files [glob -nocomplain -directory ${ARTIFACTS_DIR} -types f ${stale_pat}]
+    foreach stale_f ${stale_files} {
+        if {[catch {file delete -force ${stale_f}} stale_err]} {
+            puts "WARNING: Cannot delete ${stale_f}: ${stale_err}"
+        } else {
+            puts "  removed: ${stale_f}"
+            incr stale_n
+        }
+    }
+}
+puts "=== 0-a. CLEAN STALE ARTIFACTS: removed ${stale_n} file(s) (*.bit/*.mcs) ==="
 
 # ---------- 1. Create project (full cache cleanup) ----------
 puts "=== 1. CREATE PROJECT ==="
@@ -261,8 +280,69 @@ update_compile_order -fileset constrs_1
 # integer top parameters (probe: set/get OK on Vivado 2025.2). Set BUILD_ID +
 # NUM_MAC + ADDERS together on the FILESET (the run-level `generic` property and
 # STEPS.SYNTH_DESIGN.ARGS.GENERIC are READ-ONLY / not settable -> Common 17-54).
-set_property generic [list BUILD_ID=32'h${BUILD_ID_HEX} NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}] [current_fileset]
-puts " GENERIC  : NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} BUILD_ID=32'h${BUILD_ID_HEX}"
+set gen_list [list BUILD_ID=32'h${BUILD_ID_HEX} NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}]
+# FIX 2026-10-20 (тихое откатывание параметров): сбой set_property generic НЕ
+# должен оставаться незамеченным — иначе синтез уходит с дефолтами top #(16,4).
+if {[catch {set_property generic ${gen_list} [current_fileset]} gen_err]} {
+    puts "ERROR: set_property generic {${gen_list}} failed: ${gen_err}"
+    close_project
+    exit 1
+}
+
+# Read-back: подтверждаем, что NUM_MAC/ADDERS реально легли в fileset.
+set gen_read ""
+if {[catch {set gen_read [get_property generic [current_fileset]]} gen_rd_err]} {
+    puts "ERROR: get_property generic (read-back) failed: ${gen_rd_err}"
+    close_project
+    exit 1
+}
+puts " GENERIC (read-back) : ${gen_read}"
+
+# Токенизация: значения могут вернуться как список или как строка с кавычками.
+set gen_tokens {}
+foreach gen_tok [split [string map [list \" "" \{ "" \} ""] ${gen_read}] " "] {
+    set gen_tok [string trim ${gen_tok}]
+    if {${gen_tok} ne ""} { lappend gen_tokens ${gen_tok} }
+}
+# Проверка read-back: блокируем сборку ТОЛЬКО если параметр реально виден с
+# ДРУГИМ значением. Если формат возврата Vivado не распознан (параметр вовсе
+# не найден) — предупреждение, а не exit: иначе незнакомая форма вывода
+# ложно валила бы сборку, которую мы как раз защищаем.
+set gen_unparsed {}
+foreach gen_want [list "NUM_MAC=${NUM_MAC}" "ADDERS=${ADDERS}"] {
+    lassign [split ${gen_want} "="] gen_name gen_val
+    set gen_hit 0
+    # форма 1: токен "NAME=value"
+    if {[lsearch -exact ${gen_tokens} ${gen_want}] >= 0} { set gen_hit 1 }
+    # форма 2/3: "NAME = value" или "NAME value" — берём число после имени
+    if {!${gen_hit}} {
+        set gen_pat "${gen_name}\\s*=\\s*([0-9]+)"
+        if {[catch {regexp ${gen_pat} ${gen_read} -> _gb_val}] == 0 && [info exists _gb_val]} {
+            if {${_gb_val} eq ${gen_val}} { set gen_hit 1 }
+            if {${_gb_val} ne ${gen_val}} {
+                puts "ERROR: fileset generic ${gen_name}=${_gb_val}, ожидалось ${gen_val}"
+                close_project
+                exit 1
+            }
+        }
+    }
+    if {!${gen_hit}} {
+        set gen_pat "${gen_name}\\s+([0-9]+)"
+        if {[catch {regexp ${gen_pat} ${gen_read} -> _gb_val2}] == 0 && [info exists _gb_val2]} {
+            if {${_gb_val2} eq ${gen_val}} { set gen_hit 1 }
+            if {${_gb_val2} ne ${gen_val}} {
+                puts "ERROR: fileset generic ${gen_name}=${_gb_val2}, ожидалось ${gen_val}"
+                close_project
+                exit 1
+            }
+        }
+    }
+    if {!${gen_hit}} { lappend gen_unparsed ${gen_want} }
+}
+if {[llength ${gen_unparsed}] > 0} {
+    puts "WARNING: read-back не подтвердил {${gen_unparsed}} (формат: {${gen_read}}); значение generic не проверено — продолжаем"
+}
+puts " GENERIC  : NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} BUILD_ID=32'h${BUILD_ID_HEX} (read-back OK)"
 
 # ---------- 6. Demote PCIe IP XDC ----------
 puts "=== 6. DEMOTE PCIE IP XDC ==="
@@ -341,10 +421,16 @@ if {[catch {open_run impl_1} gate_open_err]} {
 }
 
 set gate_fail 0
+set gate_wns  "N/A"
+set gate_whs  "N/A"
+set gate_wpws "N/A"
+
+# --- SETUP (delay_type max) — существующая проверка BUG-038 ---
 set all_viol [get_timing_paths -quiet -delay_type max -max_paths 1 -nworst 1 -slack_lesser_than 0]
 if {[llength ${all_viol}] > 0} {
     set ws [get_property SLACK [lindex ${all_viol} 0]]
     set n_viol [llength ${all_viol}]
+    set gate_wns ${ws}
     puts "=== FATAL: Р СћР С’Р в„ўР СљР ВР СњР вЂњ Р СњР вЂў Р вЂ”Р С’Р С™Р В Р В«Р Сћ Р С—Р С• Р Р†РЎРѓР ВµР СРЎС“ Р Т‘Р С‘Р В·Р В°Р в„–Р Р…РЎС“ (WNS=${ws} ns, paths=${n_viol}) ==="
     set gate_fail 1
     set dom_pairs {}
@@ -371,6 +457,99 @@ if {[llength ${all_viol}] > 0} {
     puts "=== FATAL GATE: Р СћР С’Р в„ўР СљР ВР СњР вЂњ MET Р С—Р С• Р вЂ™Р РЋР вЂўР Сљ Р Т‘Р С•Р СР ВµР Р…Р В°Р С (0 violations) ==="
 }
 
+# Значение WNS для отчёта, если setup-violations не найдено.
+if {${gate_wns} eq "N/A"} {
+    catch {
+        set _s_worst [get_timing_paths -quiet -delay_type max -max_paths 1 -nworst 1]
+        if {[llength ${_s_worst}] > 0} {
+            set gate_wns [get_property SLACK [lindex ${_s_worst} 0]]
+        }
+    }
+}
+
+# --- HOLD (delay_type min) ---
+set hold_viol [get_timing_paths -quiet -delay_type min -max_paths 1 -nworst 1 -slack_lesser_than 0]
+if {[llength ${hold_viol}] > 0} {
+    set whs [get_property SLACK [lindex ${hold_viol} 0]]
+    set n_hviol [llength ${hold_viol}]
+    set gate_whs ${whs}
+    puts "=== FATAL: HOLD НЕ ЗАКРЫТ (WHS=${whs} ns, paths=${n_hviol}) ==="
+    set gate_fail 1
+    set hpaths [get_timing_paths -quiet -delay_type min -max_paths 10 -nworst 1 -slack_lesser_than 0]
+    set hi 0
+    foreach hp ${hpaths} {
+        set hsp ""; set hep ""
+        catch {set hsp [get_property STARTPOINT_PIN ${hp}]}
+        catch {set hep [get_property ENDPOINT_PIN ${hp}]}
+        puts [format "  FATAL HOLD PATH #%d slack %s ns: %s -> %s" \
+            ${hi} [get_property SLACK ${hp}] ${hsp} ${hep}]
+        incr hi
+    }
+}
+if {${gate_whs} eq "N/A"} {
+    catch {
+        set _h_worst [get_timing_paths -quiet -delay_type min -max_paths 1 -nworst 1]
+        if {[llength ${_h_worst}] > 0} {
+            set gate_whs [get_property SLACK [lindex ${_h_worst} 0]]
+        }
+    }
+}
+
+# --- PULSE WIDTH (report_pulse_width -return_string) ---
+# Отсутствие отчёта = проверка пропущена (WARNING), но НЕ успех.
+set pw_rpt ""
+if {[catch {report_pulse_width -quiet -return_string} pw_rpt]} {
+    puts "=== WARNING: report_pulse_width unavailable: ${pw_rpt} (PULSE WIDTH check skipped) ==="
+    set pw_rpt ""
+}
+if {${pw_rpt} ne ""} {
+    set pw_bad   0
+    set pw_worst ""
+    foreach pw_line [split ${pw_rpt} "\n"] {
+        if {[string first "VIOLATED" ${pw_line}] >= 0} {
+            set pw_bad 1
+            puts "  PULSE VIOLATED: [string trim ${pw_line}]"
+            continue
+        }
+        if {[regexp {\s(-[0-9]+\.[0-9]+)} ${pw_line} -> _pw_slack]} {
+            set pw_bad 1
+            if {${pw_worst} eq "" || ${_pw_slack} < ${pw_worst}} {
+                set pw_worst ${_pw_slack}
+            }
+        }
+    }
+    if {${pw_worst} ne ""} { set gate_wpws ${pw_worst} }
+    if {${pw_bad}} {
+        puts "=== FATAL: PULSE WIDTH НЕ ЗАКРЫТ (WPWS=${gate_wpws} ns) ==="
+        set gate_fail 1
+    }
+}
+
+# --- UNCONSTRAINED (check_timing) — только WARNING, сборку не блокирует ---
+set chk_rpt ""
+if {[catch {check_timing -quiet -verbose -return_string} chk_rpt]} {
+    puts "=== WARNING: check_timing unavailable: ${chk_rpt} (unconstrained check skipped) ==="
+    set chk_rpt ""
+}
+if {${chk_rpt} ne ""} {
+    foreach chk_sect {no_clock unconstrained_endpoints} {
+        set chk_cnt 0
+        foreach chk_line [split ${chk_rpt} "\n"] {
+            if {[string first ${chk_sect} ${chk_line}] < 0} { continue }
+            if {[string first "checking" ${chk_line}] >= 0} { continue }
+            if {[regexp {([0-9]+)} ${chk_line} -> _chk_n] && ${_chk_n} > 0} {
+                set chk_cnt ${_chk_n}
+                break
+            }
+        }
+        if {${chk_cnt} > 0} {
+            puts "=== WARNING: check_timing: ${chk_sect} = ${chk_cnt} (known outputs, build NOT blocked) ==="
+        }
+    }
+}
+
+puts "=== TIMING SLACKS: WNS=${gate_wns} ns WHS=${gate_whs} ns WPWS=${gate_wpws} ns ==="
+
 if {${gate_fail}} {
     report_timing_summary -quiet -file ${ARTIFACTS_DIR}/timing_FATAL.rpt
     set wpaths [get_timing_paths -quiet -delay_type max -max_paths 10 -nworst 1 -slack_lesser_than 0]
@@ -387,6 +566,8 @@ if {${gate_fail}} {
     close_project
     exit 1
 }
+
+puts "=== 8.5 FATAL TIMING GATE PASSED: WNS=${gate_wns} ns WHS=${gate_whs} ns WPWS=${gate_wpws} ns ==="
 
 # ---------- 9. Export artifacts (no partials in flat) ----------
 puts "=== 9. EXPORT ARTIFACTS ==="
