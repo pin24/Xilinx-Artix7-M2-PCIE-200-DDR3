@@ -6,6 +6,17 @@
 
 ---
 
+
+## 2026-10-20 - DMA write/read 10s timeout: async completion depended on (not delivered) MSI-X (regression v1.1.33)
+### [BUG-55] EvtTransferCompleteCb called only when the IRQ arrived -> request hung until watchdog (~10s)
+- Symptom: write_dma/read_dma flat 16/4 (BUILD_ID b3e07b13) - stable `timeout at 0x100000` (10s); engine transferred but IRP never completed.
+- Cause: v1.1.33 (d7520aa) moved completion to async EvtTransferCompleteCb + watchdog; completion depended on channel MSI-X interrupt. Working v1.1.29 completed synchronously (EngineProcessTransfer + blocking poll XDMA_EngineWaitCompletion) and did not depend on the IRQ.
+- Intermediate v1.2.1: restored poll but dropped watchdog and the CAS in EvtCancelDma -> 2 latent defects (hang on DmaCompleted==FALSE; double Release in cancel vs DPC).
+- Fix (v1.2.2): synchronous completion in EngineProcessTransfer (DmaCompleted -> UnmarkCancelable -> (C2H ResetIdle) -> Release -> CompleteWithInformation); EvtIoWriteDma/ReadDma no longer register the async callback and keep the blocking XDMA_EngineWaitCompletion; EvtCancelDma got the txnDone CAS.
+- Files: xdma_driver_win_src_2017/sys/file_io.c, xdma_driver_win_src_2017/libxdma/dma_engine.c, driver/dma/build.cmd.
+- Status: FIXED and verified on hardware (write/read 4B/1K/1M PASS, smoke OK; only perf_ioctl fails - IOCTL not present in this base).
+- Side note: addressing/registers/MSI-X config confirmed correct (6-agent audit); the issue was driver-only. Doc: docs/CHANGE_LOG_2026-10-20.md.
+
 ## 2026-09-09 — XDMA 64-bit @ 250 МГц не закрывает тайминг на Artix-7 → 128-bit @ 125 МГц
 
 ### [BUG-051] XDMA userclk1 internal timing violation WNS=-2.208ns

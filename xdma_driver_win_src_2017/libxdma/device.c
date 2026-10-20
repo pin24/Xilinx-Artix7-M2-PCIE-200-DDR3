@@ -28,7 +28,7 @@
 #include "xdma_public.h"
 
 #include "trace.h"
-#ifdef DBG
+#if defined(DBG) || defined(WPP_ENABLED)
 // The trace message header (.tmh) file must be included in a source file before any WPP macro 
 // calls and after defining a WPP_CONTROL_GUIDS macro (defined in trace.h). see trace.h
 #include "device.tmh"

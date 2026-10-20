@@ -40,7 +40,8 @@ set ARTIFACTS_DIR "${ROOT}/build/artifacts_flat"
 
 set NUM_MAC     32
 set ADDERS      16
-set JOBS        4      # низкий параллелизм для машины с малым ОЗУ (было 8)
+# низкий параллелизм для машины с малым ОЗУ (было 8)
+set JOBS        4
 set_param general.maxThreads 4
 set SKIP_SYNTH  0
 
@@ -280,6 +281,13 @@ puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+# FIX 2026-10-20: NUM_MAC/ADDERS (тип `int`) Vivado не принимает как fileset-generic.
+# Передаём их в СИНТЕЗ через СВОЙСТВО `generic` run'а synth_1 (это свойство напрямую
+# идёт в synth_design -generic и корректно принимает int-параметры) ДО launch_runs
+# synth_1 (иначе синтез берёт дефолт топа 16/4, и битстрим 32/8 — «пустышка»).
+# НЕ использовать STEPS.SYNTH_DESIGN.ARGS.GENERIC — такого свойства нет ни у одного
+# run (Common 17-54), сборка падает.
+set_property generic [list NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}] [get_runs synth_1]
 # BUG-047: apply set_clock_groups in PLACE_DESIGN.TCL.PRE (clocks exist in DCP).
 set_property STEPS.PLACE_DESIGN.TCL.PRE ${ROOT}/scripts/timing_exceptions_post.tcl [get_runs impl_1]
 
@@ -308,9 +316,7 @@ puts "=== 8. IMPLEMENTATION + BITSTREAM ==="
 current_run [get_runs impl_1]
 # FIX 2026-10-14 (вариант б): NUM_MAC/ADDERS — параметры типа `int`, которые
 # Vivado не принимает как fileset-generic (проверено). Передаём их в синтез
-# через опцию -generic: set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC запускает
-# synth_design с -generic "NUM_MAC=.. ADDERS=..".
-set_property STEPS.SYNTH_DESIGN.ARGS.GENERIC "NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}" [get_runs synth_1]
+# через опцию -generic; установка перенесена в раздел 7 (ДО launch_runs synth_1).
 catch {set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]}
 launch_runs impl_1 -to_step write_bitstream -jobs ${JOBS}
 wait_on_run impl_1

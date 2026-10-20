@@ -63,7 +63,9 @@
 //
 
 // WPP tracing is disabled in release configuration. so stub out definitions and functions
-#ifndef DBG
+// (also when the TU is compiled with WPP_ENABLED the real WPP macros from the generated
+//  .tmh header apply instead of this stub)
+#if !defined(DBG) && !defined(WPP_ENABLED)
 #define WPP_INIT_TRACING(...)  (__VA_ARGS__)
 #define WPP_CLEANUP(...)       (__VA_ARGS__)
 #define DBG_INIT            0

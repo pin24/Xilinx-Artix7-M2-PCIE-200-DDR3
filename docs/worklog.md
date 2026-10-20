@@ -1,6 +1,23 @@
 # Worklog
 
 ---
+Task ID: 2026-10-20-dma-done-sync
+Agent: MultiTool
+Task: Diagnose and fix DMA write/read 10s timeout (regression v1.1.33); version 1.2.x; record single-channel cause
+Work Log:
+- Symptom: on flat 16/4 firmware (BUILD_ID b3e07b13) write_dma/read_dma gave a stable 10s timeout at 0x100000; IRP never completed though the XDMA engine transferred.
+- 6-agent parallel audit of driver + firmware: addressing/register map (H2C0=0x0,C2H0=0x1000,SGDMA=+0x4000,IRQ=0x2000) and MSI-X/XDMA config are byte-identical to the working reference. Root cause is driver-only.
+- Root cause: v1.1.33 (d7520aa) switched DMA completion to async EvtTransferCompleteCb + per-engine watchdog. The callback only runs when the channel MSI-X interrupt reaches the host; on this setup it does not reliably, so the request hung until the watchdog (~10s). Working v1.1.29 completed synchronously in EngineProcessTransfer + blocking XDMA_EngineWaitCompletion poll and never depended on the IRQ.
+- Intermediate v1.2.1 restored the poll but dropped the watchdog and the txnDone CAS in EvtCancelDma (2 latent defects: hang on DmaCompleted==FALSE; double Release cancel-vs-DPC).
+- Fix v1.2.2 (verified on hardware): EngineProcessTransfer completes the request synchronously (DmaCompleted -> UnmarkCancelable -> C2H ResetIdle -> Release -> CompleteWithInformation); EvtIoWriteDma/EvtIoReadDma no longer register SetTransferCompleteCallback and keep the blocking WaitCompletion; EvtCancelDma gets the txnDone CAS. DRIVER_VERSION=1.2.2.0. Full WPP kept.
+- Result after install (oem186.inf, disable/enable reload): test_dma_win write/read 4B/1K/1M PASS, round-trip data correct, smoke OK. Only test_dma_perf_ioctl fails (PERF_STOP IOCTL exists only in v1.1.34, absent in the d7520aa base - test/driver version mismatch, not a defect).
+- Single-channel cause: sys/driver.c.substituted:137 creates ONE default-Sequential I/O queue for all channels plus one dmaTransaction per engine -> h2c_1/c2h_1 cannot run in parallel without per-channel queue redesign (separate task).
+- Recording: docs/CHANGE_LOG_2026-10-20.md, docs/ERROR_HISTORY.md [BUG-55].
+Stage Summary:
+- DMA driver completion restored to the proven synchronous 1.1.29 behaviour; versioning switched to 1.2.x from 2026-10-20.
+
+
+---
 Task ID: 2026-10-14-dma-snap-stress
 Agent: MultiTool
 Task: Фикс/верификация DMA>512, вариант-б параметров, SNAP-дефект, obs_smi.py, нагрузка 120с

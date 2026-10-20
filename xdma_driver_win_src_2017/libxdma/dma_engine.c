@@ -22,7 +22,7 @@
 #include "dma_engine.h"
 #include "trace.h"
 
-#ifdef DBG
+#if defined(DBG) || defined(WPP_ENABLED)
 // The trace message header (.tmh) file must be included in a source file before any WPP macro 
 // calls and after defining a WPP_CONTROL_GUIDS macro (defined in trace.h). see trace.h
 #include "dma_engine.tmh"
@@ -349,12 +349,14 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
     switch (engineStatus & XDMA_STAT_EXPECTED_ZERO) {
     case XDMA_ENGINE_STOPPED_OK: // engine not busy and no errors?
     {
-        // REDUCED-ASYNC 2026-10-17: DmaCompleted returning TRUE is the signal to
-        // KMDF to invoke the registered transfer-complete callback
-        // (EvtTransferCompleteCb). That callback performs the request retirement
-        // (UnmarkCancelable -> C2H reset -> Release -> CompleteWithInformation),
-        // so it is REMOVED from here. DmaCompleted may be called by both the
-        // ISR/DPC path and the watchdog; txnDone keeps it single-shot.
+        // FIX 2026-10-20 (v1.2.2): SYNCHRONOUS retirement, matching proven
+        // v1.1.29 (b3e07b1). The 1.1.33 async model relied on KMDF calling
+        // EvtTransferCompleteCb only when DmaCompleted returns TRUE, which made
+        // completion depend on the (unreliable) channel interrupt/Msi-x arrival;
+        // a lost interrupt left the request hanging until the watchdog. Here the
+        // request is completed right in EngineProcessTransfer (called either from
+        // the DPC or from XDMA_EngineWaitCompletion poll), so completion no longer
+        // depends on the async callback. txnDone keeps it single-shot.
         BOOLEAN completed = WdfDmaTransactionDmaCompleted(engine->dmaTransaction, &status);
         size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(engine->dmaTransaction);
 
@@ -362,9 +364,21 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
                   DirectionToString(engine->dir), engine->channel,
                   completed ? " " : " in", bytesTransferred);
 
-        // NOTE REDUCED-ASYNC: request завершается в EvtTransferCompleteCb (async) —
-        // KMDF вызывает его, когда DmaCompleted вернул TRUE. Никаких
-        // UnmarkCancelable / Release / Complete здесь больше нет.
+        if (completed) {
+            NTSTATUS uc = WdfRequestUnmarkCancelable(request);
+            if (uc == STATUS_CANCELLED) {
+                // cancel-путь уже владеет request — не завершаем и не отпускаем здесь
+                break;
+            }
+            if (engine->dir == C2H) {
+                XDMA_EngineResetIdle(engine); // иначе следующий C2H стартует BUSY
+            }
+            NTSTATUS rl = WdfDmaTransactionRelease(engine->dmaTransaction);
+            if (!NT_SUCCESS(rl)) {
+                TraceError(DBG_DMA, "WdfDmaTransactionRelease failed: %!STATUS!", rl);
+            }
+            WdfRequestCompleteWithInformation(request, rl, bytesTransferred);
+        }
         break;
     }
     case XDMA_BUSY_BIT: // engine is still busy without sign of errors?
