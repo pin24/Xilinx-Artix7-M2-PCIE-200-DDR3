@@ -925,3 +925,21 @@ Stage Summary:
 - НО 893c605/7e53f50 затёрли часть фиксов BUG-065/066/069 и актуализаций доков — нужен восстановительный коммит: Makefile:31 (make сломан — блокер), build_flat.tcl (BUG-069+F3.2), close()/__del__ + r-string (BUG-066), COMPATIBILITY/README/ADDRESS_MAP/REBUILD/OBSERVABILITY, моджибейк TB.
 - RTL-ядро не менялось — текущий битстрим валиден; 32/2 артефакты готовы к рефлешу (по команде владельца).
 - Пуш восстановительного коммита — по явной команде владельца.
+
+---
+Task ID: 2026-10-21-sync-7-litex
+Agent: Z.ai (сессия аудита + LiteX-разведка)
+Task: аудит 7 новых коммитов origin/main (6810130..496272b); разбор LiteX (enjoy-digital: litex/litedram/litepcie) — что лучшего взять для проекта
+
+Work Log:
+- Rebase локального worklog-коммита 4bb9cfb -> 8862834 на 496272b (конфликт docs/worklog.md разрешён, обе части сохранены).
+- Аудит 7 коммитов: 5a624e6 кольцо 256->1024 (RTL 10-бит wptr/rptr, таблицы 32/16 КБ; host адаптив mask=depth-1, CH=depth-6, ring_depth-param; совместимо с непрошитой 256), da8838e восстановление потерянных фиксов, f7f7858 ring_check.py+QUICKSTART_TESTING+devseq.py+flash UNPROTECT, 017d617 device_prog.sv (ISA-интерпретатор, юнит 32 Б, mailbox 16 Б) + device_isa.py + CompletionMailbox, dd77c50 интеграция в tdot_axi4 (DEVPROG_EN=0 off, CS_DP_* 15-19, DP_CTRL 0xE4/DP_DATA 0xE8/DP_TABLE 0xEC/DP_MBOX 0xF0, FIFO 64), dff88b3 DeviceProgRunner DP+RUN + бит-точная ISA-модель, 496272b device_prog.sv в файлсет.
+- Судьба регрессий R1-R6: R1 ЗАКРЫТ (Makefile:31 flat ?= $(FLAT), make -n bitstream OK); R2 ЗАКРЫТ в улучшенной форме (read-back: value-mismatch -> exit 1, нераспознанный формат -> WARNING; stale matchVar сброс; DEVPROG_EN в gen_list); R3 ЗАКРЫТ (close()/__del__ вернулись, xdma_driver.py:273/289/501/513); R4 ОТКРЫТ (SyntaxWarning \c переехал на :554 «config-BAR (\control)»); R5 ЧАСТИЧНО (README актуализирован до v1.2.7; COMPATIBILITY/REBUILD_INSTRUCTION/OBSERVABILITY всё ещё откачены); R6 ОТКРЫТ (TB ISO-8859 моджибейк + хардкод C:/A7_M2). Отдельно: build_flat.tcl 12 строк моджибейка (двойное кодирование) — ПРЕД-СУЩЕСТВУЮЩИЙ (и в 2ec559a), косметика.
+- Статика: pyslang main 0 новых (top xdma_ddr3_core_top); device_prog.sv parse 0 ошибок (elab как отдельный top); Makefile парсится; py_compile OK (только R4-warning); pytest data/test_device_isa.py 5/5.
+- LiteX-разведка (клоны /home/z/my-project/_ref/litex|litedram|litepcie, 2 Explore-агента, file:line): ценное — (1) единый источник описания регистров -> csr.h/csr.json/csr.csv/rst-доки (export.py — чистый Python без Migen); (2) EventManager IRQ status/pending(W1C)/enable; (3) LitePCIe loop_status (epoch,index) — монотонный 64-бит прогресс вместо wrap-указателей, у нас аналог DONE_CNT; (4) IRQ-коалесинг флагом в дескрипторе 1/N; (5) status-блок с sync-word 0x5aa55aa5; (6) BIST PRBS31+ticks/errors для честного замера полосы DDR3 (под плана F); (7) no_retiming-приёмы. НЕ брать: сам фреймворк (миграция), LitePCIe вместо XDMA, LiteDRAM вместо MIG, BRAM-таблица дескрипторов.
+
+Stage Summary:
+- Все 7 коммитов — реализация рекомендаций: A (кольцо) углублено до 1024, openTPU-идея (программа в DRAM, ARG0..7+RUN, WAITW) реализована как devprog; REG-статус: 3 закрыто, 1 частично, 2 открыты (R4/R5-част/R6).
+- Важно: devprog требует пересборки с DEVPROG_EN=1; текущий битстрим платы = DEVPROG_EN=0+кольцо 256; host адаптивен, совместим с обеими прошивками.
+- Из LiteX перенести (без фреймворка): генератор рег-карты (устраняет класс R5), EventManager-схему IRQ (чистая версия плана B), DONE_CNT-монотонность в wait(), коалесинг IRQ в дескрипторе, BIST-замер полосы. Оценки и file:line — в отчёте сессии.
+- Восстановительный коммит R4/R5-остат/R6 по-прежнему ждёт команды владельца.
