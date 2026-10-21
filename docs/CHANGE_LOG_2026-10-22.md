@@ -86,3 +86,13 @@
 - `scripts/obs_smi.py`
 - `docs/audit-hang-2026-10-21/`, `docs/audit-rerun-2026-10-21/`, `docs/audit-changes-2026-10-21/`
 - `docs/CHANGE_LOG_2026-10-22.md` (этот файл), `docs/ERROR_HISTORY.md`, `docs/worklog.md`
+
+
+## 10. Инцидент 2026-10-22 (после коммита aee457e): XDMA-функция пропала с шины
+- Наблюдение: `Get-PnpDevice -PresentOnly` и `pnputil /enum-devices /connected` не содержат ни одного `VEN_10EE`;
+  `\\.\XDMA0dma` -> WinError 3; остались два фантома "PCI Memory Controller" (Unknown).
+- До инцидента: серия установок 1.2.7.1→1.2.7.4 (oem192/193/194) без перезагрузки на фоне залипшего h2c.
+- Не наш дефект: Problem 19 в системе — Intel SMBUS (oem140.inf).
+- Влияние: проверка драйвера и любые чтения платы невозможны.
+- Требуется: reboot хоста; при отсутствии устройства — power-cycle/reseat M.2, затем проверка привязки 1.2.7.4.
+- Статус: ОТКРЫТО (BUG-079).
