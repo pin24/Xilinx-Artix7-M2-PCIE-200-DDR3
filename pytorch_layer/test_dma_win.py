@@ -11,7 +11,7 @@ xdma_driver_win_src_2017 contract.
 Addressing (verified against xdma_driver.py::XdmaWinUpstream and xdma_public.h):
   control node : offset = addr - AXI_LITE_BASE (0x40000000); host subtracts it
   h2c/c2h DMA  : offset = RAW DDR3 offset, WITHOUT adding 0x80000000
-  chunks       : <= 1 MiB (DMA_CHUNK); MaxTransfer = 8 MiB; align >= 4
+  chunks       : <= 1 MiB (DMA_CHUNK); opt-in *_pipe up to XDMA_MAX_TRANSFER_SIZE; align >= 4
 
 This module does NOT modify xdma_driver.py. It imports XdmaDevice/XdmaError
 from it; if that import has side effects on this host it falls back to a
@@ -66,7 +66,11 @@ class XdmaWinDma(XdmaDevice):
 
     AXI_LITE_BASE = 0x40000000
     DDR3_BASE = 0x80000000
-    DMA_CHUNK = 1 << 20          # 1 MiB host chunk
+    # BUG-071 mitigation: biggest single WDF packet the driver accepts.
+    # 8 MiB = XDMA_MAX_TRANSFER_SIZE (dma_engine.h) = 1 WDF packet, and its
+    # worst-case fragmentation (4 KiB MDL pages) is exactly XDMA_MAX_DESC_COUNT
+    # = 2048 SG elements <= the 2049-slot descriptor bank -> no clamp, no loss.
+    DMA_CHUNK = 1 << 20          # 1 MiB default chunk (audit: ROF/0x124 risk @8MiB; *_pipe opt-in)
     XDMA_MAX_TRANSFER = 8 << 20  # 8 MiB driver limit
 
     def __init__(self, base=r"\\.\XDMA0dma"):
@@ -240,6 +244,131 @@ class XdmaWinDma(XdmaDevice):
             chunk = min(self.DMA_CHUNK, length - off)
             out += self._xfer(self._c2h, False, ddr_off + off, b"", chunk)
             off += chunk
+        return bytes(out)
+
+    # ---------------- pipelined double-buffered DMA (OPT-IN) -----------------
+    # Default write_dma/read_dma stay SEQUENTIAL (chunk-by-chunk, shared _ev).
+    # The *_pipe paths follow the same DMA_CHUNK slicing but drive TWO dedicated
+    # (buffer, OVERLAPPED, event) slots so chunk i+1 is issued asynchronously
+    # while chunk i is in flight, and the host only blocks when a slot must be
+    # reused. They NEVER touch the shared self._ev / _xfer register path.
+    #
+    # HONEST LIMIT: the XDMA engine is a SEQUENTIAL DMAC per channel. Two
+    # transfers through the SAME channel (h2c_0, or c2h_0) are serialized on the
+    # card regardless of pipelining, so *_pipe alone does NOT give 2x on one
+    # channel. Real speedup comes from overlapping INDEPENDENT work: an h2c
+    # write against a c2h read (separate engines) or doing host-side compute /
+    # next-module prep between pipe calls.
+    def _pipe_buf(self):
+        ev = self._k32.CreateEventW(None, True, False, None)
+        if not ev:
+            raise XdmaError("CreateEventW failed for pipe")
+        return {"ov": self._ov_t(), "ev": ev, "buf": None}
+
+    def _pipe_submit(self, h, is_write, offset, data, length, slot, timeout_ms):
+        c = self._c
+        ov = slot["ov"]
+        ov.Offset = offset & 0xFFFFFFFF
+        ov.OffsetHigh = (offset >> 32) & 0xFFFFFFFF
+        ov.hEvent = slot["ev"]
+        self._k32.ResetEvent(slot["ev"])
+        n = c.wintypes.DWORD(0)
+        if is_write:
+            slot["buf"] = c.create_string_buffer(data, len(data))
+            ok = self._k32.WriteFile(h, slot["buf"], len(data),
+                                     c.byref(n), c.byref(ov))
+        else:
+            slot["buf"] = c.create_string_buffer(length)
+            ok = self._k32.ReadFile(h, slot["buf"], length,
+                                    c.byref(n), c.byref(ov))
+        if not ok:
+            err = c.get_last_error()
+            if err != ERROR_IO_PENDING:
+                raise XdmaError(
+                    f"pipe I/O error at 0x{offset:X}: WinError {err}")
+
+    def _pipe_wait(self, h, slot, timeout_ms):
+        c = self._c
+        if self._k32.WaitForSingleObject(slot["ev"], timeout_ms) != 0:
+            raise XdmaError("pipe transfer timeout")
+        done = c.wintypes.DWORD(0)
+        if not self._k32.GetOverlappedResult(
+                h, c.byref(slot["ov"]), c.byref(done), False):
+            raise XdmaError(
+                f"pipe overlapped failed: WinError {c.get_last_error()}")
+        return done.value
+
+    def _pipe_close(self, slot):
+        try:
+            self._k32.CloseHandle(slot["ev"])
+        except Exception:
+            pass
+
+    def write_dma_pipe(self, ddr_off, data, timeout_ms=10000):
+        """Concurrent double-buffered h2c write (OPT-IN; default write_dma
+        remains sequential). Pipelines DMA_CHUNK blocks through two slots;
+        per-channel ordering is preserved because the card serializes one
+        channel. Raises XdmaError on timeout / I/O error."""
+        if self._h2c is None:
+            raise XdmaError("h2c_0 not open for pipe write")
+        if not data:
+            return
+        h = self._h2c
+        slots = [self._pipe_buf(), self._pipe_buf()]
+        in_use = [False, False]
+        off = 0
+        idx = 0
+        try:
+            while off < len(data):
+                chunk = data[off:off + self.DMA_CHUNK]
+                s = idx & 1
+                if in_use[s]:
+                    self._pipe_wait(h, slots[s], timeout_ms)
+                self._pipe_submit(h, True, ddr_off + off, chunk, len(chunk),
+                                  slots[s], timeout_ms)
+                in_use[s] = True
+                off += len(chunk)
+                idx += 1
+            for s in (0, 1):
+                if in_use[s]:
+                    self._pipe_wait(h, slots[s], timeout_ms)
+        finally:
+            for slot in slots:
+                self._pipe_close(slot)
+
+    def read_dma_pipe(self, ddr_off, length, timeout_ms=10000):
+        """Concurrent double-buffered c2h read (OPT-IN; default read_dma
+        remains sequential). Pipelines DMA_CHUNK blocks through two slots and
+        reassembles them in chunk order. Raises XdmaError on timeout / error."""
+        if self._c2h is None:
+            raise XdmaError("c2h_0 not open for pipe read")
+        if length <= 0:
+            return b""
+        h = self._c2h
+        slots = [self._pipe_buf(), self._pipe_buf()]
+        in_use = [False, False]
+        out = bytearray()
+        off = 0
+        idx = 0
+        try:
+            while off < length:
+                n = min(self.DMA_CHUNK, length - off)
+                s = idx & 1
+                if in_use[s]:
+                    got = self._pipe_wait(h, slots[s], timeout_ms)
+                    out += bytes(slots[s]["buf"].raw[:got])
+                self._pipe_submit(h, False, ddr_off + off, b"", n,
+                                  slots[s], timeout_ms)
+                in_use[s] = True
+                off += n
+                idx += 1
+            for s in (0, 1):
+                if in_use[s]:
+                    got = self._pipe_wait(h, slots[s], timeout_ms)
+                    out += bytes(slots[s]["buf"].raw[:got])
+        finally:
+            for slot in slots:
+                self._pipe_close(slot)
         return bytes(out)
 
     # ---------------- IOCTLs -------------------------------------------------

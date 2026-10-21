@@ -431,6 +431,9 @@ class XdmaWindows(XdmaDevice):
 class XdmaWinUpstream(XdmaDevice):
     AXI_LITE_BASE = 0x40000000
     DDR3_BASE = 0x80000000
+    # BUG-071: align with test_dma_win.XdmaWinDma.DMA_CHUNK — biggest single
+    # WDF packet (8 MiB = XDMA_MAX_TRANSFER_SIZE), fits XDMA_MAX_DESC_COUNT=2048
+    # SG elements at 4 KiB fragmentation.
     DMA_CHUNK = 1 << 20
 
     def __init__(self, base=r"\\.\XDMA0"):
