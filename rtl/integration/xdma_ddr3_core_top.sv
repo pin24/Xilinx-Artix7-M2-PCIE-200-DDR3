@@ -3,7 +3,8 @@
 // ADDERS=4 (было 8): вдвое меньше barrel-аддеров -> меньше LUT/плотность и короче
 // маршрут деревьев накопления (WNS-fix 06.10). NUM_MAC=16 сохранён.
 module xdma_ddr3_core_top #(parameter int NUM_MAC = 16, parameter int ADDERS = 4,
-                            parameter logic [31:0] BUILD_ID = 32'h0)
+                            parameter logic [31:0] BUILD_ID = 32'h0,
+                            parameter int DEVPROG_EN = 0)
    (DDR3_0_addr,
      DDR3_0_ba,
      DDR3_0_cas_n,
@@ -114,7 +115,8 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 16, parameter int ADDERS = 4
   // DIAG-статус tdot (2026-10-03): выведены из tdot_axi4 для diag сниффера.
   logic tdot_go_w, tdot_busy_w, tdot_done_w;
 
-  tdot_axi4 #(.NUM_MAC(NUM_MAC), .ADDERS(ADDERS), .BUILD_ID(BUILD_ID)) u_tdot (
+  tdot_axi4 #(.NUM_MAC(NUM_MAC), .ADDERS(ADDERS), .BUILD_ID(BUILD_ID),
+              .DEVPROG_EN(DEVPROG_EN)) u_tdot (
       .S_AXI_ACLK(core_clk), .S_AXI_ARESETN(core_resetn),
       .S_AXI_AWADDR(s_axil_awaddr), .S_AXI_AWPROT(1'b0),
       .S_AXI_AWVALID(s_axil_awvalid), .S_AXI_AWREADY(s_axil_awready),

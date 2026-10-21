@@ -11,6 +11,7 @@
 # Optional args (via -tclargs):
 #   NUM_MAC=<16|32|64>   (default 32)
 #   ADDERS=<N>           (default 16)
+#   DEVPROG_EN=<0|1>     (default 0; 1 = программный режим device_prog поверх tdot)
 #   JOBS=<N>             (default 8)
 #   SKIP_SYNTH=1         (only create the project, no build)
 #
@@ -40,6 +41,7 @@ set ARTIFACTS_DIR "${ROOT}/build/artifacts_flat"
 
 set NUM_MAC     32
 set ADDERS      16
+set DEVPROG_EN  0
 # низкий параллелизм для машины с малым ОЗУ (было 8)
 set JOBS        4
 set_param general.maxThreads 4
@@ -47,18 +49,18 @@ set SKIP_SYNTH  0
 
 # ----------------------------------------------------------------------------
 # Argument parsing, robust to shell '=' stripping (BUG-033).
-# Supports: KEY=VALUE | KEY VALUE | -KEY VALUE (NUM_MAC/ADDERS/JOBS/SKIP_SYNTH).
+# Supports: KEY=VALUE | KEY VALUE | -KEY VALUE (NUM_MAC/ADDERS/DEVPROG_EN/JOBS/SKIP_SYNTH).
 # ----------------------------------------------------------------------------
 set _nargs [llength $argv]
 for {set _i 0} {$_i < $_nargs} {incr _i} {
     set _arg  [lindex $argv $_i]
     set _argn [string trimleft $_arg -]
     set _next [lindex $argv [expr {$_i + 1}]]
-    if {[regexp {^(NUM_MAC|ADDERS|JOBS|SKIP_SYNTH)=(\d+)$} $_argn -> _k _v]} {
+    if {[regexp {^(NUM_MAC|ADDERS|DEVPROG_EN|JOBS|SKIP_SYNTH)=(\d+)$} $_argn -> _k _v]} {
         set $_k $_v
         continue
     }
-    if {[lsearch -exact {NUM_MAC ADDERS JOBS SKIP_SYNTH} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
+    if {[lsearch -exact {NUM_MAC ADDERS DEVPROG_EN JOBS SKIP_SYNTH} $_argn] >= 0 && [regexp {^\d+$} $_next]} {
         set $_argn $_next
         incr _i
         continue
@@ -75,6 +77,7 @@ puts " TOP        : ${TOP_NAME}"
 puts " ARGS (raw) : ${argv}"
 puts " NUM_MAC    : ${NUM_MAC}"
 puts " ADDERS     : ${ADDERS}"
+puts " DEVPROG_EN : ${DEVPROG_EN}"
 puts " JOBS       : ${JOBS}"
 puts " SKIP_SYNTH : ${SKIP_SYNTH}"
 puts "============================================================"
@@ -304,7 +307,7 @@ update_compile_order -fileset constrs_1
 # integer top parameters (probe: set/get OK on Vivado 2025.2). Set BUILD_ID +
 # NUM_MAC + ADDERS together on the FILESET (the run-level `generic` property and
 # STEPS.SYNTH_DESIGN.ARGS.GENERIC are READ-ONLY / not settable -> Common 17-54).
-set gen_list [list BUILD_ID=32'h${BUILD_ID_HEX} NUM_MAC=${NUM_MAC} ADDERS=${ADDERS}]
+set gen_list [list BUILD_ID=32'h${BUILD_ID_HEX} NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} DEVPROG_EN=${DEVPROG_EN}]
 # FIX 2026-10-20 (тихое откатывание параметров): сбой set_property generic НЕ
 # должен оставаться незамеченным — иначе синтез уходит с дефолтами top #(16,4).
 if {[catch {set_property generic ${gen_list} [current_fileset]} gen_err]} {
@@ -333,7 +336,7 @@ foreach gen_tok [split [string map [list \" "" \{ "" \} ""] ${gen_read}] " "] {
 # не найден) — предупреждение, а не exit: иначе незнакомая форма вывода
 # ложно валила бы сборку, которую мы как раз защищаем.
 set gen_unparsed {}
-foreach gen_want [list "NUM_MAC=${NUM_MAC}" "ADDERS=${ADDERS}"] {
+foreach gen_want [list "NUM_MAC=${NUM_MAC}" "ADDERS=${ADDERS}" "DEVPROG_EN=${DEVPROG_EN}"] {
     lassign [split ${gen_want} "="] gen_name gen_val
     set gen_hit 0
     # R2 2026-10-20: сброс stale matchVar между итерациями (regexp оставляет
@@ -369,7 +372,7 @@ foreach gen_want [list "NUM_MAC=${NUM_MAC}" "ADDERS=${ADDERS}"] {
 if {[llength ${gen_unparsed}] > 0} {
     puts "WARNING: read-back не подтвердил {${gen_unparsed}} (формат: {${gen_read}}); значение generic не проверено — продолжаем"
 }
-puts " GENERIC  : NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} BUILD_ID=32'h${BUILD_ID_HEX} (read-back OK)"
+puts " GENERIC  : NUM_MAC=${NUM_MAC} ADDERS=${ADDERS} DEVPROG_EN=${DEVPROG_EN} BUILD_ID=32'h${BUILD_ID_HEX} (read-back OK)"
 
 # ---------- 6. Demote PCIe IP XDC ----------
 puts "=== 6. DEMOTE PCIE IP XDC ==="

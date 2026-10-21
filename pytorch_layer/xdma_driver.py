@@ -1193,6 +1193,112 @@ class CompletionMailbox:
         return isinstance(addr, int) and addr >= 0
 
 
+# ---------------------------------------------------------------------------
+# DeviceProgRunner — host-драйвер программного режима (DEVPROG_EN=1).
+#
+# Управляет аппаратным интерпретатором device_prog поверх кольца tdot
+# (rtl/integration/tdot_axi4.sv + rtl/integration/device_prog.sv). Хост
+# заливает в DDR3 данные и 32-байтную таблицу юнитов, программирует регистры
+# DP_* (0xE4..0xF0), дёргает GO и ждёт completion-mailbox (16 Б) в DDR3.
+#
+# АДРЕСНАЯ СЕМАНТИКА (сверено с RTL — см. отчёт):
+#   * data_bytes / table_bytes / out_base / mbox_off — СМЕЩЕНИЯ внутри окна
+#     DDR3 (отсчитываются от 0x8000_0000), как во всём драйвере: через них
+#     идут write_dma/read_dma (DMA-каналы h2c/c2h).
+#   * регистры DP_DATA_BASE/DP_TABLE_BASE/DP_MBOX_BASE принимают ПОЛНЫЕ AXI-
+#     адреса (DDR3_BASE + смещение). device_prog.sv использует data_base/
+#     table_base/mailbox_base как абсолютные адреса для M_AXI_ARADDR/AWADDR
+#     (fetch_addr = table_base + u_idx*32 + fetch_cnt*8, поиск задачи идёт по
+#     data_base / out_addr, mailbox пишется по mailbox_base/+8). Поэтому при
+#     записи в регистры добавляем DDR3_BASE, как это делает TdotCore.set_addrs.
+#   * CompletionMailbox читает статус через read_dma по СМЕЩЕНИЮ (base_addr —
+#     DDR3-offset), поэтому mbox_off передаём как есть.
+# ---------------------------------------------------------------------------
+class DeviceProgRunner:
+    """Программный запуск одной программы device_prog на плате."""
+
+    # Регистры программного режима (смещения от reg_base; tdot_axi4.sv §0xE4..0xF0).
+    DP_CTRL        = 0xE4   # W: bit0=go (импульс), [31:16]=n_units
+    DP_DATA_BASE   = 0xE8   # W: база данных (полный AXI адрес, DDR)
+    DP_TABLE_BASE  = 0xEC   # W: база таблицы юнитов (полный AXI адрес, DDR)
+    DP_MBOX_BASE   = 0xF0   # W: база completion-mailbox (полный AXI адрес, DDR)
+
+    def __init__(self, dev: XdmaDevice, num_mac: int = 32, reg_base: int = REG_BASE):
+        self.dev = dev
+        self.num_mac = num_mac
+        self.reg_base = reg_base
+
+    # ---- регистры программного режима ----
+    def _reg_w(self, off: int, val: int) -> None:
+        self.dev.write(self.reg_base + off, struct.pack("<I", val & 0xFFFFFFFF))
+
+    def _reg_r(self, off: int) -> int:
+        return struct.unpack("<I", self.dev.read(self.reg_base + off, 4))[0]
+
+    def state(self) -> dict:
+        """Прочитать DP_CTRL (6'd57): [31:16]=n_units, bit0=dprog_active.
+
+        Полезно для диагностики, «активно ли программное ядро». При
+        DEVPROG_EN=0 регистры инертны и active всегда 0."""
+        v = self._reg_r(self.DP_CTRL)
+        return {"active": bool(v & 0x1), "n_units": (v >> 16) & 0xFFFF}
+
+    def run(self, data_bytes, table_bytes, n_units, out_base, out_bytes,
+            timeout_ms: float = 5000.0, mbox_off: int = MAILBOX_OFF,
+            data_base: int | None = None, table_base: int | None = None) -> bytes:
+        """Залить данные+таблицу, запустить программу и вернуть результат.
+
+        data_bytes/table_bytes — сырые байты (готовит пользователь);
+        n_units — число 32-байтных юнитов в table_bytes;
+        out_base — смещение результата внутри DDR3; out_bytes — сколько прочесть;
+        mbox_off — смещение completion-mailbox в DDR3 (по умолч. MAILBOX_OFF);
+        data_base/table_base — смещения данных и таблицы юнитов внутри DDR3
+            (как и out_base — СМЕЩЕНИЯ). Если не заданы, выбираются заведомо
+            свободные регионы выше области результата (0x00A0_0000 result).
+
+        Возвращает out_bytes байт результата (raw, без распаковки).
+        """
+        if n_units <= 0 or n_units > 0xFFFF:
+            raise ValueError(f"n_units={n_units}: ожидается 1..0xFFFF")
+        if len(table_bytes) != n_units * 32:
+            raise ValueError(
+                f"table_bytes={len(table_bytes)} Б != n_units*32 = {n_units * 32} Б "
+                f"(каждый юнит ровно 32 байта = 4 слова по 64 бит)")
+        if not data_bytes:
+            raise ValueError("data_bytes пуст")
+        if out_bytes <= 0:
+            raise ValueError(f"out_bytes={out_bytes}: ожидается > 0")
+
+        # Базы, если не заданы: берём свободные смещения в стороне от result
+        # и от занятых регионов планировщика (0x0010_0000/0x0011_0000/0x0020_0000).
+        if data_base is None:
+            data_base = 0x00B0_0000
+        if table_base is None:
+            table_base = 0x0013_0000      # свободный промежуток после comp-области
+
+        # a. DMA — смещения внутри DDR3 (канал h2c).
+        self.dev.write_dma(mbox_off, b"\x00" * 16)        # сброс mailbox-слота
+        self.dev.write_dma(data_base, data_bytes)
+        self.dev.write_dma(table_base, table_bytes)
+
+        # b. Регистры: данные/таблица/mailbox — ПОЛНЫЕ AXI-адреса, GO = n_units|1.
+        #    (только старшие 32 бита фиксируются; полный адрес умещается в них).
+        self._reg_w(self.DP_DATA_BASE,  (DDR3_BASE + data_base) & 0xFFFFFFFF)
+        self._reg_w(self.DP_TABLE_BASE, (DDR3_BASE + table_base) & 0xFFFFFFFF)
+        self._reg_w(self.DP_MBOX_BASE,  (DDR3_BASE + mbox_off) & 0xFFFFFFFF)
+        self._reg_w(self.DP_CTRL, ((n_units & 0xFFFF) << 16) | 0x1)
+
+        # c. Ожидание completion-mailbox. RTL (device_prog → CS_DP_MBOX2) пишет
+        #    W1 по mailbox_base+8 = {40'h0, units[15:0], status=0}; LSW = units<<8
+        #    (ненулевое при любом n_units>=1), поэтому ждём «любое ненулевое»:
+        #    expected=0 означает в CompletionMailbox.read_status «ждать != 0».
+        mb = CompletionMailbox(self.dev, base_addr=mbox_off)
+        mb.read_status(timeout_ms=timeout_ms, expected=0)
+
+        # d. Чтение результата.
+        return self.dev.read_dma(out_base, out_bytes)
+
+
 def _pack_tf48(bits_list) -> bytes:
     buf = bytearray()
     for b in bits_list:
