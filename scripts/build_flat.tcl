@@ -231,6 +231,7 @@ add_files -norecurse \
     ${ROOT}/rtl/block/tfadd48.sv \
     ${ROOT}/rtl/block/tfmul_raw.sv \
     ${ROOT}/rtl/block/compute_dot_par_raw.sv \
+    ${ROOT}/rtl/integration/device_prog.sv \
     ${ROOT}/rtl/integration/tdot_axi4.sv \
     ${ROOT}/rtl/integration/xadc_temp.sv \
     ${ROOT}/rtl/integration/xadc_prim.sv \
