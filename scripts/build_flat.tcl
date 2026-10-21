@@ -420,12 +420,16 @@ if {${SKIP_SYNTH}} {
 puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
-set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
-# NOTE 2026-10-22: `RETIMING` is deprecated in 2025.2 (warning 17-599, "use
-# -global_retiming instead"), but `ARGS.GLOBAL_RETIMING true` is NOT a valid
-# run property here (ERROR 17-110). Reverted to the prior working RETIMING config.
-# To actually enable global retiming: replace this line with the synth-level
-# `-global_retiming` switch (not via run ARGS), after validating it locally.
+# 2026-10-22: RETIMING deprecated in 2025.2 ("use -global_retiming"). The run
+# property STEPS.SYNTH_DESIGN.ARGS.GLOBAL_RETIMING takes `on`/`off` (NOT true);
+# `true` -> ERROR 17-110. Probed on m2_artix7_xdma_flat: value domain is on/off.
+if {[get_property -quiet STEPS.SYNTH_DESIGN.ARGS.GLOBAL_RETIMING [get_runs synth_1]] ne ""} {
+    set_property STEPS.SYNTH_DESIGN.ARGS.GLOBAL_RETIMING on [get_runs synth_1]
+    puts "=== 7b. GLOBAL_RETIMING enabled (on; replaces deprecated RETIMING)"
+} else {
+    set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+    puts "=== 7b. GLOBAL_RETIMING unsupported; kept RETIMING true"
+}
 # FIX 2026-10-20 (v1.2.x): NUM_MAC/ADDERS are passed on the FILESET generic
 # (see SECTION 5.1), NOT on the run (run-level generic is read-only -> 17-54).
 # BUG-047: apply set_clock_groups in PLACE_DESIGN.TCL.PRE (clocks exist in DCP).
