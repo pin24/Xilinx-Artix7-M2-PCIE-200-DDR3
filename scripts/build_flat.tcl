@@ -421,6 +421,15 @@ puts "=== 7. SYNTHESIS ==="
 reset_run synth_1 -quiet
 reset_run impl_1 -quiet
 set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
+# 2026-10-22: re-enable GLOBAL_RETIMING to try to recover setup margin (WNS=0.085 ns
+# was tight after the burst-watchdog RTL changes). Guarded: if the run has no such
+# property (unsupported in this Vivado/part), keep RETIMING only and do not abort.
+if {[get_property -quiet STEPS.SYNTH_DESIGN.ARGS.GLOBAL_RETIMING [get_runs synth_1]] ne ""} {
+    set_property STEPS.SYNTH_DESIGN.ARGS.GLOBAL_RETIMING true [get_runs synth_1]
+    puts "=== 7b. GLOBAL_RETIMING true (guarded, property exists)"
+} else {
+    puts "=== 7b. GLOBAL_RETIMING not supported here; keep RETIMING only"
+}
 # FIX 2026-10-20 (v1.2.x): NUM_MAC/ADDERS are passed on the FILESET generic
 # (see SECTION 5.1), NOT on the run (run-level generic is read-only -> 17-54).
 # BUG-047: apply set_clock_groups in PLACE_DESIGN.TCL.PRE (clocks exist in DCP).
