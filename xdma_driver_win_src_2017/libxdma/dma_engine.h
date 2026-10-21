@@ -196,6 +196,10 @@ typedef struct XDMA_ENGINE_T {
     // Driver-Verifier violation (BugCheck 0x10D). Set TRUE after the first
     // DmaCompleted, reset in EvtIoWriteDma/EvtIoReadDma before Execute.
     BOOLEAN txnDone;
+    // TRUE: completion was claimed by the bounded poll on TIMEOUT. Such an
+    // owner does NOT complete the request (it bails on STATUS_CANCELLED), so
+    // the cancel routine must finalise it (fix for cancel<->timeout race).
+    BOOLEAN txnTimeout;
 
 } XDMA_ENGINE;
 

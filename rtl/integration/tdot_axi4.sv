@@ -243,6 +243,14 @@ module tdot_axi4 #(
     logic [31:0] cnt_busy, cnt_mem, cnt_load, cnt_compute;
     logic [31:0] cnt_ar, cnt_beat, cnt_ar_stall, cnt_r_wait;
     logic [31:0] cnt_wr, cnt_job, cnt_fifo_full;
+    // TIMEOUT 2026-10-21: AXI burst watchdogs + observability counters
+    // (объявлены здесь, т.к. регистры 0x62/0x63 в декодере выше мастеров)
+    localparam int RD_TIMEOUT_LIMIT = 1 << 19;
+    localparam int WR_TIMEOUT_LIMIT = 1 << 19;
+    logic [19:0] rd_to_cnt, wr_to_cnt;
+    logic        rd_timeout_sticky, wr_timeout_sticky;
+    logic [31:0] rd_timeout_events, wr_timeout_events;
+    logic        rd_to_fire, wr_to_fire;   // 1-cycle pulse when a watchdog fires
     logic [63:0] snap_cycles;
     logic [31:0] snap_busy, snap_mem, snap_load, snap_compute;
     logic [31:0] snap_ar, snap_beat, snap_ar_stall, snap_r_wait;
@@ -279,6 +287,9 @@ logic        irq_pending_q;      // поднято при опустошении
     logic [$clog2(DP_FIFO_DEPTH):0]   dp_wrptr, dp_rdptr;
     wire dp_fifo_empty  = (dp_wrptr == dp_rdptr);
     wire dp_fifo_full   = ((dp_wrptr - dp_rdptr) >= DP_FIFO_DEPTH);
+    // backpressure на device_prog: принять задачу можно, пока FIFO не полон.
+    // device_prog держит desc_task_valid, пока ready=0 (не теряет задачи).
+    wire dp_fifo_ready  = !dp_fifo_full;
     // порты чтения головы FIFO
     logic [AW-1:0] dp_z_a, dp_z_w, dp_z_r;
     logic [15:0]   dp_z_n;
@@ -286,6 +297,11 @@ logic        irq_pending_q;      // поднято при опустошении
     assign dp_z_w = dp_fifo_w[dp_rdptr[$clog2(DP_FIFO_DEPTH)-1:0]];
     assign dp_z_r = dp_fifo_r[dp_rdptr[$clog2(DP_FIFO_DEPTH)-1:0]];
     assign dp_z_n = dp_fifo_n[dp_rdptr[$clog2(DP_FIFO_DEPTH)-1:0]];
+
+    // ---- диагностика программного режима: сигналы, доступные в раннем декодере ----
+    logic        dp_wdog_active_q;   // сторожевой сброс сработал (sticky до нового старта)
+    logic [15:0] dp_stall_code_q;    // код остановки (0xA5A5 = watchdog)
+    wire [7:0]   dp_fifo_level = dp_wrptr - dp_rdptr;
 
     // ---- от device_prog (инстанс ниже) ----
     logic        dp_desc_task_valid;
@@ -501,10 +517,14 @@ logic        irq_pending_q;      // поднято при опустошении
             6'd55: rdata = snap_job;                             // JOB_S
             6'd56: rdata = snap_fifo_full;                       // FIFO_FULL_S
             // ---- программный режим device_prog (DEVPROG_EN=1) ----
+            6'd62: rdata = rd_timeout_events;
+            6'd63: rdata = wr_timeout_events;
             6'd57: rdata = {dprog_n_units_q, 15'b0, dprog_active_q};
             6'd58: rdata = dprog_data_base_q;
             6'd59: rdata = dprog_table_base_q;
             6'd60: rdata = dprog_mailbox_base_q;
+            6'd61: rdata = {8'd0, dp_fifo_level, dp_stall_code_q,
+                            dp_wdog_active_q, dprog_complete_q, dprog_active_q};
             default: rdata = 32'h0;
         endcase
     end
@@ -591,7 +611,9 @@ logic        irq_pending_q;      // поднято при опустошении
             ar_addr_r <= 0; ar_len_r <= 0;
             ar_valid_r <= 0; r_ready_r <= 0;
             rd_issued <= 0; rd_recv <= 0;
+            rd_to_cnt <= 0; rd_timeout_sticky <= 0; rd_timeout_events <= 0;
         end else begin
+            rd_to_fire <= 1'b0;
             case (rstate)
                 RST_IDLE: begin
                     if (rd_start) begin
@@ -623,6 +645,20 @@ logic        irq_pending_q;      // поднято при опустошении
                             r_ready_r <= 0;
                             rstate <= RST_DONE;
                         end
+                    end
+                    // TIMEOUT 2026-10-21: no AR/R progress -> abort burst, free the bus
+                    if ((ar_valid_r && M_AXI_ARREADY) || (M_AXI_RVALID && r_ready_r)) begin
+                        rd_to_cnt <= 0;
+                    end else if (rd_to_cnt >= RD_TIMEOUT_LIMIT[19:0]) begin
+                        ar_valid_r        <= 1'b0;
+                        r_ready_r         <= 1'b0;
+                        rd_timeout_sticky <= 1'b1;
+                        rd_timeout_events <= rd_timeout_events + 1;
+                        rd_to_fire        <= 1'b1;
+                        rd_to_cnt         <= 0;
+                        rstate            <= RST_DONE;
+                    end else begin
+                        rd_to_cnt <= rd_to_cnt + 1;
                     end
                 end
                 RST_DONE: begin
@@ -669,7 +705,9 @@ logic        irq_pending_q;      // поднято при опустошении
             wstate <= WST_IDLE;
             aw_addr_r <= 0; w_data_r <= 0; w_strb_r <= 0;
             aw_valid_r <= 0; w_valid_r <= 0; w_last_r <= 0; b_ready_r <= 0;
+            wr_to_cnt <= 0; wr_timeout_sticky <= 0; wr_timeout_events <= 0;
         end else begin
+            wr_to_fire <= 1'b0;
             case (wstate)
                 WST_IDLE: begin
                     if (wr_start) begin
@@ -691,6 +729,23 @@ logic        irq_pending_q;      // поднято при опустошении
                     if (M_AXI_BVALID && b_ready_r) begin
                         b_ready_r <= 0;
                         wstate <= WST_DONE;
+                    end
+                    // TIMEOUT 2026-10-21: no AW/W/B progress -> abort, free the bus
+                    if ((aw_valid_r && M_AXI_AWREADY) || (w_valid_r && M_AXI_WREADY) ||
+                        (M_AXI_BVALID && b_ready_r)) begin
+                        wr_to_cnt <= 0;
+                    end else if (wr_to_cnt >= WR_TIMEOUT_LIMIT[19:0]) begin
+                        aw_valid_r        <= 1'b0;
+                        w_valid_r         <= 1'b0;
+                        w_last_r          <= 1'b0;
+                        b_ready_r         <= 1'b0;
+                        wr_timeout_sticky <= 1'b1;
+                        wr_timeout_events <= wr_timeout_events + 1;
+                        wr_to_fire        <= 1'b1;
+                        wr_to_cnt         <= 0;
+                        wstate            <= WST_DONE;
+                    end else begin
+                        wr_to_cnt <= wr_to_cnt + 1;
                     end
                 end
                 WST_DONE: begin
@@ -750,6 +805,13 @@ logic        irq_pending_q;      // поднято при опустошении
     // table-чтение device_prog разрешено только вне «данных» задач (между задачами);
     // объявлено здесь, т.к. зависит от cstate (xvlog: объявление до использования).
     wire dp_table_permit = (cstate == CS_IDLE) || (cstate == CS_DP_WAIT);
+
+    // ---- диагностика программного режима: cstate-зависимая часть (после декларации cstate) ----
+    localparam int DP_WDOG_MAX = (1 << 22);   // ~4.2M тактов без прогресса = аварийный сброс
+    logic [21:0] dp_wdog_cnt;   // FIX 2026-10-22: 1<<22 needs 22 bits
+    wire         dp_progress = dp_desc_task_valid || dp_mailbox_wr_start || dp_done ||
+                               (cstate == CS_DP_MBOX1) || (cstate == CS_DP_MBOX2);
+
     logic go_q;
     wire go_pulse  = go_reg && !go_q;
     // Внешний GO принимается только когда ядро свободно и планировщик выключен
@@ -846,6 +908,7 @@ logic        irq_pending_q;      // поднято при опустошении
             dprog_complete_q <= 0; use_dp_q <= 0;
             dp_wrptr <= 0; dp_rdptr <= 0;
             dp_mbox0_valid <= 0; dp_mbox1_valid <= 0;
+            dp_wdog_active_q <= 0; dp_stall_code_q <= 0; dp_wdog_cnt <= 0;
             // dp_rd_*/dpt_state/dp_table_* — инстанс и table-FSM device_prog (generate)
         end else begin
             go_q <= go_reg;
@@ -854,11 +917,11 @@ logic        irq_pending_q;      // поднято при опустошении
             dprog_go_q <= 0;
             // ---- программный режим: приём задач device_prog в FIFO, mailbox, complete ----
             if (DEVPROG_EN) begin
-                // push задачи от device_prog (нет backpressure на его стороне; FIFO
-                // глубины DP_FIFO_DEPTH поглощает выброс n_out*pass юнита). Потеря при
-                // переполнении НЕ допускается: только !full (для данного теста выброса
-                // много меньше глубины).
-                if (dp_desc_task_valid && !dp_fifo_full) begin
+                // push задачи от device_prog с backpressure: dp_fifo_ready = !dp_fifo_full.
+                // device_prog держит desc_task_valid, пока ready=0, и НЕ продвигает
+                // счётчик нейрона — длинные программы (n_out*pass >> глубины FIFO) не
+                // теряют задачи при переполнении.
+                if (dp_desc_task_valid && dp_fifo_ready) begin
                     dp_fifo_a[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_a;
                     dp_fifo_w[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_w;
                     dp_fifo_r[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_r;
@@ -880,6 +943,21 @@ logic        irq_pending_q;      // поднято при опустошении
                 if (dprog_start_q) begin
                     dprog_complete_q <= 1'b0;
                     dp_mbox0_valid <= 1'b0; dp_mbox1_valid <= 1'b0;
+                    dp_wdog_active_q <= 1'b0; dp_stall_code_q <= 0; dp_wdog_cnt <= 0;
+                end
+                // ---- сторожевой таймер: интерпретатор не должен висеть вечно ----
+                // При отсутствии прогресса снимает active и возвращает ядро в idle,
+                // чтобы не заклинивать общую AXI-шинy на железе; host читает DP_STAT
+                // и по коду 0xA5A5 понимает, что программа не завершилась.
+                if (dprog_active_q) begin
+                    if (dp_progress)
+                        dp_wdog_cnt <= '0;
+                    else if (dp_wdog_cnt >= DP_WDOG_MAX) begin
+                        dp_wdog_active_q <= 1'b1;
+                        dp_stall_code_q  <= 16'hA5A5;
+                        dp_wdog_cnt      <= '0;
+                    end else
+                        dp_wdog_cnt <= dp_wdog_cnt + 1'b1;
                 end
             end
             // irq_ack действует в любом состоянии (SCHED_CTRL.bit3)
@@ -903,7 +981,18 @@ logic        irq_pending_q;      // поднято при опустошении
                 ctrl_rd_total <= (n_total_legacy > NUM_MAC) ? NUM_MAC : n_total_legacy;
                 ctrl_rd_start <= 1;
             end
-            case (cstate)
+            if (rd_to_fire || wr_to_fire) begin
+                // TIMEOUT 2026-10-22: the AXI master aborted; retire the task so the
+                // ring keeps moving even if the bus is dead (completion is dropped).
+                busy_q <= 1'b0; done_q <= 1'b1;
+                if (use_sched_q) begin
+                    sched_rptr_q <= sched_rptr_q + 10'd1;
+                    done_cnt_q   <= done_cnt_q + 16'd1;
+                    if (sched_irq_en_q && (sched_rptr_q + 10'd1 == sched_wptr_q))
+                        irq_pending_q <= 1'b1;
+                end
+                cstate <= CS_IDLE;
+            end else case (cstate)
                 CS_IDLE: begin
                     // программный режим (DEVPROG_EN=1): старт батча по dprog_start_q
                     if (DEVPROG_EN && dprog_start_q) begin
@@ -1227,6 +1316,12 @@ cstate <= CS_RD_DATA;
                 end
                 default: cstate <= CS_IDLE;
             endcase
+            // сторожевой сброс применяется ПОСЛЕ case (переопределяет его),
+            // чтобы гарантированно вернуть ядро в idle и снять active.
+            if (dprog_active_q && dp_wdog_active_q) begin
+                dprog_active_q <= 1'b0; use_dp_q <= 1'b0;
+                cstate <= CS_IDLE; busy_q <= 0; done_q <= 1;
+            end
         end
     end
 
@@ -1372,6 +1467,7 @@ assign diag_done = done_q;
             .table_addr      (dp_table_addr),
             .table_rvalid    (dp_table_rvalid),
             .table_rdata     (dp_table_rdata),
+            .desc_task_ready (dp_fifo_ready),    // FIFO не полон — можно принимать задачу
             .done            (dp_done),
             .mailbox_wr_start(dp_mailbox_wr_start),
             .mailbox_wr_addr (dp_mailbox_wr_addr),

@@ -845,3 +845,51 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 | **Причина** | Синхронный DMA/регистр-IOCTL Windows-обёртки с фиксированными накладными на маленькую MDL-транзакцию; движок tdot при этом быстрый |
 | **Устранение в работе** | Packed-submit (минимум вызовов) + сокращение числа вызовов; далее — пипелинг submit и, при желании, оптимизация per-call-латентности драйвера |
 | **Статус** | ОТКРЫТ (наблюдение зафиксировано для дальнейшей оптимизации) |
+
+
+---
+
+## 2026-10-22 - Зависание host-DMA (h2c) после прерванной операции: драйвер + RTL
+
+### [BUG-072] EvtIoWriteDma/EvtIoReadDma выходили по таймауту без WdfRequestComplete
+- Симптом: после kill'а процесса посреди DMA `write_dma(0x200000)` -> `timeout at 0x200000` (10 c), повторяемо; отпускало только обесточивание. Регистры (AXI-Lite) и `read_dma` (c2h) при этом работали.
+- Причина: `XDMA_EngineWaitCompletion` на таймауте сам захватывает `txnDone` (dma_engine.c:1632-1641) и request НЕ завершает; второй CAS в `EvtIo*Dma` видел `owner=false` и делал `return` без завершения -> IRP и последовательная очередь залипали навсегда.
+- Исправление: вместо `return` — Info-лог и дальнейшее завершение (UnmarkCancelable -> Release -> Complete(status)). Двойное завершение исключено `txnDone`-guard'ом в `EngineProcessTransfer` (dma_engine.c:336-343).
+- Файлы: `xdma_driver_win_src_2017/sys/file_io.c`. Статус: собрано 1.2.7.4 (oem194); проверка на железе — после reboot.
+
+### [BUG-073] Гонка cancel∩timeout: обе стороны отступали, IRP не завершался
+- Причина: poll-таймаут забирал `txnDone`; `EvtCancelDma` по `!ownTxn` -> return, а `EvtIo*Dma` по `STATUS_CANCELLED` -> return.
+- Исправление: поле `BOOLEAN txnTimeout` (ставит только poll-владелец на таймауте; DPC — FALSE; сброс на старте транзакции). `EvtCancelDma` при `pollTimeout` сам делает EngineStop + WdfDmaTransactionRelease + WdfRequestComplete(CANCELLED). Ровно один завершает во всех комбинациях poll/cancel/DPC/watchdog.
+- Файлы: `libxdma/dma_engine.h`, `libxdma/dma_engine.c`, `sys/file_io.c`. Статус: собрано 1.2.7.4; нужна проверка под Driver Verifier с инъекцией отмены.
+
+### [BUG-074] RTL: у AXI read/write-мастеров отсутствовал таймаут
+- Причина: `RST_ACT` ждал `rd_total` бит без ограничения; зависший burst на общем M00→MIG не освобождался ни `sched_flush` (только в CS_IDLE), ни DP-watchdog.
+- Исправление: watchdog'и read/write burst (1<<19 тактов ≈ 4.2 мс), счётчики `rd_timeout_events`/`wr_timeout_events`, RO-регистры 0x62/0x63 (байты 0xF8/0xFC); controller-side abort — задача ретирится (`rptr++`, `done_cnt++`, `busy=0`, CS_IDLE), кольцо не встаёт.
+- Файл: `rtl/integration/tdot_axi4.sv`. Статус: xsim PASS (tb_timeout_abort), штатная регрессия 4/4.
+
+### [BUG-075] 1<<20 не влезал в 20-битный счётчик таймаута (моя ошибка)
+- Симптом: все результаты xsim нулевые (4/4 mismatch).
+- Причина: `RD/WR_TIMEOUT_LIMIT = 1<<20` при `logic [19:0]` -> сравнение `>= 0` истинно всегда, чтение абортилось немедленно.
+- Исправление: `1<<19`. Поймано регрессией `verify_tdot_axi4.py`.
+
+### [BUG-076] После срабатывания таймаута счётчики не обнулялись
+- Симптом: второй и последующие прогоны абортировались за 1 такт, ядро отдавало мусор.
+- Причина: в ветке срабатывания не сбрасывались `rd_to_cnt`/`wr_to_cnt`, из-за чего `ar_valid_r` больше не поднимался.
+- Исправление: сброс в ветке таймаута. Поймано аудитом (`AUDIT_CHANGES.md`) собственным TB.
+
+### [BUG-077] obs_smi читал байтовые смещения вместо слов
+- Симптом: ложный баннер `** TIMEOUT **`, в поле — DONE_CNT.
+- Причина: `rr(0x62)/rr(0x63)` вместо `0xF8/0xFC` (регистры адресуются словами).
+- Исправление: `scripts/obs_smi.py`.
+
+### [BUG-078] DP_WDOG_MAX не влезал в 20-битный счётчик (pre-existing)
+- Симптом: сторожевой сброс device_prog не срабатывал никогда.
+- Причина: `DP_WDOG_MAX = 1<<22` при `logic [19:0] dp_wdog_cnt`.
+- Исправление: счётчик расширен до `[21:0]`. Поведенческое изменение: watchdog теперь реально срабатывает.
+
+### Итог сессии 2026-10-22
+- Драйвер: 1.2.7.4 (oem194) — фикс таймаута + гонки cancel∩timeout + уровень логирования.
+- RTL: watchdog'и AXI, контроллерный abort, наблюдаемость (0x62/0x63), ширина DP_WDOG.
+- Эмуляция: `tb_timeout_abort` PASS; `verify_tdot_axi4` 4/4 совпадений.
+- Осталось: проверка драйвера после перезагрузки; проверка пути таймаута на железе; сборка/прошивка (команда в CHANGE_LOG_2026-10-22.md).
+- Подробности: docs/CHANGE_LOG_2026-10-22.md, docs/audit-hang-2026-10-21/, docs/audit-rerun-2026-10-21/, docs/audit-changes-2026-10-21/.

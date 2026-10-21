@@ -30,6 +30,10 @@ import time
 
 
 def main(argv=None):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(description="Monitor tdot OBS counters over PCIe")
     ap.add_argument("--num-mac", type=int, default=None,
                     help="NUM_MAC прошивки (16 или 32); по умолч. (None) авто-детект из CAPS")
@@ -105,11 +109,16 @@ def main(argv=None):
         return core.obs_read_shadow()
 
     def delta(cur, base):
-        """Прирост счётчиков кадра; <0 (после obs_clear) клампим в 0."""
+        """Прирост счётчиков кадра; <0 (после obs_clear) клампим в 0.
+
+        FIX 2026-10-21: счётчики — 32-битные; вычитание без маски даёт отрицательный
+        результат при обёртке (wrap-around) на длинных прогонах. Используем маску
+        0xFFFFFFFF, как obs_smi.d32; CYCLES 64-бит — без маски."""
         d = {}
+        M = 0xFFFFFFFF
         for k in ("busy", "mem", "load", "compute", "ar", "beat",
                   "ar_stall", "r_wait", "wr", "job", "fifo_full"):
-            d[k] = max(0, cur[k] - base[k])
+            d[k] = (cur[k] - base[k]) & M
         d["cycles"] = max(1, cur["cycles"] - base["cycles"])
         return d
 
@@ -127,6 +136,13 @@ def main(argv=None):
             # загрузка движка (опционально)
             if args.dot > 0:
                 core.obs_clear()
+                # FIX 2026-10-21: отсчёт базы СРАЗУ после obs_clear, до запуска
+                # нагрузки. Раньше base брался до цикла, поэтому на первом кадре
+                # delta = cur - base давала ~0 (все счётчики обнулены clear'ом
+                # между base и cur), а на последующих — разность двух загрузок,
+                # т.е. ложный «~0» вместо абсолютного вклада текущей нагрузки.
+                base = snapshot()
+                base_t = time.monotonic()
                 # пример: псевдо-данные 1.0 пары (TF48_ONE); dot-адреса переиспользуют DDR3
                 one = 0x001000000000  # TFloat48 1.0
                 pairs = [one] * args.dot

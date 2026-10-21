@@ -11,7 +11,7 @@
 # Optional args (via -tclargs):
 #   NUM_MAC=<16|32|64>   (default 32)
 #   ADDERS=<N>           (default 16)
-#   DEVPROG_EN=<0|1>     (default 0; 1 = программный режим device_prog поверх tdot)
+#   DEVPROG_EN=<0|1>     (default 1; 1 = программный режим device_prog поверх tdot)
 #   JOBS=<N>             (default 8)
 #   SKIP_SYNTH=1         (only create the project, no build)
 #
@@ -41,10 +41,11 @@ set ARTIFACTS_DIR "${ROOT}/build/artifacts_flat"
 
 set NUM_MAC     32
 set ADDERS      16
-set DEVPROG_EN  0
+set DEVPROG_EN  1
 # низкий параллелизм для машины с малым ОЗУ (было 8)
 set JOBS        4
-set_param general.maxThreads 4
+# maxThreads is applied later, AFTER -tclargs JOBS parsing below, so that a
+# passed JOBS really controls the synth/impl thread count (no hard =4 limit).
 set SKIP_SYNTH  0
 
 # ----------------------------------------------------------------------------
@@ -66,6 +67,30 @@ for {set _i 0} {$_i < $_nargs} {incr _i} {
         continue
     }
 }
+
+# ---------- maxThreads: honest parallelism (no hard 4-thread limit) ----------
+# maxThreads = min(JOBS, detected machine threads). A JOBS above the detected
+# core count is clamped down to the core count with a warning (running more
+# threads than physical cores yields no speedup; Vivado has no get_cpus, so we
+# read NUMBER_OF_PROCESSORS on Windows or /proc/cpuinfo on Linux).
+set _max_cores 1
+if {$tcl_platform(platform) eq "windows"} {
+    if {[info exists ::env(NUMBER_OF_PROCESSORS)] && ${::env(NUMBER_OF_PROCESSORS)} ne ""} {
+        set _max_cores ${::env(NUMBER_OF_PROCESSORS)}
+    }
+} else {
+    set _cpuinfo [open /proc/cpuinfo r]
+    set _nproc [regexp -all -line {^processor\s+:} [read ${_cpuinfo}]]
+    close ${_cpuinfo}
+    if {${_nproc} > 0} { set _max_cores ${_nproc} }
+}
+set _eff_jobs ${JOBS}
+if {${_eff_jobs} > ${_max_cores}} {
+    puts "WARNING: JOBS=${JOBS} exceeds detected cores (${_max_cores}); clamping maxThreads to ${_max_cores}"
+    set _eff_jobs ${_max_cores}
+}
+set_param general.maxThreads ${_eff_jobs}
+puts " MAXTHREADS : ${_eff_jobs} (JOBS=${JOBS}, detected cores=${_max_cores})"
 
 puts "============================================================"
 puts " BUILD_FLAT CONFIGURATION"

@@ -72,6 +72,7 @@ module device_prog #(
     output logic [ADDR_WIDTH-1:0]            table_addr,
     input  logic                             table_rvalid,
     input  logic [63:0]                      table_rdata,
+    input  logic                             desc_task_ready,  // интеграция приняла задачу (FIFO не полон)
     output logic                             done,
     output logic                             mailbox_wr_start,
     output logic [ADDR_WIDTH-1:0]            mailbox_wr_addr,
@@ -227,41 +228,52 @@ module device_prog #(
                     end
 
                     ST_EXEC: begin
-                        // одна задача GEMM на нейрон (без backpressure: интеграция
-                        // ставит FIFO/руку; здесь — ровно 1 задача/такт)
-                        desc_task_valid <= 1'b1;
-                        desc_task_a     <= input_base;
-                        desc_task_w     <= task_w;
-                        desc_task_r     <= task_r;
-                        desc_task_n     <= cur_n_in;
-                        desc_task_tag   <= cur_tag;
-
-                        if (neuron_cnt == (cur_n_out - 16'd1)) begin
-                            neuron_cnt <= 16'd0;
-                            if (pass_cnt == (cur_pass - 16'd1)) begin
-                                // ---- юнит завершён ----
-                                last_tag  <= cur_tag;
-                                prev_out  <= cur_out_addr[AW-1:0];
-                                pass_cnt  <= 16'd0;
-                                if (u_idx == (n_units - 16'd1)) begin
-                                    // программа закончилась -> mailbox (слово 0)
-                                    mailbox_wr_addr  <= mailbox_base;
-                                    mailbox_wr_data  <= {48'h0, 16'(cur_tag)};
-                                    mailbox_wr_start <= 1'b1;
-                                    state <= ST_MBOX1;
+                        // одна задача GEMM на нейрон С РУКОПОЖАТИЕМ: держим
+                        // desc_task_valid с текущим нейроном, пока интеграция не
+                        // примет задачу (desc_task_ready = FIFO не полон). Никаких
+                        // потерь при переполнении FIFO длинных программ: счётчик
+                        // нейрона/прохода НЕ наращивается и FSM НЕ продвигается,
+                        // пока задача не принята.
+                        if (desc_task_valid && desc_task_ready) begin
+                            // ---- задача принята: продвигаемся ----
+                            desc_task_valid <= 1'b0;
+                            if (neuron_cnt == (cur_n_out - 16'd1)) begin
+                                neuron_cnt <= 16'd0;
+                                if (pass_cnt == (cur_pass - 16'd1)) begin
+                                    // ---- юнит завершён ----
+                                    last_tag  <= cur_tag;
+                                    prev_out  <= cur_out_addr[AW-1:0];
+                                    pass_cnt  <= 16'd0;
+                                    if (u_idx == (n_units - 16'd1)) begin
+                                        // программа закончилась -> mailbox (слово 0)
+                                        mailbox_wr_addr  <= mailbox_base;
+                                        mailbox_wr_data  <= {48'h0, 16'(cur_tag)};
+                                        mailbox_wr_start <= 1'b1;
+                                        state <= ST_MBOX1;
+                                    end else begin
+                                        u_idx     <= u_idx + 16'd1;
+                                        fetch_cnt <= 2'd0;
+                                        state     <= ST_FETCH;
+                                    end
                                 end else begin
-                                    u_idx     <= u_idx + 16'd1;
-                                    fetch_cnt <= 2'd0;
-                                    state     <= ST_FETCH;
+                                    // следующий проход: feed-forward (вход = собственный выход)
+                                    pass_cnt   <= pass_cnt + 16'd1;
+                                    input_base <= cur_out_addr[AW-1:0];
                                 end
                             end else begin
-                                // следующий проход: feed-forward (вход = собственный выход)
-                                pass_cnt   <= pass_cnt + 16'd1;
-                                input_base <= cur_out_addr[AW-1:0];
+                                neuron_cnt <= neuron_cnt + 16'd1;
                             end
-                        end else begin
-                            neuron_cnt <= neuron_cnt + 16'd1;
+                        end else if (!desc_task_valid) begin
+                            // ---- ещё не представлена задача этого нейрона: выставить ----
+                            desc_task_valid <= 1'b1;
+                            desc_task_a     <= input_base;
+                            desc_task_w     <= task_w;
+                            desc_task_r     <= task_r;
+                            desc_task_n     <= cur_n_in;
+                            desc_task_tag   <= cur_tag;
                         end
+                        // иначе (desc_task_valid=1, ready=0): ждём освобождения FIFO —
+                        // valid и полезная нагрузка УЖЕ выставлены и держатся.
                     end
 
                     ST_MBOX1: begin

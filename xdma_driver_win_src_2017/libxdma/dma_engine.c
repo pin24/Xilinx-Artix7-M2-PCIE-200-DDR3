@@ -334,7 +334,7 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
     if (engine->engineLock) {
         WdfSpinLockAcquire(engine->engineLock);
         BOOLEAN already = engine->txnDone;
-        if (!already) engine->txnDone = TRUE;
+        if (!already) { engine->txnDone = TRUE; engine->txnTimeout = FALSE; }
         WdfSpinLockRelease(engine->engineLock);
         if (already) {
             TraceError(DBG_DMA, "%s_%u transfer already processed; skip duplicate",
@@ -1631,7 +1631,8 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG maxIteration
             engine->isReqPending = FALSE;
             owner = !engine->txnDone;
             if (owner) {
-                engine->txnDone = TRUE;   // poll-путь становится владельцем
+                engine->txnDone = TRUE;
+                engine->txnTimeout = TRUE;   // poll-owner will NOT complete   // poll-путь становится владельцем
             }
             WdfSpinLockRelease(engine->engineLock);
         } else {

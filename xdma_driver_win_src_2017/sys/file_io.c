@@ -699,6 +699,7 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
     if (engine->engineLock) {
         WdfSpinLockAcquire(engine->engineLock);
         engine->txnDone = FALSE;
+        engine->txnTimeout = FALSE;
         WdfSpinLockRelease(engine->engineLock);
     }
     TraceInfo(DBG_IO, "%s_%u writing %llu bytes to device",
@@ -803,8 +804,16 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
                 }
                 WdfSpinLockRelease(queue->engine->engineLock);
             }
+            // FIX-2026-10-21 (hang): do NOT bail out without completing.
+            // XDMA_EngineWaitCompletion claims ownership on timeout (txnDone=TRUE)
+            // and does NOT complete the request; a late DPC is blocked by the
+            // txnDone guard in EngineProcessTransfer. Previously this returned and
+            // left the request + sequential queue wedged forever.
             if (!owner) {
-                return;
+                // owner==FALSE is the NORMAL timeout path (the poll already claimed
+                // txnDone). Info level: TraceError flooded the log on every timeout.
+                TraceInfo(DBG_IO, "completion ownership already claimed; "
+                          "completing with %!STATUS! to avoid wedge", status);
             }
             EngineStop(queue->engine);
         }
@@ -836,6 +845,7 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
     if (engine->engineLock) {
         WdfSpinLockAcquire(engine->engineLock);
         engine->txnDone = FALSE;
+        engine->txnTimeout = FALSE;
         WdfSpinLockRelease(engine->engineLock);
     }
     TraceInfo(DBG_IO, "%s_%u reading %llu bytes from device",
@@ -921,8 +931,16 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
                 }
                 WdfSpinLockRelease(queue->engine->engineLock);
             }
+            // FIX-2026-10-21 (hang): do NOT bail out without completing.
+            // XDMA_EngineWaitCompletion claims ownership on timeout (txnDone=TRUE)
+            // and does NOT complete the request; a late DPC is blocked by the
+            // txnDone guard in EngineProcessTransfer. Previously this returned and
+            // left the request + sequential queue wedged forever.
             if (!owner) {
-                return;
+                // owner==FALSE is the NORMAL timeout path (the poll already claimed
+                // txnDone). Info level: TraceError flooded the log on every timeout.
+                TraceInfo(DBG_IO, "completion ownership already claimed; "
+                          "completing with %!STATUS! to avoid wedge", status);
             }
             EngineStop(queue->engine);
         }
@@ -994,19 +1012,29 @@ VOID EvtCancelDma(IN WDFREQUEST request) {
         WdfSpinLockRelease(engine->engineLock);
     }
 
+    // FIX 2026-10-22 (cancel<->timeout race): if the bounded poll claimed the
+    // transaction on TIMEOUT (txnTimeout), it returns on STATUS_CANCELLED and
+    // never completes. Without this branch both sides back off and the IRP
+    // hangs forever (sequential queue wedged).
+    BOOLEAN pollTimeout = FALSE;
+    if (engine->engineLock) {
+        WdfSpinLockAcquire(engine->engineLock);
+        pollTimeout = engine->txnTimeout;
+        WdfSpinLockRelease(engine->engineLock);
+    }
     NTSTATUS st = WdfRequestUnmarkCancelable(request);
-    if (st == STATUS_CANCELLED && !ownTxn) {
-        return; // another path owns the request and the transaction
+    if (st == STATUS_CANCELLED && !ownTxn && !pollTimeout) {
+        return; // DPC/other completer owns the request and the transaction
     }
 
-    if (ownTxn) {
+    if (ownTxn || pollTimeout) {
         EngineStop(engine);
     }
     if (st != STATUS_SUCCESS) {
         TraceError(DBG_IO, "WdfRequestUnmarkCancelable failed: %!STATUS!", st);
     }
 
-    if (ownTxn) {
+    if (ownTxn || pollTimeout) {
         NTSTATUS rst = WdfDmaTransactionRelease(engine->dmaTransaction);
         if (!NT_SUCCESS(rst)) {
             TraceError(DBG_IO, "WdfDmaTransactionRelease failed: %!STATUS!", rst);

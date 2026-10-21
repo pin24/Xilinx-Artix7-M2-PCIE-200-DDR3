@@ -11,14 +11,20 @@
   python scripts/obs_smi.py --interval 0.5
 Требуется прошивка с OBS (BUILD_ID >= 2a1ea150).
 """
-import argparse, sys, time
+import argparse, os, sys, time
 
-sys.path.insert(0, "pytorch_layer")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pytorch_layer"))
 
 def bar(pct, width=20, filled="#", empty="-"):
     pct = max(0.0, min(100.0, pct))
     n = int(round(pct / 100.0 * width))
     return filled * n + empty * (width - n)
+
+def yn(v, unk="n/a"):
+    """bool -> 'да'/'нет'; None -> unk (регистр недоступен)."""
+    if v is None:
+        return unk
+    return "да" if v else "нет"
 
 def d32(cur, prev):
     """Разность 32-битных счётчиков OBS с учётом переполнения (wrap-around)."""
@@ -46,6 +52,8 @@ def main(argv=None):
     ap.add_argument("--ddr-base", type=lambda s: int(s, 0), default=0x80000000)
     ap.add_argument("--dot", type=int, default=0, help="количество dot-задач на цикл для нагрузки")
     ap.add_argument("--interval", type=float, default=0.5, help="секунд между кадрами")
+    ap.add_argument("--once", action="store_true",
+                    help="один кадр и выход (не зацикливаться)")
     ap.add_argument("--clear", action="store_true",
                     help="обнулить накопленные счётчики OBS перед стартом (иначе показываются "
                          "кумулятивные значения с последнего clear)")
@@ -54,6 +62,9 @@ def main(argv=None):
                     help="непрерывный DMA-нагрузочный тест с блоком N МБ (write+read через h2c/c2h); "
                          "НАГРУЖАЕТ плату и показывает живую MB/s в реальном времени (0 = выкл). "
                          "Пример: --bench 8")
+    ap.add_argument("--ddr-check", action="store_true",
+                    help="быстрый readback-тест DDR3 (write+read+сверка 256 Б в стороне от "
+                         "данных ядра) на старте; результат в карте платы")
     args = ap.parse_args(argv)
 
     if sys.platform.startswith("win"):
@@ -83,6 +94,32 @@ def main(argv=None):
     # (Реальная скорость линка GT/s из user-mode недоступна; показываем только
     # фактическую скорость передачи DMA MB/s (за кадр) — без бесплатной строки PCIe.)
 
+    # ---- читалка регистров с защитой: недоступный регистр -> None (покажем n/a) ----
+    def rr(off):
+        try:
+            return core._reg_r(off)
+        except Exception:
+            return None
+
+    # ---- конфигурация ядра из CORE_PARAMS (0x64, compile-time, один раз) ----
+    try:
+        _cp = core._reg_r(0x64)            # {16'h0, ADDERS[7:0], NUM_MAC[7:0]}
+        hw_num_mac = _cp & 0xFF
+        hw_adders  = (_cp >> 8) & 0xFF
+    except Exception:
+        hw_num_mac = hw_adders = None
+    try:
+        regmap_v = int(core.read_caps().get("regmap_version") or 0)
+    except Exception:
+        regmap_v = None
+
+    # ---- XADC (переиспользуем XadcMonitor из monitor_temp, НЕ дублируем) ----
+    try:
+        from monitor_temp import XadcMonitor
+        xadc = XadcMonitor(dev=dev)
+    except Exception:
+        xadc = None
+
     one = 0x001000000000
     pairs = [one] * args.num_mac
 
@@ -91,6 +128,20 @@ def main(argv=None):
         core.obs_clear()
         print("  OBS-счётчики обнулены (--clear).")
     time.sleep(0.3)
+
+    # DDR3 readback-тест (опционально): write+read+сверка 256 Б в стороне от ядра.
+    # Не трогает счётчики ядра (DMA-канал h2c/c2h, не AXI ядра).
+    ddr_rd = None
+    if args.ddr_check:
+        try:
+            _off = 0x00FF_0000                       # scratch, в стороне от данных ядра
+            _buf = bytes((i & 255) for i in range(256))
+            core.dev.write_dma(_off, _buf)
+            ddr_rd = (core.dev.read_dma(_off, 256) == _buf)
+        except Exception:
+            ddr_rd = None
+        st = {True: "OK", False: "MISMATCH", None: "ERR"}.get(ddr_rd, "ERR")
+        print(f"  DDR3 readback (--ddr-check): {st}")
 
     # DMA-нагрузочный тест (опционально): блок N МБ write+read через h2c/c2h
     bench_nbytes = 0
@@ -159,8 +210,7 @@ def main(argv=None):
                 busy_p = mem_p = load_p = comp_p = ars_p = rwait_p = 0.0
                 dj = dar = dbeat = dwr = dfifo = 0
 
-            # ---- отрисовка кадра ----
-            # dt_real вычислен выше (между двумя чтениями счётчиков prev_t->cur_t)
+            # производные кадра (должны быть вычислены ДО карты платы, где они нужны)
             dt_safe = max(dt_real, 1e-9)             # защита: dt=0 не должен давать inf/деление на 0
             if dma_mb is not None:
                 dmamb = dma_mb                       # реальная скорость переноса (--bench)
@@ -169,6 +219,87 @@ def main(argv=None):
                 dmamb = dbeat * 8 / dt_safe / 1e6    # по прочитанным словам (ΔBEAT)
                 bw_label = "CORE RD (AXI, ядро из DDR3; не host-DMA)"
             job_s = (dj / dt_safe) if dj > 0 else 0.0
+
+            # ---- КАРТА ПЛАТЫ: живые состояния подсистем (доступные регистры) ----
+            # ping: среднее время чтения одного регистра (мкс) — «пинг платы».
+            # time.monotonic() на Windows даёт ~мбс-гранулярность, а одно чтение ~6 мкс;
+            # поэтому меряем perf_counter_ns по N чтениям.
+            _t = time.perf_counter_ns()
+            for _ in range(100):
+                core._reg_r(0x64)
+            reg_ns = (time.perf_counter_ns() - _t) / 100.0
+            reg_us = reg_ns / 1000.0
+            wptr = rr(0x44); rptr = rr(0x48)          # SCHED_WPTR/RPTR (10 бит, mod 1024)
+            if wptr is not None and rptr is not None:
+                occ = (wptr - rptr) & 0x3FF           # RING-1024: mod 1024
+                occ_pct = 100.0 * occ / 1024.0
+            else:
+                occ = occ_pct = None
+            st = rr(0x5C); done_cnt = rr(0x60)        # SCHED_STATUS / DONE_CNT
+            sched_busy = bool(st & 1) if st is not None else None
+            irq_pend   = bool(st & 2) if st is not None else None
+            dp = rr(0xE4)                             # DP_CTRL: bit0 active, [31:16] n_units
+            if dp is not None:
+                dp_active = bool(dp & 1)
+                dp_units  = (dp >> 16) & 0xFFFF
+            else:
+                dp_active = dp_units = None
+            # XADC (через XadcMonitor; BUG-031: valid=0 когда XADC занят MIG)
+            xt = xv = None; xa = None
+            if xadc is not None:
+                try:
+                    xa = xadc._read_status()          # bit0: valid (BUG-031 -> 0)
+                    if xa:
+                        xt = xadc.read_temperature()
+                        xv = xadc.read_vccint()
+                        # плусibility-фильтр: неразведённый XADC (0xFF...) даёт абсурд
+                        if not (-40.0 <= xt <= 150.0) or not (0.3 <= xv <= 2.5):
+                            xa = None; xt = xv = None   # мусор — трактуем как n/a
+                except Exception:
+                    xa = None
+            occ_s = ("n/a" if occ is None
+                     else f"{occ}/1024 ({occ_pct:.1f}%)")
+            _n = (lambda v: "n/a" if v is None else str(v))
+            dprog_raw = (
+                f"  DEVICE_PROG:     active={yn(dp_active)}  n_units={_n(dp_units)}\n"
+                f"                  dp_fifo fill = n/a  (dp_wrptr/dp_rdptr — внутренние "
+                f"RTL-сигналы, наружу не выведены; есть только событийный cnt_fifo_full)")
+            ddr_s = (f"AR(Δ)={dar:,d}  BEAT(Δ)={dbeat:,d}  WR(Δ)={dwr:,d}  "
+                     f"fifo_full(Δ)={dfifo:,d}  readback="
+                     f"{('OK' if ddr_rd else ('MISMATCH' if ddr_rd is False else 'n/a'))}")
+            if xa is None or xt is None:
+                xadc_s = ("n/a (XADC direct нерабочий — BUG-031: сенсор занят MIG/не разведён, "
+                          "чтение даёт мусор; реальная temp через MIG-GPIO2, docs/ADDRESS_MAP.md §7)")
+            elif xa == 0:
+                xadc_s = "n/a (XADC INVALID статус=0 — BUG-031: XADC занят MIG)"
+            else:
+                xadc_s = f"{xt:.1f} C  /  VCCINT={xv:.3f} V"
+            # AXI burst watchdogs (regs 0xF8/0xFC (word 0x62/0x63), added 2026-10-21)
+            try:
+                _rd_to = rr(0xF8); _wr_to = rr(0xFC)
+                to_s = f"rd={_rd_to} wr={_wr_to}"
+                if _rd_to or _wr_to:
+                    to_s += "  ** TIMEOUT **"
+            except Exception:
+                to_s = "n/a (firmware без регистров 0xF8/0xFC)"
+            bm = (f"  КАРТА ПЛАТЫ (все подсистемы, live):\n"
+                  f"  ЯДРО tdot:  NUM_MAC={_n(hw_num_mac)}  ADDERS={_n(hw_adders)}   "
+                  f"dots/s={job_s:.1f}   reg_ping={reg_us:.1f} мкс\n"
+                  f"  ФАЗЫ:      BUSY {busy_p:6.1f}%  MEM {mem_p:6.1f}%  "
+                  f"LOAD {load_p:6.1f}%  COMPUTE {comp_p:6.1f}%  "
+                  f"(от ΔCYCLES кадра; база {dt_real*1000:.0f} мс)\n"
+                  f"  БЭКПРЕШЕР: AR_STALL {ars_p:6.2f}%  R_WAIT {rwait_p:6.2f}%  WR(Δ)={dwr:,d}\n"
+                  f"  КОЛЬЦО:    RPTR={_n(rptr)}  WPTR={_n(wptr)}  occ={occ_s}  "
+                  f"busy={yn(sched_busy)}  irq={yn(irq_pend)}  done_cnt={_n(done_cnt)}\n"
+                  f"{dprog_raw}\n"
+                  f"  DDR3:      {ddr_s}\n"
+                  f"  AXI TO:     {to_s}\n"
+                  f"  XADC:      {xadc_s}\n"
+                  f"  СВЯЗЬ:     backend={type(dev).__name__}  reg-ping={reg_us:.1f} мкс  "
+                  f"REGMAP_v={_n(regmap_v)}\n")
+
+            # ---- отрисовка кадра ----
+            # dt_real вычислен выше (между двумя чтениями счётчиков prev_t->cur_t)
             s = (f"\x1b[2J\x1b[H"
                  f"  tdot OBS console  "
                  f"(BUILD_ID=0x{core.read_build_id():08X}  /  build {args.num_mac} MAC)  "
@@ -180,6 +311,8 @@ def main(argv=None):
                  f"  MEM      (память)    [{bar(mem_p)}] {mem_p:6.1f}%\n"
                  f"  LOAD     (загрузка)  [{bar(load_p)}] {load_p:6.1f}%\n"
                  f"  COMPUTE  (вычисления) [{bar(comp_p)}] {comp_p:6.1f}%\n"
+                 f"  {('-'*56)}\n"
+                 f"{bm}"
                  f"  {('-'*56)}\n"
                  f"  ТЕКУЩАЯ АКТИВНОСТЬ (Δ за кадр):\n"
                  f"  AR (чтение)=+{dar:,d}   BEAT (слова)=+{dbeat:,d}   "
@@ -195,6 +328,8 @@ def main(argv=None):
             sys.stdout.flush()
             prev = cur
             prev_t = cur_t
+            if args.once:
+                break
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\nОстановлено.")

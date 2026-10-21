@@ -37,12 +37,15 @@ CRIT_TEMP = 100.0
 
 
 class XadcMonitor:
-    def __init__(self, device: str = "xdma0"):
+    def __init__(self, device: str = "xdma0", dev=None):
         self._running = True
-        try:
-            self._dev = XdmaLinux(f"/dev/{device}")
-        except XdmaError:
-            self._dev = XdmaWindows()
+        if dev is not None:
+            self._dev = dev            # переиспользуем уже открытое устройство (obs_smi)
+        else:
+            try:
+                self._dev = XdmaLinux(f"/dev/{device}")
+            except XdmaError:
+                self._dev = XdmaWindows()
         self._base = XADC_BASE
 
     def _read16(self, off: int) -> int:
