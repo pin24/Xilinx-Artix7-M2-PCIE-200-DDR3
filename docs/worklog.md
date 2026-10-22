@@ -892,7 +892,6 @@ Stage Summary:
 - Осталось: reboot + проверка драйвера; путь таймаута на железе; сборка/прошивка прошивки.
 - Полный разбор: docs/CHANGE_LOG_2026-10-22.md.
 
-
 ## 2026-10-22 — Аудит «что сломалось после обновлений» (4 независимых ракурса)
 - Решающий тест 1.2.7.6 на чистом движке: probe OK, 64 Б OK, 512 КиБ h2c -> timeout, ручной BIT31-reset не восстановил, WHEA=0 (BUG-081).
 - Аудиты (read-only): драйвер 1.2.7.0->1.2.7.6; регистры/адресация/протоколы/совместимость; RTL/прошивка + xsim; постмортем изменений.
@@ -901,3 +900,28 @@ Stage Summary:
 - Новые дефекты: BUG-082 (гонка cancel∩timeout -> двойное завершение IRP, HIGH), BUG-083 (DP-watchdog 22 бита против 1<<22), BUG-084 (abort дропает completion -> тихая порча), BUG-085 (abort не чистит DP-FSM), BUG-086 (ValidateBarParams off-by-one), BUG-087 (actual>=expected по накопительному счётчику), BUG-088 (кольцо 256 vs 1024, OBS_REGMAP_V).
 - Проверено как исправное: регистры 0x00..0xE0 индекс-в-индекс, word/byte-адресация, база DDR3 0x80000000, BAR0 128 МБ, XDMA IP v4.2, формат SGDMA/completion, ширина и сброс RD/WR-таймаутов, verify_tdot_axi4 4/4, tb_timeout_abort PASS.
 - Отчёты: docs/audit-regress-2026-10-22/{SUMMARY, DRIVER_REGRESSION, REGS_ADDR_PROTOCOL, RTL_FIRMWARE, CHANGES_POSTMORTEM}.md.
+
+---
+Task ID: 2026-10-21-audit-sync-5
+Agent: Z.ai (сессия аудита)
+Task: аудит 5 новых коммитов origin/main (fdf6dad..6810130) — какие улучшения введены, поиск регрессий
+
+Work Log:
+- Синхронизация ff-only 2ec559a -> 6810130 (5 коммитов, 44 файла, +1168/-362).
+- Проверено по коду: драйвер v1.2.7.0 (D4: KeDelayExecutionThread 1 мс на PASSIVE с тем же ~10 с потолком, DISPATCH оставлен stall; D7: мёртвый стаб удалён; bump соблюдён в INX+build.cmd). Host: batch>1 через кольцо планировщика — packed-submit (1 DMA данные+веса + 1-2 DMA дескрипторы + doorbell), robust init stop->flush->WPTR=0->start (BUG-070), RLock на dot_batch, wait() терпим к перешагиванию RPTR, CH=250, run_dot_bits + X-конвертация 1 раз/чанк; Windows-путь через XdmaWinDma (\\.\XDMA0dma). Автодетект NUM_MAC из CORE_PARAMS (probe_firmware 0x40023000+0x64) в FpgaBackend/obs_smi/monitor_obs/train/infer. docs/ring-depth-2026-10-20.md — план 512/1024. Артефакты 32/2 подтверждены (WNS 0.276/WHS 0.030, сим 4/4 + T5 CS_ABORT_WAIT PASS), плата не перепрошивалась. Реестры BUG-070/071 на месте.
+- Замеры подтверждены: run_dot B=8000 = 1835 задач/с (0.54 мс/задача); обучение 2000x64 69.3->46.6 c; forward fpga vs cpu ~5e-7. Потолок — per-IOCTL ~15 мс (BUG-071, открыт).
+- СТАТИКА: pyslang main 0 новых ошибок (top xdma_ddr3_core_top OK); tb_rtl_vs_arith48.sv parse OK; py_compile 10 изменённых .py OK.
+- НАЙДЕНЫ РЕГРЕССИИ (потерянные апдейты в 893c605/7e53f50 — «leftover working-tree» затёр фиксы 261bbf0/75c35bb/2ec559a):
+  R1 FATAL: Makefile:31 `flat ?:= $(FLAT)` — make НЕ ПАРСИТСЯ («empty variable name», любой target падает); дисциплина «Makefile править только python» нарушена.
+  R2 BUG-069 откат (7e53f50): из build_flat.tcl удалён FATAL при кастомной конфигурации (NUM_MAC/ADDERS != 16/4) без подтверждения read-back — снова WARNING для всех; удалён unset stale matchVar (39-c F3.2) — риск ложного FATAL/hit от прошлой итерации.
+  R3 BUG-066 откат (893c605): close()/__del__ удалены из XdmaWinUpstream (живые пользователи: stress_platform.py, program_spi_flash.py) — утечка 4-5 хендлов вернулась.
+  R4 (893c605): xdma_driver.py:534 «\c» в обычной строке — SyntaxWarning вернулся (r-string фикс потерян).
+  R5 доки-откат (7e53f50): COMPATIBILITY.md снова «кастомный драйвер не обслуживает DMA-каналы» — противоречит стенд-тестам ЭТОГО ЖЕ пуша (плата 16/4 через XDMA0dma работает); README-задачи откат к эпохе v1.2.5; ADDRESS_MAP/REBUILD_INSTRUCTION/OBSERVABILITY — актуализации сняты, включая баннер «пересборка обязательна (CS_ABORT_WAIT)».
+  R6 (7e53f50): tb_rtl_vs_arith48.sv — моджибейк в 2 комментариях (CP1251, файл не-UTF8) + машинно-зависимые пути C:/A7_M2/... в $fopen.
+- Мелочи: README ссылается на v1.2.5 (драйвер уже 1.2.7.0); obs_smi/monitor_obs создают TdotCore с num_mac=32 ДО автодетекта (ядро после детекта не используется — некритично); автодетект в 6810130 функционально замещает E-7/BUG-065 WARN (расхождение флага с CAPS теперь громко+приоритет CAPS) — но WARN-логика из 261bbf0 формально потеряна.
+
+Stage Summary:
+- Улучшения реальные: вариант A из рекомендаций от 2026-10-21 (включение планировщика в продакшн-путь) реализован и измерен; драйвер v1.2.7.0; автодетект; кольцо проанализировано до 1024.
+- НО 893c605/7e53f50 затёрли часть фиксов BUG-065/066/069 и актуализаций доков — нужен восстановительный коммит: Makefile:31 (make сломан — блокер), build_flat.tcl (BUG-069+F3.2), close()/__del__ + r-string (BUG-066), COMPATIBILITY/README/ADDRESS_MAP/REBUILD/OBSERVABILITY, моджибейк TB.
+- RTL-ядро не менялось — текущий битстрим валиден; 32/2 артефакты готовы к рефлешу (по команде владельца).
+- Пуш восстановительного коммита — по явной команде владельца.
