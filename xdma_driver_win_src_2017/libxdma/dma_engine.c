@@ -819,7 +819,7 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
     // CHANNEL-RESET 2026-10-22: авто-сброс канала на таймауте включён по умолчанию
     // (un-wedge h2c BUSY после крупной записи). Офф можно переключить через
     // IOCTL_XDMA_CHANNEL_RESET (XDMA_CHANNEL_RESET_FLAG_AUTO_OFF).
-    engine->channelResetOnTimeout = TRUE;
+    engine->channelResetOnTimeout = FALSE;   // default OFF (BIT31 reserved per PG195 v4.1); enable ONLY via IOCTL/soft_reset_h2c after hw validation
     status = WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &engine->engineLock);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "EngineCreate: WdfSpinLockCreate failed: %!STATUS!", status);
