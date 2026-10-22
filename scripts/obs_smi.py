@@ -260,13 +260,6 @@ def main(argv=None):
             occ_s = ("n/a" if occ is None
                      else f"{occ}/1024 ({occ_pct:.1f}%)")
             _n = (lambda v: "n/a" if v is None else str(v))
-            dprog_raw = (
-                f"  DEVICE_PROG:     active={yn(dp_active)}  n_units={_n(dp_units)}\n"
-                f"                  dp_fifo fill = n/a  (dp_wrptr/dp_rdptr — внутренние "
-                f"RTL-сигналы, наружу не выведены; есть только событийный cnt_fifo_full)")
-            ddr_s = (f"AR(Δ)={dar:,d}  BEAT(Δ)={dbeat:,d}  WR(Δ)={dwr:,d}  "
-                     f"fifo_full(Δ)={dfifo:,d}  readback="
-                     f"{('OK' if ddr_rd else ('MISMATCH' if ddr_rd is False else 'n/a'))}")
             if xa is None or xt is None:
                 xadc_s = ("n/a (XADC direct нерабочий — BUG-031: сенсор занят MIG/не разведён, "
                           "чтение даёт мусор; реальная temp через MIG-GPIO2, docs/ADDRESS_MAP.md §7)")
@@ -282,48 +275,49 @@ def main(argv=None):
                     to_s += "  ** TIMEOUT **"
             except Exception:
                 to_s = "n/a (firmware без регистров 0xF8/0xFC)"
-            bm = (f"  КАРТА ПЛАТЫ (все подсистемы, live):\n"
-                  f"  ЯДРО tdot:  NUM_MAC={_n(hw_num_mac)}  ADDERS={_n(hw_adders)}   "
-                  f"dots/s={job_s:.1f}   reg_ping={reg_us:.1f} мкс\n"
-                  f"  ФАЗЫ:      BUSY {busy_p:6.1f}%  MEM {mem_p:6.1f}%  "
-                  f"LOAD {load_p:6.1f}%  COMPUTE {comp_p:6.1f}%  "
-                  f"(от ΔCYCLES кадра; база {dt_real*1000:.0f} мс)\n"
-                  f"  БЭКПРЕШЕР: AR_STALL {ars_p:6.2f}%  R_WAIT {rwait_p:6.2f}%  WR(Δ)={dwr:,d}\n"
-                  f"  КОЛЬЦО:    RPTR={_n(rptr)}  WPTR={_n(wptr)}  occ={occ_s}  "
-                  f"busy={yn(sched_busy)}  irq={yn(irq_pend)}  done_cnt={_n(done_cnt)}\n"
-                  f"{dprog_raw}\n"
-                  f"  DDR3:      {ddr_s}\n"
-                  f"  AXI TO:     {to_s}\n"
-                  f"  XADC:      {xadc_s}\n"
-                  f"  СВЯЗЬ:     backend={type(dev).__name__}  reg-ping={reg_us:.1f} мкс  "
-                  f"REGMAP_v={_n(regmap_v)}\n")
 
             # ---- отрисовка кадра ----
             # dt_real вычислен выше (между двумя чтениями счётчиков prev_t->cur_t)
             s = (f"\x1b[2J\x1b[H"
-                 f"  tdot OBS console  "
-                 f"(BUILD_ID=0x{core.read_build_id():08X}  /  build {args.num_mac} MAC)  "
-                 f"[flat, live]   Ctrl+C для выхода\n"
-                 f"  {('-'*56)}\n"
-                 f"  CYCLES (такты)  {cur['cycles']:>14,d}   кадр {dt_real*1000:.0f} мс\n"
-                 f"  ФАЗЫ (за кадр):\n"
-                 f"  BUSY     (занятость) [{bar(busy_p)}] {busy_p:6.1f}%   JOB/s={job_s:8.1f}\n"
-                 f"  MEM      (память)    [{bar(mem_p)}] {mem_p:6.1f}%\n"
-                 f"  LOAD     (загрузка)  [{bar(load_p)}] {load_p:6.1f}%\n"
-                 f"  COMPUTE  (вычисления) [{bar(comp_p)}] {comp_p:6.1f}%\n"
-                 f"  {('-'*56)}\n"
-                 f"{bm}"
-                 f"  {('-'*56)}\n"
-                 f"  ТЕКУЩАЯ АКТИВНОСТЬ (Δ за кадр):\n"
-                 f"  AR (чтение)=+{dar:,d}   BEAT (слова)=+{dbeat:,d}   "
-                 f"WR (запись)=+{dwr:,d}   JOB (задачи)=+{dj:,d}\n"
-                 f"  {bw_label} = {dmamb:8.1f} MB/s\n"
-                 f"  AR_STALL (бэкпрешер)={ars_p:.3f}%   R_WAIT (латентность/дыры)={rwait_p:.3f}%\n"
-                 f"  FIFO_FULL (Δ)=+{dfifo:,d}  (база ~2-4/проход при n=NUM_MAC; рост = деградация)\n"
-                 f"  {('-'*56)}\n"
-                 f"  КУМУЛЯТИВНО (с --clear): AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  "
-                 f"WR={cur['wr']:,d}  JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"
-                 f"  {('-'*56)}\n")
+                 f"  ============================================\n"
+                 f"    tdot OBS console  (BUILD_ID=0x{core.read_build_id():08X}"
+                 f"  /  build {args.num_mac} MAC)  [flat, live]   Ctrl+C — выход\n"
+                 f"  ============================================\n"
+                 f"  [ ФАЗЫ ]     за кадр, база {dt_real*1000:.0f} мс\n"
+                 f"    BUSY      [{bar(busy_p)}] {busy_p:6.1f} %   JOB/s={job_s:8.1f}\n"
+                 f"    MEM       [{bar(mem_p)}] {mem_p:6.1f} %\n"
+                 f"    LOAD      [{bar(load_p)}] {load_p:6.1f} %\n"
+                 f"    COMPUTE   [{bar(comp_p)}] {comp_p:6.1f} %\n"
+                 f"    CYCLES    {cur['cycles']:>14,d}   (Δt кадра {dt_real*1000:.0f} мс)\n"
+                 f"  --------------------------------------------\n"
+                 f"  [ КОЛЬЦО / ПЛАНИРОВЩИК ]\n"
+                 f"    RPTR={_n(rptr)}  WPTR={_n(wptr)}  occupy={occ_s}  "
+                 f"done_cnt={_n(done_cnt)}\n"
+                 f"    sched_busy={yn(sched_busy)}  irq_pend={yn(irq_pend)}\n"
+                 f"  --------------------------------------------\n"
+                 f"  [ DDR3 / AXI ]         Δ за кадр\n"
+                 f"    AR=+{dar:,d}   BEAT=+{dbeat:,d}   WR=+{dwr:,d}   fifo_full=+{dfifo:,d}\n"
+                 f"    AR_STALL={ars_p:.3f} %   R_WAIT={rwait_p:.3f} %\n"
+                 f"    readback={'OK' if ddr_rd else ('MISMATCH' if ddr_rd is False else 'n/a')}    "
+                 f"AXI timeout: {to_s}\n"
+                 f"  --------------------------------------------\n"
+                 f"  [ DEVICE_PROG ]\n"
+                 f"    active={yn(dp_active)}  n_units={_n(dp_units)}\n"
+                 f"  --------------------------------------------\n"
+                 f"  [ XADC / СВЯЗЬ ]\n"
+                 f"    XADC: {xadc_s}\n"
+                 f"    backend={type(dev).__name__}   reg-ping={reg_us:.1f} мкс   "
+                 f"REGMAP_v={_n(regmap_v)}\n"
+                 f"  --------------------------------------------\n"
+                 f"  [ АКТИВНОСТЬ ]         Δ за кадр\n"
+                 f"    AR=+{dar:,d}  BEAT=+{dbeat:,d}  WR=+{dwr:,d}  JOB=+{dj:,d}  "
+                 f"FIFO_FULL=+{dfifo:,d}\n"
+                 f"    {bw_label} = {dmamb:8.1f} MB/s\n"
+                 f"  --------------------------------------------\n"
+                 f"  [ КУМУЛЯТИВНО ]        полные счётчики (сброс: --clear)\n"
+                 f"    AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  WR={cur['wr']:,d}  "
+                 f"JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"
+                 f"  ============================================\n")
             sys.stdout.write(s)
             sys.stdout.flush()
             prev = cur
