@@ -1019,3 +1019,11 @@ Stage Summary:
   - НО большой батч длинных dot стопорится: samples=2000/batch=2000 → `xdma_driver.XdmaError: запрошено 250, готово 1` (host collect timeout; НЕ аппаратный клин, плата жива). batch=128 (n=512) работает; порог ~≥192-250. → BUG-090.
   - На samples=1024/batch=128/n=512: FPGA 9 эпох/33.6 с; CPU **154 032 эпохи/30 с** — CPU всё равно впереди.
   - Вывод: пока есть ~15 мс/IOCTL floor + Python-packing, FPGA overhead-bound, а numpy-BLAS memory-bound и быстрее; реальный выигрыш FPGA требует убрать host-round-trip на батч (write_dma_pipe/pipelining) или weights-stationary-поток.
+
+## 2026-10-22 (ночь) — device_prog на железе (32/16, DEVPROG_EN=1): подтверждено
+- **DEVPROG_EN=1 подтверждён**: после GO device_prog активируется (DP_CTRL active=1).
+- **BUG-085 abort-диагностика живая**: при сбое `DP_STAT stall_code=0xAB01` (мой код abort), источник = RD-timeout (0xF8=2, 0xFC=0).
+- **Ранний таймаут device_prog_run = устаревшая temp-фикстура** (`C:\Temp\gigatool\hw_check\gen_dprog_fixture.py`): в W2 `n_in` лежал в младших битах, а RTL device_prog декодит `cur_n_in = uw[2][63:48]` → n=0 → зависание чтения → abort. Исправлено: `W2 = (N & 0xFFFF) << 48`.
+- **После фикса фикстуры device_prog end-to-end ОК на железе**: `device_prog_run.py` (n_units=1, n_in=4, out=0xA00000) → completion, статус mailbox=0, результат **бит-в-бит** = expected (0.5): gen `expected_bits=0x021555555555`, плата `hex=5555555515020000` LE = 0x00021555555555 → совпадает.
+- Итог: фикс BUG-083/084/085 верифицирован на железе (abort-диагностика + нормальное завершение device_prog с корректным результатом). Не-DP пути на 32/16 стабильны (канарийка, ring 1024/2175 задач/с, DMA 4К/512К match).
+- прим.: `ADDERS=0` в выводе device_prog_run — маскировка скрипта (`cp&0x0F` от 0x10), плата реально 32/16.
