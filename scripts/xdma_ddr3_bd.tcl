@@ -497,6 +497,11 @@ proc create_root_design { parentCell } {
     CONFIG.NUM_MI {2} \
   ] $xdma_axi_smc
 
+  # FIX-1bis (BUG-089, 2026-10-22): CDC 125->100 вынесен из SmartConnect наружу
+  # в выделенный axi_clock_converter (AR# 66780, комьюнити-фикс «потерянного
+  # write-response»). XDMA остаётся на 125 МГц.
+  set axi_clock_converter_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:2.1 axi_clock_converter_0 ]
+
   # AXI-Lite crossbar: host M_AXI_LITE -> GPIO / mm2s ctrl / s2mm ctrl / tdot / xadc
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
   set_property -dict [list \
@@ -600,7 +605,8 @@ proc create_root_design { parentCell } {
   connect_bd_intf_net -intf_net axi_datamover_1_M_AXI_S2MM [get_bd_intf_pins axi_datamover_1/M_AXI_S2MM] [get_bd_intf_pins xdma_axi_smc/S02_AXI]
   connect_bd_intf_net -intf_net tdot_m_port_S02 [get_bd_intf_pins xdma_axi_smc/S03_AXI] $tdot_m_port
 
-  connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
+  connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
+  connect_bd_intf_net -intf_net xdma_axi_smc_M00_conv [get_bd_intf_pins axi_clock_converter_0/M_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
   connect_bd_intf_net -intf_net xdma_axi_smc_M01_AXI [get_bd_intf_pins xdma_axi_smc/M01_AXI] [get_bd_intf_pins diag_bram_ctrl/S_AXI]
 
   # AXI-Lite masters
@@ -662,6 +668,12 @@ proc create_root_design { parentCell } {
   connect_bd_net -net mig_7series_0_ui_clk [get_bd_pins mig_7series_0/ui_clk] \
   [get_bd_pins rst_mig_7series_0_100M/slowest_sync_clk] \
   [get_bd_pins xdma_axi_smc/aclk1]
+
+  # FIX-1bis: клоки/сбросы axi_clock_converter (SCLK=125 fabric, MCLK=100 MIG)
+  connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins axi_clock_converter_0/s_axi_aclk]
+  connect_bd_net -net mig_7series_0_ui_clk [get_bd_pins axi_clock_converter_0/m_axi_aclk]
+  connect_bd_net -net rst_core_125M_peripheral_aresetn [get_bd_pins axi_clock_converter_0/s_axi_aresetn]
+  connect_bd_net -net rst_mig_7series_0_100M_peripheral_aresetn [get_bd_pins axi_clock_converter_0/m_axi_aresetn]
 
   connect_bd_net -net mig_7series_0_ui_clk_sync_rst [get_bd_pins mig_7series_0/ui_clk_sync_rst] \
   [get_bd_pins rst_mig_7series_0_100M/ext_reset_in]
