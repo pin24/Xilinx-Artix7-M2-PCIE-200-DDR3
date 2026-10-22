@@ -943,3 +943,18 @@ Stage Summary:
 - Важно: devprog требует пересборки с DEVPROG_EN=1; текущий битстрим платы = DEVPROG_EN=0+кольцо 256; host адаптивен, совместим с обеими прошивками.
 - Из LiteX перенести (без фреймворка): генератор рег-карты (устраняет класс R5), EventManager-схему IRQ (чистая версия плана B), DONE_CNT-монотонность в wait(), коалесинг IRQ в дескрипторе, BIST-замер полосы. Оценки и file:line — в отчёте сессии.
 - Восстановительный коммит R4/R5-остат/R6 по-прежнему ждёт команды владельца.
+
+---
+Task ID: 2026-10-22-h2c-wedge
+Agent: Z.ai (read-only аудит первопричины)
+Task: первопричина зависания h2c при большом объёме (500 КБ) на 1.2.7.4 — read-only анализ, отчёт в docs/audit-h2c-wedge-2026-10-22/
+
+Work Log:
+- Синхронизация до da4fb04 (6 коммитов: BUG-072/073 фиксы 1.2.7.4, BUG-079, watchdog'и RTL, GLOBAL_RETIMING, pipe-DMA). Полностью прочитаны dma_engine.c (1717 строк)/dma_engine.h/reg.h/file_io.c/dma_driver.c/device.c/xdma_ddr3_bd.tcl/ring_check.py; перепроверены факты C1-C15 из audit-rerun-2026-10-21.
+- Ответы на 6 вопросов: (Q1) 500 КБ = ~125 дескрипторов (4КБ MDL-страницы, XDMA_DESC_MAX_BYTES=8192), банк 2049 с 8x запасом, clamp недостижим; (Q2) 500 КБ = ровно 1 WDF-пакет (enabler 8 МБ device.c:312, SetMaximumLength file_io.c:724), multi-packet не участвует; (Q3) критерий hwDone && cdc>=expected на НАКОПИТЕЛЬНОМ cdc (C12) — при BUSY-залипании честный 10с-таймаут, ПО-путь после BUG-072/073 чист; (Q4) XDMA_CTRL_RST (reg.h:74) определён, ни разу не пишется, PG195 v4.1 31:28=Reserved — программного сброса НЕТ; (Q5) S00 общий у h2c/c2h, живой c2h => локус = h2c-движок или write-канал AW/W/B (SC-CDC 125->100 или MIG write-FSM); (Q6) выравнивание не дискриминатор (warning-only).
+- Таблица 10 гипотез с вердиктами: HIGH — нет сброса (H1) + локус h2c/write-канал (H2); MED-HIGH — ROF/CplD-flood root port 8086:7f3c (H3) + nextAdj=0 усилитель (H6); MED — AW/W/B клин (H4), тайминг-маржа WNS 0.085 до retiming (H5); LOW — multi-packet, alignment, килл-процесса; H-лат — накопительный cdc критерий (риск ложного успеха, починить по ДЕЛЬТЕ).
+- Read-only проверки следующего шага: probe_engine_regs.py (status 0x40 RO, cdc, perf-счётчики), WHEA/AER-лог по меткам клина; deferred (нужна запись) — дискриминаторы MIG vs движок.
+
+Stage Summary:
+- Главный ответ: объём = длина цепочки (125 последовательных раундов фетч+данные+B при отключённом prefetch) x плотность CplD-flood; один сбой любого раунда = вечный BUSY; у движка нет таймаута, у драйвера нет подтверждённого сброса => только PERST#/power-cycle.
+- Отчёт: docs/audit-h2c-wedge-2026-10-22/REPORT.md (нужна ли заливка в git — по команде владельца; production-файлы не менялись).
