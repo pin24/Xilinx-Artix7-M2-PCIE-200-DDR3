@@ -669,6 +669,58 @@ VOID EvtIoDeviceControl(IN WDFQUEUE Queue, IN WDFREQUEST request, IN size_t Outp
         }
         break;
     }
+    // CHANNEL-RESET 2026-10-22 (BUG hang: большая h2c-запись завешивает движок,
+    // BUSY остаётся, следующий перенос виснет до power-cycle). API для хоста:
+    //   - XDMA_CHANNEL_RESET_FLAG_NOW    -> немедленный аппаратный сброс канала
+    //     (XDMA_EngineResetChannel). Полезен для восстановления ПОСЛЕ того, как
+    //     host-сторона сама поймала таймаут. Вызывается на DMA-узле (h2c_0/c2h_0),
+    //     т.е. queue->engine задан.
+    //   - XDMA_CHANNEL_RESET_FLAG_AUTO_ON/OFF -> включить/выключить авто-сброс
+    //     на таймауте (engine->channelResetOnTimeout, по умолчанию TRUE).
+    // Сброс выполняется БЕЗ захвата транзакции: в момент IOCTL активного
+    // переноса нет (host зовёт его вне write_dma/read_dma или после их
+    // исключения), поэтому EngineProcessTransfer/DPC не конкурируют.
+    case IOCTL_XDMA_CHANNEL_RESET:
+    {
+        TraceInfo(DBG_IO, "%s_%u IOCTL_XDMA_CHANNEL_RESET",
+                  queue->engine->dir == H2C ? "H2C" : "C2H", queue->engine->channel);
+        XDMA_CHANNEL_RESET in = { 0 };
+        size_t inLen = 0;
+        status = WdfRequestRetrieveInputBuffer(request, sizeof(in),
+                                               (PVOID*)&in, &inLen);
+        if (!NT_SUCCESS(status)) {
+            break; // exit: завершит единожды
+        }
+        if (inLen < sizeof(in)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break; // exit: завершит единожды
+        }
+        if (in.Flags & XDMA_CHANNEL_RESET_FLAG_AUTO_ON) {
+            if (queue->engine->engineLock) {
+                WdfSpinLockAcquire(queue->engine->engineLock);
+                queue->engine->channelResetOnTimeout = TRUE;
+                WdfSpinLockRelease(queue->engine->engineLock);
+            }
+        }
+        if (in.Flags & XDMA_CHANNEL_RESET_FLAG_AUTO_OFF) {
+            if (queue->engine->engineLock) {
+                WdfSpinLockAcquire(queue->engine->engineLock);
+                queue->engine->channelResetOnTimeout = FALSE;
+                WdfSpinLockRelease(queue->engine->engineLock);
+            }
+        }
+        if (in.Flags & XDMA_CHANNEL_RESET_FLAG_NOW) {
+            status = XDMA_EngineResetChannel(queue->engine);
+        } else {
+            status = STATUS_SUCCESS;
+        }
+        if (NT_SUCCESS(status)) {
+            // буферизованный IOCTL: на SUCCESS завершаем request здесь (exit: 
+            // завершает только при !NT_SUCCESS(status), иначе запрос повис).
+            WdfRequestComplete(request, STATUS_SUCCESS);
+        }
+        break; // при !NT_SUCCESS(status) exit: завершит единожды
+    }
     default:
         TraceError(DBG_IO, "Unknown IOCTL code!");
         status = STATUS_NOT_SUPPORTED;
@@ -817,6 +869,18 @@ VOID EvtIoWriteDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length
             }
             EngineStop(queue->engine);
         }
+        // CHANNEL-RESET 2026-10-22 (BUG hang): EngineStop выше гасит RUN, но НЕ
+        // снимает BUSY в status регистре залипшего движка (h2c после крупной
+        // записи). Без полноценного сброса канала следующий перенос стартует
+        // BUSY и снова виснет до power-cycle. Здесь мы владелец (txnDone
+        // захвачен CAS выше; DPC/ISR заблокирован txnDone-гардом
+        // EngineProcessTransfer), поэтому безопасен полный сброс канала.
+        // Порядок таймаут-ветки: EngineStop -> (канал сброс) -> UnmarkCancelable
+        // -> Release -> Complete. Сброс не трогает WDF-объекты — безопасен до
+        // Release. Управляется engine->channelResetOnTimeout (по умолчанию TRUE).
+        if (queue->engine->channelResetOnTimeout) {
+            XDMA_EngineResetChannel(queue->engine);
+        }
         NTSTATUS uc = WdfRequestUnmarkCancelable(Request);
         if (uc == STATUS_CANCELLED) {
             return; // cancel-путь завершит request (не освобождаем повторно)
@@ -943,6 +1007,18 @@ VOID EvtIoReadDma(IN WDFQUEUE wdfQueue, IN WDFREQUEST Request, IN size_t length)
                           "completing with %!STATUS! to avoid wedge", status);
             }
             EngineStop(queue->engine);
+        }
+        // CHANNEL-RESET 2026-10-22 (BUG hang): EngineStop выше гасит RUN, но НЕ
+        // снимает BUSY в status регистре залипшего движка (h2c после крупной
+        // записи). Без полноценного сброса канала следующий перенос стартует
+        // BUSY и снова виснет до power-cycle. Здесь мы владелец (txnDone
+        // захвачен CAS выше; DPC/ISR заблокирован txnDone-гардом
+        // EngineProcessTransfer), поэтому безопасен полный сброс канала.
+        // Порядок таймаут-ветки: EngineStop -> (канал сброс) -> UnmarkCancelable
+        // -> Release -> Complete. Сброс не трогает WDF-объекты — безопасен до
+        // Release. Управляется engine->channelResetOnTimeout (по умолчанию TRUE).
+        if (queue->engine->channelResetOnTimeout) {
+            XDMA_EngineResetChannel(queue->engine);
         }
         NTSTATUS uc = WdfRequestUnmarkCancelable(Request);
         if (uc == STATUS_CANCELLED) {

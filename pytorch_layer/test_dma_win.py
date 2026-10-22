@@ -54,6 +54,22 @@ FILE_FLAG_OVERLAPPED = 0x40000000
 ERROR_IO_PENDING = 997
 INVALID_HANDLE = ctypes.c_void_p(-1).value
 
+# ---- CHANNEL-RESET 2026-10-22: IOCTL_XDMA_CHANNEL_RESET (inc/xdma_public.h) ----
+FILE_DEVICE_UNKNOWN = 0x22
+METHOD_BUFFERED = 0
+FILE_ANY_ACCESS = 0
+
+
+def _ctl_code(device_type, function, method, access):
+    """CTL_CODE from inc/xdma_public.h: (dev<<16)|(acc<<14)|(fn<<2)|method."""
+    return (device_type << 16) | (access << 14) | (function << 2) | method
+
+
+IOCTL_CHANNEL_RESET = _ctl_code(FILE_DEVICE_UNKNOWN, 0x7, METHOD_BUFFERED, FILE_ANY_ACCESS)  # = 0x22001C
+CHANNEL_RESET_NOW = 0x00000001      # XDMA_CHANNEL_RESET_FLAG_NOW
+CHANNEL_RESET_AUTO_ON = 0x00000002  # XDMA_CHANNEL_RESET_FLAG_AUTO_ON
+CHANNEL_RESET_AUTO_OFF = 0x00000004  # XDMA_CHANNEL_RESET_FLAG_AUTO_OFF
+
 
 class XdmaWinDma(XdmaDevice):
     """Windows DMA backend for the new driver (\\\\.\\XDMA0dma, per-node).
@@ -245,6 +261,38 @@ class XdmaWinDma(XdmaDevice):
             out += self._xfer(self._c2h, False, ddr_off + off, b"", chunk)
             off += chunk
         return bytes(out)
+
+    # ---------------- CHANNEL-RESET 2026-10-22 -------------------------------
+    # Безопасный сброс h2c-канала (IOCTL_XDMA_CHANNEL_RESET). Драйвер сам
+    # сбрасывает канал в таймаут-ветке (channelResetOnTimeout, по умолчанию
+    # TRUE), поэтому НЕ выполняется на железе сейчас (запись запрещена) — это
+    # отдельный ручной fallback, когда host сам перехватил таймаут и хочет
+    # разблокировать движок БЕЗ power-cycle. read-only по отношению к железу:
+    # сам хост регистры не пишет, всю аппаратную работу делает драйвер.
+    def _ioctl_channel_reset(self, flags):
+        if self._h2c is None:
+            raise XdmaError("h2c channel handle is None (driver node not open)")
+        inbuf = (self._c.c_ulong * 1)(flags & 0xFFFFFFFF)
+        done = self._c.wintypes.DWORD(0)
+        ok = self._k32.DeviceIoControl(
+            self._h2c, IOCTL_CHANNEL_RESET,
+            inbuf, 4, None, 0,
+            self._c.byref(done), None)
+        if not ok:
+            raise XdmaError(
+                f"IOCTL_XDMA_CHANNEL_RESET(flags=0x{flags:X}) failed: "
+                f"WinError {self._c.get_last_error()}")
+        return done.value
+
+    def soft_reset_h2c(self, auto_on=None):
+        """Сбросить h2c-канал. auto_on=True/False меняют политику авто-сброса
+        драйвера на таймауте; None оставляет политику без изменений."""
+        flags = CHANNEL_RESET_NOW
+        if auto_on is True:
+            flags |= CHANNEL_RESET_AUTO_ON
+        elif auto_on is False:
+            flags |= CHANNEL_RESET_AUTO_OFF
+        return self._ioctl_channel_reset(flags)
 
     # ---------------- pipelined double-buffered DMA (OPT-IN) -----------------
     # Default write_dma/read_dma stay SEQUENTIAL (chunk-by-chunk, shared _ev).

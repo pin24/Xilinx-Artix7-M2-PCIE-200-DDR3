@@ -36,6 +36,16 @@
 #define XDMA_WB_COUNT_MASK      (0x00ffffffUL)
 #define XDMA_WB_ERR_MASK        (BIT_N(31))
 
+// CHANNEL-RESET 2026-10-22: по умолчанию XDMA_EngineResetChannel выполняет
+// АППАРАТНЫЙ канальный reset через XDMA_CTRL_RST (BIT31 control) — единственный
+// документированный путь выбить BUSY из застрявшего write-FSM h2c-движка
+// (см. AUDIT_H2C_WEDGE.md §2.4/H3: soft-idle=EngineStop+read-clear НЕ помогает,
+// ошибка на границе PCIe→AXI/SMC; рекомендован именно bit31). Для A/B на стенде
+// можно собрать с -DXDMA_CHANNEL_RESET_HW_BIT=0, чтобы сравнить с soft-путью.
+#ifndef XDMA_CHANNEL_RESET_HW_BIT
+#define XDMA_CHANNEL_RESET_HW_BIT 1
+#endif
+
 // ========================= static function declarations =========================================
 
 static UINT32 EngineStatus(IN XDMA_ENGINE *engine, IN BOOLEAN clear);
@@ -806,6 +816,10 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
     // spurious-irq protection (mirrors official Xilinx driver)
     engine->isReqPending = FALSE;
     engine->txnDone = FALSE;   // FIX 2026-10-15 (BSOD 0x10D): явная инициализация
+    // CHANNEL-RESET 2026-10-22: авто-сброс канала на таймауте включён по умолчанию
+    // (un-wedge h2c BUSY после крупной записи). Офф можно переключить через
+    // IOCTL_XDMA_CHANNEL_RESET (XDMA_CHANNEL_RESET_FLAG_AUTO_OFF).
+    engine->channelResetOnTimeout = TRUE;
     status = WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &engine->engineLock);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "EngineCreate: WdfSpinLockCreate failed: %!STATUS!", status);
@@ -1180,6 +1194,85 @@ void XDMA_EngineResetIdle(IN XDMA_ENGINE *engine) {
     TraceInfo(DBG_DMA, "%s_%u reset idle (firstDesc rearmed, control=0x%08x, status=0x%08x)",
               DirectionToString(engine->dir), engine->channel,
               engine->regs->control, engine->regs->status);
+}
+
+// CHANNEL-RESET 2026-10-22 (BUG hang: большая h2c-запись завешивает движок).
+// Полный целевой сброс ОДНОГО канала, чтобы разблокировать залипший BUSY и
+// дать следующему переносу стартовать с чистого idle БЕЗ power-cycle.
+//
+// Аппаратный канальный reset — ОСНОВНОЙ механизм (AUDIT_H2C_WEDGE.md §2.4/H3):
+// мягкий idle (EngineStop + read-clear statusRC + re-arm firstDesc) НЕ снимает
+// BUSY, когда движок застрял на границе PCIe→AXI/SMC (зависший posted-write);
+// только аппаратный reset канала (XDMA_CTRL_RST, BIT31 control) возвращает
+// внутренний FSM движка в idle. Если на конкретном битстриме бит окажется
+// Reserved/no-op — пересобрать с -DXDMA_CHANNEL_RESET_HW_BIT=0 (итог сравнения
+// зафиксировать в отчёте стенда).
+//
+// Последовательность:
+//   1) EngineStop (controlW1C RUN) — идемпотентно, гасит активный RUN;
+//   2) [HW по умолчанию] controlW1S = XDMA_CTRL_RST — аппаратный канальный
+//      reset: сбрасывает FSM движка, отбрасывает зависший транзакт;
+//   3) read-clear statusRC — снимает оставшийся BUSY/биты ошибок
+//      (и в soft-режиме это единственный активный приём снятия BUSY);
+//   4) чтение completedDescCount — наблюдаем, read-only;
+//   5) re-arm SGDMA firstDescLo/Hi на базу постоянного дескрипторного буфера +
+//      firstDescAdj=0 (никогда не оставляем указатель в середине банка/нуле;
+//      необходимо ПОВТОРНО после аппаратного сброса, т.к. reset сбрасывает
+//      дескрипторный указатель);
+//   6) RtlZeroMemory всего дескрипторного банка — стираем протухшую цепочку;
+//   7) сброс perfCtrl (снимаем возможный остаточный XDMA_PERF_RUN).
+//
+// БЕЗОПАСНОСТЬ (протокол согласования с txnDone): вызывать ТОЛЬКО когда
+// вызывающий УЖЕ владеет транзакцией движка (txnDone=TRUE захвачен под
+// engineLock в таймаут/cancel-пути), т.е. ПОСЛЕ проверки владельца: никакой
+// DPC/ISR/EngineProcessTransfer не трогает регистры канала, пока мы их пишем.
+// Функция НЕ трогает WDF-объекты (транзакцию/request) — безопасно вызывать
+// и до, и после WdfDmaTransactionRelease.
+NTSTATUS XDMA_EngineResetChannel(IN XDMA_ENGINE* engine) {
+    if (engine == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // 1) остановить (идемпотентно)
+    engine->regs->controlW1C = XDMA_CTRL_RUN_BIT;
+
+#if XDMA_CHANNEL_RESET_HW_BIT
+    // 2) аппаратный канальный reset (по умолчанию включён — см. шапка функции)
+    engine->regs->controlW1S = XDMA_CTRL_RST;    // assert channel reset (bit31)
+    engine->regs->controlW1C = XDMA_CTRL_RUN_BIT; // re-stop если reset поднял RUN
+    MemoryBarrier();
+#endif
+
+    // 3) read-and-clear: снимает оставшийся BUSY + биты ошибок
+    UINT32 st = engine->regs->statusRC;
+
+    // 4) наблюдаем счётчик завершённых дескрипторов (read-only)
+    volatile ULONG cdc = engine->regs->completedDescCount;
+
+    // 5) re-arm указатель на базу постоянного буфера (обязательно после HW reset)
+    PHYSICAL_ADDRESS db = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
+    engine->sgdma->firstDescLo = db.LowPart;
+    engine->sgdma->firstDescHi = db.HighPart;
+    engine->sgdma->firstDescAdj = 0;
+
+    // 6) зачистка банка дескрипторов от протухшей цепочки
+    DMA_DESCRIPTOR* descriptorBuffer =
+        (DMA_DESCRIPTOR*)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
+    SIZE_T descBufferLength = WdfCommonBufferGetLength(engine->descBuffer);
+    RtlZeroMemory(descriptorBuffer, descBufferLength);
+
+    // 7) сброс perf-счётчиков (снимает остаточный RUN)
+    engine->regs->perfCtrl = 0;
+
+    MemoryBarrier();
+
+    TraceInfo(DBG_DMA, "%s_%u CHANNEL RESET done (mode=%s, control=0x%08x, "
+              "statusRC-cleared=0x%08x, completedDescCount=%u)",
+              DirectionToString(engine->dir), engine->channel,
+              XDMA_CHANNEL_RESET_HW_BIT ? "HW-bit31" : "soft",
+              engine->regs->control, (UINT32)st,
+              (ULONG)cdc);
+    return STATUS_SUCCESS;
 }
 
 void EngineEnableInterrupt(IN XDMA_ENGINE* engine) {

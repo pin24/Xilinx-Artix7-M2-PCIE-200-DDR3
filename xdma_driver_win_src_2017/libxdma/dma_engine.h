@@ -201,6 +201,17 @@ typedef struct XDMA_ENGINE_T {
     // the cancel routine must finalise it (fix for cancel<->timeout race).
     BOOLEAN txnTimeout;
 
+    // CHANNEL-RESET 2026-10-22 (BUG hang): большая h2c-запись (~500КБ batch)
+    // завешивает аппаратный h2c-движок — BUSY в status остаётся выставлен
+    // после таймаута, и следующий перенос виснет до power-cycle. При TRUE
+    // (по умолчанию) таймаут-путь EvtIoWriteDma/EvtIoReadDma дополнительно
+    // вызывает XDMA_EngineResetChannel (EngineStop + read-clear statusRC + 
+    // recount completedDescCount + re-arm firstDesc + зачистка банка), чтобы
+    // следующий перенос стартовал с чистого idle без power-cycle. Управляется
+    // IOCTL_XDMA_CHANNEL_RESET (XDMA_CHANNEL_RESET_FLAG_AUTO_ON/OFF). Читается
+    // под engineLock (пишется только из IOCTL-контекста PASSIVE_LEVEL).
+    BOOLEAN channelResetOnTimeout;
+
 } XDMA_ENGINE;
 
 // REDUCED-ASYNC 2026-10-17: per-timer object context so EvtDmaWatchdogTimer can
@@ -286,6 +297,27 @@ NTSTATUS XDMA_EngineWaitCompletion(IN XDMA_ENGINE* engine, IN ULONG timeoutUs);
 /// statusRC and clearing RUN/reset it never completes the next read. Call right
 /// before starting a C2H transfer. Safe for a stopped/idle engine too.
 VOID XDMA_EngineResetIdle(IN XDMA_ENGINE* engine);
+
+/// CHANNEL-RESET 2026-10-22: full hardware-oriented reset of ONE XDMA channel
+/// (used to un-wedge the h2c engine after a large transfer that left BUSY set).
+/// Sequence — hardware first (per AUDIT_H2C_WEDGE.md §2.4, soft-idle does NOT
+/// release a BUSY stuck at PCIe->AXI/SMC; the reliable path is the channel
+/// reset bit):
+///   1) EngineStop (controlW1C RUN) — idempotent;
+///   2) HARDWARE channel reset: controlW1S = XDMA_CTRL_RST (BIT31). Default ON;
+///      rebuild with -DXDMA_CHANNEL_RESET_HW_BIT=0 to compare soft-only;
+///   3) read-and-clear statusRC (clears residual BUSY + error bits);
+///   4) observe completedDescCount (read-only);
+///   5) re-arm SGDMA firstDescLo/Hi to the persistent descriptor buffer base and
+///      clear firstDescAdj (MUST redo after the HW reset, which drops the
+///      descriptor pointer);
+///   6) RtlZeroMemory the descriptor bank (stale partial chain after a timeout);
+///   7) clear perfCtrl RUN residue.
+/// MUST be called only when the caller OWNS the engine's transaction (txnDone
+/// already claimed under engineLock), i.e. after the timeout/cancel owner check,
+/// so no concurrent DPC/ISR touches the registers while we reset them. It does
+/// NOT touch any WDF object (safe before Release). Returns STATUS_SUCCESS.
+NTSTATUS XDMA_EngineResetChannel(IN XDMA_ENGINE* engine);
 
 /// REDUCED-ASYNC 2026-10-17: async transfer-completion callback.
 /// KMDF invokes it when WdfDmaTransactionDmaCompleted() returns TRUE (i.e. every

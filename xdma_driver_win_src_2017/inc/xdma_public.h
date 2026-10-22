@@ -69,6 +69,15 @@ DEFINE_GUID(GUID_DEVINTERFACE_XDMA,
 #define IOCTL_XDMA_ADDRMODE_GET XDMA_IOCTL(0x4)
 #define IOCTL_XDMA_ADDRMODE_SET XDMA_IOCTL(0x5)
 #define IOCTL_XDMA_DIAG_GET     XDMA_IOCTL(0x6)
+// CHANNEL-RESET 2026-10-22 (BUG hang: большая h2c-запись завешивает движок,
+// BUSY остаётся выставлен, следующий перенос виснет до power-cycle):
+// явный/политический сброс канала. Принимает XDMA_CHANNEL_RESET (input, буферизуется).
+#define IOCTL_XDMA_CHANNEL_RESET XDMA_IOCTL(0x7)
+
+// Flags for IOCTL_XDMA_CHANNEL_RESET (можно комбинировать).
+#define XDMA_CHANNEL_RESET_FLAG_NOW      0x00000001UL // сбросить канал немедленно (аппаратный сброс)
+#define XDMA_CHANNEL_RESET_FLAG_AUTO_ON  0x00000002UL // включить авто-сброс канала на h2c/c2h-таймауте
+#define XDMA_CHANNEL_RESET_FLAG_AUTO_OFF 0x00000004UL // выключить авто-сброс канала на таймауте
 
 // structure for IOCTL_XDMA_PERF_GET
 typedef struct {
@@ -84,6 +93,11 @@ typedef struct {
     ULONG reserved;
     UINT64 bytesTransferred;     // WdfDmaTransactionGetBytesTransferred
 } XDMA_DIAG_DATA;
+
+// CHANNEL-RESET 2026-10-22: input for IOCTL_XDMA_CHANNEL_RESET.
+typedef struct {
+    ULONG Flags;                 // XDMA_CHANNEL_RESET_FLAG_*
+} XDMA_CHANNEL_RESET;
 
 #endif/*__XDMA_WINDOWS_H__*/
 

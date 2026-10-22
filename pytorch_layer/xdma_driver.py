@@ -63,6 +63,13 @@ SPI_BASE = 0x4002_5000       # [DFX-only] SPI-over-PCIe (hot-flash без JTAG)
 # legacy alias (модульно совместим со старым именем)
 DDR_BASE = DDR3_BASE
 
+# ---- CHANNEL-RESET 2026-10-22: IOCTL_XDMA_CHANNEL_RESET (inc/xdma_public.h) ----
+# CTL_CODE(FILE_DEVICE_UNKNOWN, 0x7, METHOD_BUFFERED, FILE_ANY_ACCESS) = 0x22001C
+IOCTL_CHANNEL_RESET = (0x22 << 16) | (0 << 14) | (0x7 << 2) | 0
+CHANNEL_RESET_NOW = 0x00000001      # XDMA_CHANNEL_RESET_FLAG_NOW
+CHANNEL_RESET_AUTO_ON = 0x00000002  # XDMA_CHANNEL_RESET_FLAG_AUTO_ON
+CHANNEL_RESET_AUTO_OFF = 0x00000004  # XDMA_CHANNEL_RESET_FLAG_AUTO_OFF
+
 
 def _tf48_to_bits(t) -> int:
     """TFloat48 -> 48-битное целое (совпадает с to_bits48 в verify)."""
@@ -459,6 +466,12 @@ class XdmaWinUpstream(XdmaDevice):
         k32.CreateEventW.restype = wintypes.HANDLE
         k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
                                      wintypes.LPCWSTR]
+        # CHANNEL-RESET 2026-10-22: binding для soft_reset_h2c() (IOCTL на h2c-узле).
+        k32.DeviceIoControl.argtypes = [
+            wintypes.HANDLE,            wintypes.DWORD,
+            ctypes.c_void_p,            wintypes.DWORD,   # in buffer / size
+            ctypes.c_void_p,            wintypes.DWORD,   # out buffer / size
+            ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
 
         class _OVERLAPPED(ctypes.Structure):
             _fields_ = [("Internal", ctypes.c_void_p),
@@ -590,6 +603,37 @@ class XdmaWinUpstream(XdmaDevice):
             out += self._xfer(self._c2h, False, ddr_off + off, b"", chunk)
             off += chunk
         return bytes(out)
+
+    # ---- CHANNEL-RESET 2026-10-22 ----
+    # Ручной безопасный сброс h2c-канала (IOCTL_XDMA_CHANNEL_RESET на h2c-узле).
+    # Аппаратную работу выполняет ДРАЙВЕР в ядре (XDMA_EngineResetChannel):
+    # host здесь регистры НЕ пишет, только шлёт IOCTL — т.е. метод read-only по
+    # отношению к железу. Используется как fallback, когда host перехватил
+    # таймаут write_dma, но движок остался залипшим (BUSY) и до следующего
+    # переноса нужен разблокирующий сброс без power-cycle. Драйвер также
+    # делает авто-сброс на таймауте (channelResetOnTimeout, по умолчанию TRUE).
+    def soft_reset_h2c(self, auto_on=None):
+        """Сбросить h2c-канал. auto_on=True/False — переключить политику
+        авто-сброса драйвера на таймауте; None — оставить без изменений.
+        НЕ выполняется на железе сейчас (запись в плату запрещена)."""
+        if self._h2c is None:
+            raise XdmaError("h2c channel handle is None (driver node not open)")
+        flags = CHANNEL_RESET_NOW
+        if auto_on is True:
+            flags |= CHANNEL_RESET_AUTO_ON
+        elif auto_on is False:
+            flags |= CHANNEL_RESET_AUTO_OFF
+        from ctypes import byref
+        inbuf = (self._c.c_ulong * 1)(flags & 0xFFFFFFFF)
+        done = self._c.wintypes.DWORD(0)
+        ok = self._k32.DeviceIoControl(
+            self._h2c, IOCTL_CHANNEL_RESET,
+            inbuf, 4, None, 0, byref(done), None)
+        if not ok:
+            raise XdmaError(
+                f"IOCTL_XDMA_CHANNEL_RESET(flags=0x{flags:X}) failed: "
+                f"WinError {self._c.get_last_error()}")
+        return done.value
 
 class TdotCore:
     """Управление ядром tdot_axi4 через XDMA."""
