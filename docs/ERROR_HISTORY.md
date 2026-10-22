@@ -970,6 +970,17 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 - Отчёты: docs/audit-regress-2026-10-22/{SUMMARY, DRIVER_REGRESSION, REGS_ADDR_PROTOCOL, RTL_FIRMWARE, CHANGES_POSTMORTEM}.md
 
 
+### [BUG-090] Scheduler dot_batch: большой батч длинных (n=512) dot «стопорится» — host collect timeout — 2026-10-22
+- Симптом (32/8 + 1-бис, плата): `nn_fpga_mlp --features 512 --hidden 1` при samples=2000/batch=2000 → `xdma_driver.XdmaError: запрошено 250 завершений, готово 1` (host `collect` timeout, `xdma_driver.py:1106`). НЕ аппаратный клин: плата жива, ошибка восстановимая.
+- Download: при n=512 работает малый батч (8/128; 128 → 0.45 с/эпоха), **стопорится при ~≥192-250** длинных (512) dot в одном fill. При n=32 кольцо 1024 (1018 задач) работает (BUG-089 фикс).
+- Причина (гипотеза): host-`collect` ждёт N завершений в ограниченном времени; длинные 512-dot дренируются медленнее бюджета ожидания → таймаут до завершения всех. Не то же, что BUG-089 (h2c write-response).
+- Статус: ОТКРЫТО (наблюдение). Влияет на scheduler-батчи длинных dot; обойти — batch≤128 при n=512 или уменьшить n.
+- Сценарий: C:\Temp\gigatool\hw_check\bench_{fpga,cpu}_1k.log, bench_b128.log.
+
+### [BUG-089 b] FPga vs CPU на обучении — честная сводка (2026-10-22)
+- На n=16 / мелком батче: CPU ~×1.86·10⁵ быстрее (host-оверхед ~15 мс/IOCTL, BUG-071, доминирует; вычисления — мизер).
+- На n=512: FPGA-путь ускорил эпоху ~×150 (0.138 с vs 20 с при мелком n), но CPU всё равно впереди (9 эпох vs 154032 за 30 с на samples=1024): пока есть ~15 мс/IOCTL floor и Python-packing, FPGA от overhead-bound, а не compute-bound; numpy-BLAS на этих размерах memory-bound и быстрее.
+- Реальный путь к выигрышу FPGA: убрать host-round-trip на батч (write_dma_pipe/pipelining) или weights-stationary потоковый kernel — иначе не выиграть.
 ### [BUG-089] h2c-wedge: одиночная 4 КиБ-запись вешает общий write-response-путь — 2026-10-22
 - Симптом (железо, 2/2 power-cycle): 64 Б round-trip OK → одиночная write_dma 4 КиБ @0x200000 → `timeout at 0x200000` на **1-й** попытке; движок вешается навсегда, восстановление только power-cycle.
 - Причина (perf_get IOCTL 0x3): `dataCycleCount=256` (= 4 КиБ/16 Б × 128-бит AXI) при `pendingCount=0` → **движок выдал все данные на AXI, но B/cчётчик завершённых дескрипторов не вернулся**; c2h следом `BUSY`, `completed=0`, IRQ pending=0. Локус — общий downstream-путь `xdma_axi_smc → CDC 125→100 → MIG` (write-response/completion), НЕ движок/фетч/IRQ и НЕ длина цепочки (1 дескриптор).
