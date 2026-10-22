@@ -1269,6 +1269,7 @@ class DeviceProgRunner:
     DP_DATA_BASE   = 0xE8   # W: база данных (полный AXI адрес, DDR)
     DP_TABLE_BASE  = 0xEC   # W: база таблицы юнитов (полный AXI адрес, DDR)
     DP_MBOX_BASE   = 0xF0   # W: база completion-mailbox (полный AXI адрес, DDR)
+    DP_STAT        = 0xF4   # R: {8'd0, fifo_level, stall_code[15:0], wdog_active, complete, active} (6'd61)
 
     def __init__(self, dev: XdmaDevice, num_mac: int = 32, reg_base: int = REG_BASE):
         self.dev = dev
@@ -1335,15 +1336,38 @@ class DeviceProgRunner:
         self._reg_w(self.DP_MBOX_BASE,  (DDR3_BASE + mbox_off) & 0xFFFFFFFF)
         self._reg_w(self.DP_CTRL, ((n_units & 0xFFFF) << 16) | 0x1)
 
-        # c. Ожидание completion-mailbox. RTL (device_prog → CS_DP_MBOX2) пишет
-        #    W1 по mailbox_base+8 = {40'h0, units[15:0], status=0}; LSW = units<<8
-        #    (ненулевое при любом n_units>=1), поэтому ждём «любое ненулевое»:
-        #    expected=0 означает в CompletionMailbox.read_status «ждать != 0».
+        # c. Ожидание completion-mailbox. Статус в LSW (младшие 8 бит):
+        #    0 = успех, !=0 = abort/ошибка (BUG-085: abort пишет status=1).
         mb = CompletionMailbox(self.dev, base_addr=mbox_off)
-        mb.read_status(timeout_ms=timeout_ms, expected=0)
+        try:
+            lsw = mb.read_status(timeout_ms=timeout_ms, expected=0)
+        except XdmaError as exc:
+            # FIX BUG-085: на таймаут mailbox — диагностика DP_STAT вместо вечного ожидания.
+            raise XdmaError(f"{exc}; DP_STAT diagnose: {self.diagnose()}") from exc
+        status = lsw & 0xFF
+        if status != 0:
+            # FIX BUG-085: завершено с ошибкой — НЕ отдавать результат как валидный.
+            raise XdmaError(
+                f"device_prog завершил с ошибкой: status=0x{status:02X} "
+                f"(mailbox LSW=0x{lsw:08X}); DP_STAT diagnose: {self.diagnose()}")
 
-        # d. Чтение результата.
+        # d. Чтение результата (только при status==0).
         return self.dev.read_dma(out_base, out_bytes)
+
+    def diagnose(self) -> dict:
+        """Прочитать DP_STAT (0xF4 = 6'd61) для диагностики после таймаута/ошибки.
+
+        Поле: {8'd0, fifo_level[7:0], stall_code[15:0], wdog_active, complete, active}.
+        stall_code: 0xA5A5 = рwdog-стой; 0xAB01 = abort (BUG-085).
+        """
+        v = self._reg_r(self.DP_STAT)
+        return {
+            "active": bool(v & 0x1),
+            "complete": bool(v & 0x2),
+            "wdog_active": bool(v & 0x4),
+            "stall_code": (v >> 3) & 0xFFFF,    # фактические позиции rdata (tdot_axi4.sv:526-527)
+            "fifo_level": (v >> 19) & 0xFF,
+        }
 
 
 def _pack_tf48(bits_list) -> bytes:

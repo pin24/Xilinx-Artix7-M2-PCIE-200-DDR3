@@ -163,6 +163,16 @@ module device_prog #(
                 mailbox_wr_start <= 1'b0;
                 mailbox_wr_addr  <= '0;
                 mailbox_wr_data  <= '0;
+            end else if (!en) begin
+                // FIX BUG-085: снятие en (abort) — принудительный возврат в IDLE и
+                // гашение импульсов; иначе остаток программы вклинивается в след. батч.
+                state            <= ST_IDLE;
+                desc_task_valid  <= 1'b0;
+                table_req        <= 1'b0;
+                mailbox_wr_start <= 1'b0;
+                done             <= 1'b0;
+                fetch_pend       <= 1'b0;
+                fetch_cnt        <= 2'd0;
             end else begin
                 // по умолчанию гасим одиночные импульсы
                 desc_task_valid  <= 1'b0;

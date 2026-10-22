@@ -523,7 +523,7 @@ logic        irq_pending_q;      // поднято при опустошении
             6'd58: rdata = dprog_data_base_q;
             6'd59: rdata = dprog_table_base_q;
             6'd60: rdata = dprog_mailbox_base_q;
-            6'd61: rdata = {8'd0, dp_fifo_level, dp_stall_code_q,
+            6'd61: rdata = {4'd0, dp_fifo_level, dp_stall_code_q,
                             dp_wdog_active_q, dprog_complete_q, dprog_active_q};
             default: rdata = 32'h0;
         endcase
@@ -808,7 +808,8 @@ logic        irq_pending_q;      // поднято при опустошении
 
     // ---- диагностика программного режима: cstate-зависимая часть (после декларации cstate) ----
     localparam int DP_WDOG_MAX = (1 << 22);   // ~4.2M тактов без прогресса = аварийный сброс
-    logic [21:0] dp_wdog_cnt;   // FIX 2026-10-22: 1<<22 needs 22 bits
+    logic [22:0] dp_wdog_cnt;             // FIX BUG-083: 1<<22 требует бит 22 (23 бита)
+    localparam logic [15:0] DP_STALL_ABORT = 16'hAB01;  // код abort (отличный от watchdog A5A5)
     wire         dp_progress = dp_desc_task_valid || dp_mailbox_wr_start || dp_done ||
                                (cstate == CS_DP_MBOX1) || (cstate == CS_DP_MBOX2);
 
@@ -921,7 +922,7 @@ logic        irq_pending_q;      // поднято при опустошении
                 // device_prog держит desc_task_valid, пока ready=0, и НЕ продвигает
                 // счётчик нейрона — длинные программы (n_out*pass >> глубины FIFO) не
                 // теряют задачи при переполнении.
-                if (dp_desc_task_valid && dp_fifo_ready) begin
+                if (dprog_active_q && dp_desc_task_valid && dp_fifo_ready) begin
                     dp_fifo_a[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_a;
                     dp_fifo_w[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_w;
                     dp_fifo_r[dp_wrptr[$clog2(DP_FIFO_DEPTH)-1:0]]   <= dp_desc_task_r;
@@ -982,8 +983,8 @@ logic        irq_pending_q;      // поднято при опустошении
                 ctrl_rd_start <= 1;
             end
             if (rd_to_fire || wr_to_fire) begin
-                // TIMEOUT 2026-10-22: the AXI master aborted; retire the task so the
-                // ring keeps moving even if the bus is dead (completion is dropped).
+                // TIMEOUT: AXI master aborted; retire the task so the ring keeps
+                // moving even if the bus is dead.
                 busy_q <= 1'b0; done_q <= 1'b1;
                 if (use_sched_q) begin
                     sched_rptr_q <= sched_rptr_q + 10'd1;
@@ -991,7 +992,22 @@ logic        irq_pending_q;      // поднято при опустошении
                     if (sched_irq_en_q && (sched_rptr_q + 10'd1 == sched_wptr_q))
                         irq_pending_q <= 1'b1;
                 end
-                cstate <= CS_IDLE;
+                // FIX BUG-085: abort программного батча -> терминальный completion-mailbox
+                // со status!=0 и сброс DP-FSM/FIFO; обход SUCCESS-фолбэка CS_DP_MBOX2.
+                if (use_dp_q) begin
+                    dp_mbox0_valid <= 1'b1; dp_mbox0_addr <= dprog_mailbox_base_q;
+                    dp_mbox0_data  <= {48'h0, dprog_n_units_q};
+                    dp_mbox1_valid <= 1'b1; dp_mbox1_addr <= dprog_mailbox_base_q + 32'h8;
+                    dp_mbox1_data  <= {40'h0, dprog_n_units_q, 8'd1};   // status = ABORT
+                    dprog_active_q <= 1'b0; use_dp_q <= 1'b0; dprog_go_q <= 1'b0;
+                    dp_wrptr <= '0; dp_rdptr <= '0;
+                    dp_wdog_active_q <= 1'b0; dp_wdog_cnt <= '0;
+                    dprog_complete_q <= 1'b0;              // НЕ «успех» (аудит P2)
+                    dp_stall_code_q  <= DP_STALL_ABORT;    // диагностика abort в DP_STAT
+                    cstate           <= CS_DP_MBOX1;
+                end else begin
+                    cstate <= CS_IDLE;
+                end
             end else case (cstate)
                 CS_IDLE: begin
                     // программный режим (DEVPROG_EN=1): старт батча по dprog_start_q
