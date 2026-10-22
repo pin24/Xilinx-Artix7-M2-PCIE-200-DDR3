@@ -329,11 +329,12 @@ def main(argv=None) -> int:
         c2h = dump_engine(p, "C2H_0 (DDR3 -> host)", 0x1000, SGDMA_OFF_C2H)
 
         print("\n[IRQ block]")
+        dev_ctl = r"\control"
         for name, off in (("channelIntEnable", IRQ_CH_INT_ENABLE),
                           ("channelIntRequest", IRQ_CH_INT_REQUEST),
                           ("channelIntPending", IRQ_CH_INT_PENDING)):
             try:
-                print(f"  {name:<20} 0x{off:04X}: 0x{p.rd32(r'\\control', off):08X}")
+                print(f"  {name:<20} 0x{off:04X}: 0x{p.rd32(dev_ctl, off):08X}")
             except Exception as exc:
                 print(f"  {name:<20} 0x{off:04X}: ERROR {exc}")
 
