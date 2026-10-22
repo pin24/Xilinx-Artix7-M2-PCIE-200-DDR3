@@ -916,3 +916,55 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 - Следствие для дизайна: автосброс отключён (default OFF в 1.2.7.6). Реальная митигация — ПРЕДОТВРАЩЕНИЕ залипания: ограничить цепочку дескрипторов на один перенос (меньше последовательных раундов «фетч->4КБ->AXI_write» при nextAdj=0) и/или решить CplD-flood в root port 8086:7f3c.
 - Файлы: xdma_driver_win_src_2017/{libxdma/dma_engine.c, sys/file_io.c, inc/xdma_public.h}; тест C:\Temp\gigatool\hw_check	est_wedge_1276.py.
 - Статус: ОТКРЫТО (средство восстановления в ПО отсутствует; нужен power-cycle). Подробности: docs/audit-h2c-wedge-2026-10-22/.
+
+
+### [BUG-082] Двойное завершение IRP на гонке «cancel ∩ timeout» (риск BSOD 0x10D/UAF) — 2026-10-22
+- Симптом (по коду, не воспроизведён): cancel-рутина и хвост `EvtIoWriteDma` завершают один request.
+- Причина: `sys/file_io.c:1102` — `if (st == STATUS_CANCELLED && !ownTxn && !pollTimeout) return;`. Полл на таймауте уже захватил владение (`dma_engine.c:1727-1728`: `txnDone = TRUE; txnTimeout = TRUE`) и НЕ завершает request, но при `pollTimeout == TRUE` cancel продолжает: `EngineStop` -> `WdfDmaTransactionRelease` -> `WdfRequestComplete` (`file_io.c:1106-1119`). Хвост писателя при `owner == FALSE` тоже завершает («completion ownership already claimed», `file_io.c:864-869`).
+- Исправление (план): финализировать только по `ownTxn`; при `st == STATUS_CANCELLED` выходить без условий `!ownTxn && !pollTimeout`; привести противоречащие комментарии `dma_engine.h`/`dma_engine.c:1728` в соответствие.
+- Файлы: `xdma_driver_win_src_2017/sys/file_io.c`, `libxdma/dma_engine.c/.h`.
+- Статус: ОТКРЫТО (HIGH). Проверка: Driver Verifier + CancelIo в момент 10-секундного полла.
+- Источник: docs/audit-regress-2026-10-22/DRIVER_REGRESSION.md (R1).
+
+### [BUG-083] DP-watchdog всё ещё мёртв: 22-битный счётчик против `1<<22` (BUG-078 не долечен) — 2026-10-22
+- Симптом: сторожевой сброс `device_prog` никогда не срабатывает.
+- Причина: `rtl/integration/tdot_axi4.sv:811` — `logic [21:0] dp_wdog_cnt` (макс 4 194 303) при `DP_WDOG_MAX = 1<<22` (`:810`) и сравнении `>=` (`:955`) — условие недостижимо; счётчик молча переполняется. Комментарий «1<<22 needs 22 bits» неверен.
+- Подтверждение: отдельный xsim — 25 165 824 тактов без прогресса, `dp_wdog_active_q` не поднялся.
+- Исправление (план): `logic [22:0] dp_wdog_cnt` (или `DP_WDOG_MAX = (1<<22)-1`).
+- Файлы: `rtl/integration/tdot_axi4.sv`.
+- Статус: ОТКРЫТО (латентно, прошивка не собрана). Источник: RTL_FIRMWARE.md.
+
+### [BUG-084] Controller-abort ретирит задачу без записи completion — тихая порча данных — 2026-10-22
+- Симптом: при срабатывании AXI-watchdog хост получает устаревший result/status как валидный.
+- Причина: `tdot_axi4.sv:984-994` — по `rd_to_fire || wr_to_fire` делается `busy_q<=0`, `done_q<=1`, `sched_rptr_q+1`, `done_cnt_q+1`, `cstate<=CS_IDLE`, но слот в `COMP_BASE` (`CS_CMP1..CS_CMP3`, `:1205-1218`) не пишется; хост `collect()` (`xdma_driver.py`) читает по `done_cnt` старый слот и не сверяет 0xF8/0xFC.
+- Исправление (план): писать W0/W1 со status=timeout (отдельный код) либо запретить чтение по event-регистрам; в хосте — сверять events перед доверием слоту.
+- Файлы: `rtl/integration/tdot_axi4.sv`, `pytorch_layer/xdma_driver.py`.
+- Статус: ОТКРЫТО (HIGH) — обязательно закрыть ДО прошивки, иначе abort превращает зависание в тихую порчу результата.
+
+### [BUG-085] Abort не очищает DP-FSM (device_prog зависает до нового batch) — 2026-10-22
+- Причина: та же ветка (`tdot_axi4.sv:984-994`) не сбрасывает `use_dp_q`/`dprog_active_q`, не пишет mailbox и не дренирует FIFO-задачи; в связке с BUG-083 программный режим остаётся занятым.
+- Статус: ОТКРЫТО (HIGH, RTL). Источник: RTL_FIRMWARE.md.
+
+### [BUG-086] `ValidateBarParams` off-by-one: последнее слово BAR отклоняется — 2026-10-22
+- Причина: `sys/file_io.c:297` — `if (offset + length >= xdma->barLength[nBar])`; должно быть `>`.
+- Влияние: граничные чтения регистров/окна дают `STATUS_INVALID_DEVICE_REQUEST`.
+- Статус: ОТКРЫТО (MED), правка в одну строку.
+
+### [BUG-087] `actual >= expected` по накопительному `completedDescCount` — ложный «успех» — 2026-10-22
+- Причина: `libxdma/dma_engine.c:558` и `:1685` сравнивают абсолютное значение регистра с числом дескрипторов переноса; регистр программно не обнуляется.
+- Влияние: на multi-packet переносе возможно досрочное объявление готовности (данные ещё в пути).
+- Исправление (план): снапшот значения перед стартом под `engineLock`, сравнение дельты `(actual - snapshot) & mask >= expected`.
+- Статус: ОТКРЫТО (MED).
+
+### [BUG-088] Рассогласование глубины кольца и ревизии OBS между хостом и прошивкой — 2026-10-22
+- `pytorch_layer/xdma_driver.py:923` — `SCHED_RING_DEPTH = 256` (маска 0xFF) при RTL-кольце mod-1024 (`tdot_axi4.sv:263-264`); `obs_smi` считает occupancy по 0x3FF.
+- `OBS_REGMAP_V = 1` не отражает 0xF4/0xF8/0xFC — на старой прошивке obs покажет ложно-чистый «rd=0 wr=0» вместо «n/a».
+- Следствие: до прошивки RING-1024 хост обязан оставаться на `ring_depth=256`; после прошивки — переключить на 1024 и поднять ревизию OBS.
+- Статус: ОТКРЫТО (MED), правок кода не требует — только порядок выкатки.
+
+
+## Итог аудита 2026-10-22 (после серии обновлений)
+- **Регрессии нет**: прошивка в интервале не собиралась/не шилась (`CHANGE_LOG_2026-10-22.md:74`; в `git log 496272b..HEAD` нет .bit/.bin/.dcp) — RTL-правки на плате отсутствуют.
+- Wedge большого h2c существовал и раньше; 1.2.7.4 лишь сделал его видимым (`STATUS_IO_TIMEOUT` вместо вечного IRP). Причина — posted-write предел `xdma_axi_smc -> MIG` при `nextAdj=0`, программного восстановления нет (BUG-081).
+- Найдено 7 дефектов в коде (BUG-082..088); единственный с риском BSOD — BUG-082.
+- Отчёты: docs/audit-regress-2026-10-22/{SUMMARY, DRIVER_REGRESSION, REGS_ADDR_PROTOCOL, RTL_FIRMWARE, CHANGES_POSTMORTEM}.md

@@ -891,3 +891,13 @@ Stage Summary:
 - Эмуляция: tb_timeout_abort PASS (watchdog, busy=0, повторный таймаут), verify_tdot_axi4 4/4.
 - Осталось: reboot + проверка драйвера; путь таймаута на железе; сборка/прошивка прошивки.
 - Полный разбор: docs/CHANGE_LOG_2026-10-22.md.
+
+
+## 2026-10-22 — Аудит «что сломалось после обновлений» (4 независимых ракурса)
+- Решающий тест 1.2.7.6 на чистом движке: probe OK, 64 Б OK, 512 КиБ h2c -> timeout, ручной BIT31-reset не восстановил, WHEA=0 (BUG-081).
+- Аудиты (read-only): драйвер 1.2.7.0->1.2.7.6; регистры/адресация/протоколы/совместимость; RTL/прошивка + xsim; постмортем изменений.
+- Главный вывод: регрессии нет — прошивка в интервале не собиралась и не шилась (CHANGE_LOG:74), RTL-правки на плате отсутствуют; wedge большого h2c был скрыт до 1.2.7.4 (вечный IRP -> STATUS_IO_TIMEOUT).
+- Механизм: posted-write предел xdma_axi_smc -> MIG при nextAdj=0; self-timeout у движка нет; BIT31 = reserved/no-op.
+- Новые дефекты: BUG-082 (гонка cancel∩timeout -> двойное завершение IRP, HIGH), BUG-083 (DP-watchdog 22 бита против 1<<22), BUG-084 (abort дропает completion -> тихая порча), BUG-085 (abort не чистит DP-FSM), BUG-086 (ValidateBarParams off-by-one), BUG-087 (actual>=expected по накопительному счётчику), BUG-088 (кольцо 256 vs 1024, OBS_REGMAP_V).
+- Проверено как исправное: регистры 0x00..0xE0 индекс-в-индекс, word/byte-адресация, база DDR3 0x80000000, BAR0 128 МБ, XDMA IP v4.2, формат SGDMA/completion, ширина и сброс RD/WR-таймаутов, verify_tdot_axi4 4/4, tb_timeout_abort PASS.
+- Отчёты: docs/audit-regress-2026-10-22/{SUMMARY, DRIVER_REGRESSION, REGS_ADDR_PROTOCOL, RTL_FIRMWARE, CHANGES_POSTMORTEM}.md.
