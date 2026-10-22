@@ -968,3 +968,12 @@ M05 → S_AXI_XADC_REGS          (0x4600_0000)
 - Wedge большого h2c существовал и раньше; 1.2.7.4 лишь сделал его видимым (`STATUS_IO_TIMEOUT` вместо вечного IRP). Причина — posted-write предел `xdma_axi_smc -> MIG` при `nextAdj=0`, программного восстановления нет (BUG-081).
 - Найдено 7 дефектов в коде (BUG-082..088); единственный с риском BSOD — BUG-082.
 - Отчёты: docs/audit-regress-2026-10-22/{SUMMARY, DRIVER_REGRESSION, REGS_ADDR_PROTOCOL, RTL_FIRMWARE, CHANGES_POSTMORTEM}.md
+
+
+### [BUG-089] h2c-wedge: одиночная 4 КиБ-запись вешает общий write-response-путь — 2026-10-22
+- Симптом (железо, 2/2 power-cycle): 64 Б round-trip OK → одиночная write_dma 4 КиБ @0x200000 → `timeout at 0x200000` на **1-й** попытке; движок вешается навсегда, восстановление только power-cycle.
+- Причина (perf_get IOCTL 0x3): `dataCycleCount=256` (= 4 КиБ/16 Б × 128-бит AXI) при `pendingCount=0` → **движок выдал все данные на AXI, но B/cчётчик завершённых дескрипторов не вернулся**; c2h следом `BUSY`, `completed=0`, IRQ pending=0. Локус — общий downstream-путь `xdma_axi_smc → CDC 125→100 → MIG` (write-response/completion), НЕ движок/фетч/IRQ и НЕ длина цепочки (1 дескриптор).
+- Исключено: H10 (бюджет длины), митигация A (лимит размера) — одиночная 4 КиБ вешает.
+- Выбранный фикс: отдельный SmartConnect-путь для XDMA к MIG (вариант 2); резерв — единый клок 100 МГц (вариант 1, убирает async-CDC).
+- Файлы: docs/audit-h2c-wedge-2026-10-22/FIX_PLAN.md; скрипт C:\Temp\gigatool\hw_check\ladder.py (лестница + perf_get).
+- Статус: ОТКРЫТО. План: коммит/пуш → внести фикс в temp-flow → эмуляция/аудиты агентами → готовность к сборке прошивки.
