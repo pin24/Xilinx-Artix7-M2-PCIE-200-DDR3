@@ -1009,3 +1009,4 @@ Stage Summary:
   - `ring_check --depth 1024`: батч 1018, **2242 задач/с**, «кольцо на плате = 1024» — без клина (сценарий ~500 КиБ, раньше вешал движок).
   - Стресс 60×512 КиБ: 0 fails.
   - Пропускная способность: h2c 34.1 MB/s, c2h 33.8 MB/s (512 КиБ×128) — лимит host-оверхед (~15 мс/вызов, BUG-071), не регрессия фикса.
+- **Тренировка `scripts/nn_fpga_mlp.py` (fpga, features=16, hidden=16, samples=2000, batch=128):** 7 эпох за **146.1 с**, test_acc=**1.0000**, tr_loss 0.1699→0.0008, **без клина** на полной нагрузке scheduler dot_batch; модель `nn_mlp_batch.npz`. NumPy 1.25 DeprecationWarning (scalar) — pre-existing, не ошибка.
