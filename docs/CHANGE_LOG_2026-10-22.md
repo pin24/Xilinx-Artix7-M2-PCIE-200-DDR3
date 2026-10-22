@@ -96,3 +96,22 @@
 - Влияние: проверка драйвера и любые чтения платы невозможны.
 - Требуется: reboot хоста; при отсутствии устройства — power-cycle/reseat M.2, затем проверка привязки 1.2.7.4.
 - Статус: ОТКРЫТО (BUG-079).
+
+---
+
+## [ПОЗДНЕЕ, вечер 2026-10-22] BUG-089: h2c-wedge — диагностика и устранение (фикс 1-бис)
+
+### Диагноз
+- Одиночная 4 КиБ h2c-запись (1 дескриптор) случайно вешала движок XDMA (2/2 power-cycle).
+- `perf_get` (IOCTL 0x3): `dataCycleCount=256` при старте 0, `pendingCount=0` → движок выдал все 256 бит 4 КиБ на AXI, но write-response/completion не вернулся. c2h следом `BUSY`, IRQ pending=0.
+- Локус: общий downstream-путь `xdma_axi_smc → async CDC 125→100 → MIG`.
+
+### Фикс (вариант 1-бис)
+- `scripts/xdma_ddr3_bd.tcl`: SmartConnect `xdma_axi_smc` переведён **целиком на 125 МГц** (aclk/aclk1/aclk2 все 125; aclk1 убран с MIG ui_clk).
+- async-CDC 125→100 **вынесен из SMC** в отдельный `axi_clock_converter:2.1` (`ACLK_ASYNC=1`) между `SMC.M00_AXI` и `mig_7series_0/S_AXI`.
+- Коммиты: `85a6afd`, `27cecf5`. Валидация BD в реальном flow (`SKIP_SYNTH`) — exit=0.
+
+### Верификация (прошивка 32/8, на плате)
+- Лестница 4…512 КиБ ×3 — все OK, exit=0, `LADDER DONE` (до фикса вешало на первой 4 КиБ).
+- Стресс 60×512 КиБ — все match=True, 0 fails.
+- BUG-089 закрыт на железе (ERROR_HISTORY.md).
