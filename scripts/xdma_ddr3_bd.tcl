@@ -501,6 +501,9 @@ proc create_root_design { parentCell } {
   # в выделенный axi_clock_converter (AR# 66780, комьюнити-фикс «потерянного
   # write-response»). XDMA остаётся на 125 МГц.
   set axi_clock_converter_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:2.1 axi_clock_converter_0 ]
+  # FIX-1bis (BUG-089): async-режим у 2.1 уже по умолчанию (ACLK_ASYNC=1,
+  # SYNCHRONIZATION_STAGES=3); фиксируем явно как страховку от auto-sync.
+  set_property -dict [list CONFIG.ACLK_ASYNC {1}] $axi_clock_converter_0
 
   # AXI-Lite crossbar: host M_AXI_LITE -> GPIO / mm2s ctrl / s2mm ctrl / tdot / xadc
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
@@ -643,6 +646,7 @@ proc create_root_design { parentCell } {
   [get_bd_pins axi_gpio_0/s_axi_aclk] \
   [get_bd_pins xdma_axi_lite_smc/aclk1] \
   [get_bd_pins xdma_axi_smc/aclk2] \
+  [get_bd_pins xdma_axi_smc/aclk1] \
   [get_bd_pins rst_core_125M/slowest_sync_clk] \
   [get_bd_pins axi_datamover_0/m_axi_mm2s_aclk] \
   [get_bd_pins axi_datamover_0/m_axis_mm2s_cmdsts_aclk] \
@@ -666,8 +670,7 @@ proc create_root_design { parentCell } {
   [get_bd_pins mig7_status_concat/In0]
 
   connect_bd_net -net mig_7series_0_ui_clk [get_bd_pins mig_7series_0/ui_clk] \
-  [get_bd_pins rst_mig_7series_0_100M/slowest_sync_clk] \
-  [get_bd_pins xdma_axi_smc/aclk1]
+  [get_bd_pins rst_mig_7series_0_100M/slowest_sync_clk]
 
   # FIX-1bis: клоки/сбросы axi_clock_converter (SCLK=125 fabric, MCLK=100 MIG)
   connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins axi_clock_converter_0/s_axi_aclk]
