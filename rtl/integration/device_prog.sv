@@ -99,6 +99,8 @@ module device_prog #(
         logic        fetch_pend;
         logic [15:0] pass_cnt;
         logic [15:0] neuron_cnt;
+        logic [15:0] batch_cnt;
+        logic [15:0] cur_n_batch;
 
         logic [63:0] uw [0:3];
         logic [47:0] cur_w_addr, cur_out_addr, cur_b_addr;
@@ -110,16 +112,21 @@ module device_prog #(
         logic [15:0]   last_tag;
 
         // ---- комбинационные смещения заданий ----
-        logic [WOFF_BITS-1:0] off_w;    // neuron * n_in * ELEM_BYTES
-        logic [WOFF_BITS-1:0] off_r;    // neuron * ELEM_BYTES
+        logic [AW-1:0] off_w;    // neuron * n_in * ELEM_BYTES
+        logic [WOFF_BITS-1:0] off_r;    // (batch*n_out + neuron) * ELEM_BYTES
+        logic [AW-1:0]        task_a;
         logic [AW-1:0]        task_w;
         logic [AW-1:0]        task_r;
         logic [AW-1:0]        fetch_addr;
 
         always_comb begin
             off_w = ({16'd0, neuron_cnt} * {16'd0, cur_n_in}) * ELEM_BYTES;
-            off_r = {16'd0, neuron_cnt} * ELEM_BYTES;
+            // batched GEMM: смещение результата учитывает батч и нейрон;
+            // смещение входа — батч*n_in*8. Без part-select (Vivado xvlog).
+            off_r = (({32'd0, batch_cnt} * {32'd0, cur_n_out}) + {32'd0, neuron_cnt}) * 32'd8;
             task_w = cur_w_addr[AW-1:0] + off_w[AW-1:0];
+            task_a = input_base[AW-1:0]
+                     + ({32'd0, batch_cnt} * {32'd0, cur_n_in} * 32'd8);
             task_r = cur_out_addr[AW-1:0] + off_r[AW-1:0];
             fetch_addr = table_base
                          + ({16'd0, u_idx} * 32'd32)
@@ -144,9 +151,11 @@ module device_prog #(
                 cur_n_out        <= '0;
                 cur_pass         <= '0;
                 cur_tag          <= '0;
+                cur_n_batch      <= '0;
                 cur_relu         <= '0;
                 cur_b_en         <= '0;
                 cur_src          <= '0;
+                batch_cnt        <= '0;
                 uw[0]            <= 64'h0;
                 uw[1]            <= 64'h0;
                 uw[2]            <= 64'h0;
@@ -230,6 +239,8 @@ module device_prog #(
                         cur_b_en     <= uw[3][33];
                         cur_src      <= uw[3][34];
                         cur_tag      <= uw[3][55:40];
+                        cur_n_batch  <= uw[3][63:56];   // batched GEMM: строк данных (0 = 1)
+                        batch_cnt    <= 16'd0;
                         pass_cnt     <= 16'd0;
                         neuron_cnt   <= 16'd0;
                         // вход прохода 0: src=data -> data_base, src=prev -> prev_out
@@ -249,11 +260,17 @@ module device_prog #(
                             desc_task_valid <= 1'b0;
                             if (neuron_cnt == (cur_n_out - 16'd1)) begin
                                 neuron_cnt <= 16'd0;
-                                if (pass_cnt == (cur_pass - 16'd1)) begin
-                                    // ---- юнит завершён ----
+                                // ---- batched GEMM: ещё есть строки данных -> следующий сэмпл ----
+                                if ((cur_n_batch != 16'd0) && (batch_cnt < (cur_n_batch - 16'd1))) begin
+                                    // batched: следующий batch-сэмпл (data_base постоянен;
+                                    // смещение строки даёт comb task_a = input_base + batch*n_in*8)
+                                    batch_cnt  <= batch_cnt + 16'd1;
+                                end else if (pass_cnt == (cur_pass - 16'd1)) begin
+                                    // ---- юнит (все батч-строки) завершён ----
                                     last_tag  <= cur_tag;
                                     prev_out  <= cur_out_addr[AW-1:0];
                                     pass_cnt  <= 16'd0;
+                                    batch_cnt <= 16'd0;
                                     if (u_idx == (n_units - 16'd1)) begin
                                         // программа закончилась -> mailbox (слово 0)
                                         mailbox_wr_addr  <= mailbox_base;
@@ -269,6 +286,7 @@ module device_prog #(
                                     // следующий проход: feed-forward (вход = собственный выход)
                                     pass_cnt   <= pass_cnt + 16'd1;
                                     input_base <= cur_out_addr[AW-1:0];
+                                    batch_cnt  <= 16'd0;
                                 end
                             end else begin
                                 neuron_cnt <= neuron_cnt + 16'd1;
@@ -276,7 +294,7 @@ module device_prog #(
                         end else if (!desc_task_valid) begin
                             // ---- ещё не представлена задача этого нейрона: выставить ----
                             desc_task_valid <= 1'b1;
-                            desc_task_a     <= input_base;
+                            desc_task_a     <= task_a;   // batched: вход строки batch_cnt
                             desc_task_w     <= task_w;
                             desc_task_r     <= task_r;
                             desc_task_n     <= cur_n_in;
