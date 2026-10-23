@@ -1039,3 +1039,8 @@ Stage Summary:
 - RTL tdot_axi4: функция in_win (окна diag 0x1000_0000..0x1000_1FFF, DDR 0x8000_0000..0x8FFF_FFFF) + стражи в CS_SCHED_KICK и CS_DP_KICK (невалидный адрес -> ретир без AXI, dp_stall_code=BADADDR).
 - Аудит (агент): confirmed in_win==BD-окно; найдено: CS_DP_KICK bad-ветка не попало FIFO и не уходила в цикл (риск зависания/нет mailbox) — ИСПРАВЛЕНО: dp_rdptr+1 + cstate<=CS_DP_KICK; осталось (задокументировано): легаси GO/fetch/table-read/completion/mailbox база не охраняются, спан base+n*8 не проверяется, _chk_ddr только в тест-классе и XdmaWinUpstream (другие бэкенды не покрыты).
 - verify_tdot_axi4 32: 4/4 несовпадений 0; xvlog tdot_axi4+device_prog OK; host py_compile OK.
+
+## 2026-10-23 — Тестирование платы после перепрошивки (новый коре, CORE_PARAMS=0x0404: NUM_MAC=4/ADDERS=4)
+- host-_chk_ddr: OK (все wioходы за окно -> ValueError; граница в окне -> OK) без железа.
+- device_prog end-to-end: по-прежнему работает (результат 0.5 = 0x021555555555, exit=0).
+- **Батчевый GEMM на плате: PASS** (scripts/test_dprog_batch_board.py): n_batch=2,n_out=2,n_in=2, один прогон -> 4 результата; expected [[0,-2.25],[2,3.5]], got [[5.7e-10,-2.25],[2.0,3.5]], max|err|=5.7e-10, mailbox=0. RTL-батч подтверждён на железе.
