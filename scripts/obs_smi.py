@@ -276,6 +276,24 @@ def main(argv=None):
             except Exception:
                 to_s = "n/a (firmware без регистров 0xF8/0xFC)"
 
+            # ---- DDR3-бюджет: окно 256 МБ (защита от переполнения) ----
+            ddr_limit = 0x1000_0000
+            ddr_base = 0x8000_0000
+            _regs = [0x4C, 0x54, 0xE8, 0xEC, 0xF0]   # desc,comp,dp_data,dp_table,dp_mbox (полные AXI)
+            _offs = []
+            for _r in _regs:
+                try:
+                    _x = rr(_r)
+                    if _x:
+                        _o = (_x - ddr_base) & 0xFFFFFFFF
+                        if _o < ddr_limit:
+                            _offs.append(_o)
+                except Exception:
+                    pass
+            ddr_used = (max(_offs) + 0x4000) if _offs else 0   # +16 КБ запас под последний регион
+            ddr_used = min(ddr_used, ddr_limit)
+            ddr_free = ddr_limit - ddr_used
+
             # ---- отрисовка кадра ----
             # dt_real вычислен выше (между двумя чтениями счётчиков prev_t->cur_t)
             s = (f"\x1b[2J\x1b[H"
@@ -300,6 +318,10 @@ def main(argv=None):
                  f"    AR_STALL={ars_p:.3f} %   R_WAIT={rwait_p:.3f} %\n"
                  f"    readback={'OK' if ddr_rd else ('MISMATCH' if ddr_rd is False else 'n/a')}    "
                  f"AXI timeout: {to_s}\n"
+                 f"  --------------------------------------------\n"
+                 f"  [ ПАМЯТЬ DDR3 ]      окно 256 МБ (защита от переполнения)\n"
+                 f"    лимит={ddr_limit/1024/1024:.0f} МБ  занято={ddr_used/1024/1024:.1f} МБ  "
+                 f"свободно={ddr_free/1024/1024:.1f} МБ ({100.0*ddr_free/ddr_limit:.0f} %)\n"
                  f"  --------------------------------------------\n"
                  f"  [ DEVICE_PROG ]\n"
                  f"    active={yn(dp_active)}  n_units={_n(dp_units)}\n"
