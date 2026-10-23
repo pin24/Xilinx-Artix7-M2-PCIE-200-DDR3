@@ -1059,9 +1059,9 @@ logic        irq_pending_q;      // поднято при опустошении
                     end
                 end
                 CS_SCHED_KICK: begin
-                    // entry действия задачи планировщика; страж окна: невалидный
-                    // адрес -> ретир без AXI (не вызывать недоступную память).
-                    if (!(in_win(job_data_addr_q) && in_win(job_weights_addr_q) && in_win(job_result_addr_q))) begin
+                    // entry действия задачи планировщика; страж окна.
+                    // адреса/счётчик безусловно (короткий путь к ctrl_rd_*),
+                    // in_win гейтит только ctrl_rd_start (AXI) и состояние (FATAL fix).
                     busy_q <= 1; done_q <= 0;
                     acc_valid_q <= 0;
                     use_sched_q <= 1'b1;
@@ -1075,14 +1075,15 @@ logic        irq_pending_q;      // поднято при опустошении
     align_q       <= ((job_data_addr_q[2:0] != 3'h0) ||
                       (job_weights_addr_q[2:0] != 3'h0) ||
                       (job_result_addr_q[2:0] != 3'h0));
-cstate <= CS_RD_DATA;
     ctrl_rd_addr  <= job_data_addr_q[AW-1:0];
                     ctrl_rd_total <= (n_total_sched > NUM_MAC) ? NUM_MAC
                                                               : n_total_sched;
-                    ctrl_rd_start <= 1;
+                    if (in_win(job_data_addr_q) && in_win(job_weights_addr_q) && in_win(job_result_addr_q)) begin
+                        ctrl_rd_start <= 1;
+                        cstate <= CS_RD_DATA;
                     end else begin
-                        // невалидный адрес: ретир задачи, не трогая AXI
-                        busy_q <= 0; done_q <= 1;
+                        // невалидный адрес: ретир задачи без AXI
+                        ctrl_rd_start <= 0;
                         sched_rptr_q <= sched_rptr_q + 10'd1;
                         done_cnt_q   <= done_cnt_q + 16'd1;
                         dp_stall_code_q <= DP_STALL_BADADDR;
@@ -1287,7 +1288,10 @@ cstate <= CS_RD_DATA;
                 end
                 CS_DP_KICK: begin
                     // постановка задачи из FIFO device_prog в ядро; страж окна.
-                    if (DEVPROG_EN && !(in_win(dp_z_a) && in_win(dp_z_w) && in_win(dp_z_r))) begin
+                    // адреса/счётчик назначаются БЕЗУСЛОВНО (короткий путь к ctrl_rd_*),
+                    // in_win влияет только на ctrl_rd_start (импульс AXI) и следующее
+                    // состояние — не на многоразрядный адресный путь (FATAL timing fix).
+                    if (DEVPROG_EN) begin
                         busy_q <= 1; done_q <= 0;
                         acc_valid_q <= 0;
                         use_dp_q      <= 1'b1;
@@ -1303,17 +1307,14 @@ cstate <= CS_RD_DATA;
                                           (dp_z_w[2:0] != 3'h0) ||
                                           (dp_z_r[2:0] != 3'h0));
                         dp_rdptr      <= dp_rdptr + 1;    // pop FIFO
-                        cstate        <= CS_RD_DATA;
+                        cstate        <= (in_win(dp_z_a) && in_win(dp_z_w) && in_win(dp_z_r))
+                                         ? CS_RD_DATA : CS_DP_KICK;
                         ctrl_rd_addr  <= dp_z_a[AW-1:0];
                         ctrl_rd_total <= ({16'h0, dp_z_n} > NUM_MAC) ? NUM_MAC
                                                                      : {16'h0, dp_z_n};
-                        ctrl_rd_start <= 1;
-                    end else if (DEVPROG_EN) begin
-                        // невалидный адрес от device_prog: снять задачу из FIFO и
-                        // продолжить программу (без AXI) - иначе нельзя зависать.
-                        dp_rdptr        <= dp_rdptr + 1;
-                        dp_stall_code_q <= DP_STALL_BADADDR;
-                        cstate          <= CS_DP_KICK;
+                        ctrl_rd_start <= (in_win(dp_z_a) && in_win(dp_z_w) && in_win(dp_z_r));
+                        if (!(in_win(dp_z_a) && in_win(dp_z_w) && in_win(dp_z_r)))
+                            dp_stall_code_q <= DP_STALL_BADADDR;
                     end else begin
                         cstate <= CS_IDLE;
                     end
