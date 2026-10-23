@@ -101,7 +101,7 @@ def main():
             err = pred - ys[:, 0]
             dev.write_dma(OUT_OFF, b"\x00" * (B*O*8))   # очистка out (необязательно)
             right = (err[:, None] * W2[0]) * (a_out * (1.0 - a_out))   # (curB,H)
-            W2[0] -= a.lr * (err @ a_out)
+            W2[0] -= a.lr * (err @ a_out) / curB
             W1 -= a.lr * (right.T @ xs) / curB
             dev.write_dma(W1_OFF, pack(W1.ravel()))
             dev.write_dma(W2_OFF, pack(W2.ravel()))
