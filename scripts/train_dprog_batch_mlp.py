@@ -21,7 +21,7 @@ from device_isa import _tf_to_bits48
 from block.tfloat48 import TFloat
 from xdma_driver import DeviceProgRunner, CompletionMailbox, REG_BASE, DDR3_BASE
 from test_dma_win import XdmaWinDma
-from nn_audio_common import make_analytic_batch
+from nn_audio_common import make_analytic_batch, load_dataset, make_training_batch
 
 F, H, O = 2, 16, 1
 DATA_OFF, W1_OFF, W2_OFF = 0x00B00000, 0x00B10000, 0x00B20000
@@ -53,12 +53,22 @@ def main():
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--samples", type=int, default=256)
     ap.add_argument("--lr", type=float, default=0.5)
+    ap.add_argument("--use-dataset", action="store_true", default=True,
+                    help="обучать на реальном датасете data\\audio_dataset_500_3s (по умолч.)")
+    ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
 
-    X, y = make_analytic_batch(a.samples, seed=0)
+    if a.use_dataset:
+        items = load_dataset(max_files=2000)
+        X, y = make_training_batch(items, a.samples, a.seed)
+        src = f"датасет (%d файлов)" % len(items)
+    else:
+        X, y = make_analytic_batch(a.samples, seed=a.seed)
+        src = "аналитика"
     X = np.asarray(X, np.float32).reshape(-1, F)
     y = np.asarray(y, np.float32).reshape(-1, 1)
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(a.seed)
+    print(f"Источник данных: {src}; samples={X.shape[0]}")
     W1 = rng.normal(0, 0.5, (H, F)).astype(np.float32)
     W2 = rng.normal(0, 0.5, (O, H)).astype(np.float32)
 
@@ -87,6 +97,20 @@ def main():
             runner._reg_w(runner.DP_TABLE_BASE, (DDR3_BASE + TABLE_OFF) & 0xFFFFFFFF)
             runner._reg_w(runner.DP_MBOX_BASE,  (DDR3_BASE + MBOX_OFF) & 0xFFFFFFFF)
             runner._reg_w(runner.DP_CTRL, (2 << 16) | 1)   # n_units=2, GO
+            # FIX-реки́йс (Вася, 2026-10-23): после GO дать программе улечься —
+            # дождаться, пока active спадает (данные mailbox дописались в FIFO/MIG),
+            # иначе c2h-чтение mailbox может застрять за «хвостом» записи.
+            for _ in range(500):
+                if not runner.state()["active"]:
+                    break
+                time.sleep(0.001)
+            # FIX-барьер WBDR (2026-10-23): провести одно завершённое чтение другой
+            # DDR-ячейки до целевого, чтобы дренировать async-FIFO конвертера и
+            # разорвать потенциальную write->read гонку на общем MIG-пути.
+            try:
+                dev.read_dma((DATA_OFF + 0x10) & 0xFFFFFFFF, 8)
+            except Exception:
+                pass
             mb = CompletionMailbox(dev, base_addr=MBOX_OFF)
             lsw = mb.read_status(timeout_ms=5000, expected=0)
             if (lsw & 0xFF) != 0:
