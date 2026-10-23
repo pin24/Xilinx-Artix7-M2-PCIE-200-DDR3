@@ -1045,3 +1045,8 @@ Stage Summary:
 - host-_chk_ddr: OK (все wioходы за окно -> ValueError; граница в окне -> OK) без железа.
 - device_prog end-to-end: по-прежнему работает (результат 0.5 = 0x021555555555, exit=0).
 - **Батчевый GEMM на плате: PASS** (scripts/test_dprog_batch_board.py): n_batch=2,n_out=2,n_in=2, один прогон -> 4 результата; expected [[0,-2.25],[2,3.5]], got [[5.7e-10,-2.25],[2.0,3.5]], max|err|=5.7e-10, mailbox=0. RTL-батч подтверждён на железе.
+
+## 2026-10-23 — Отладка chained-batch на 32/4
+- debug_dprog_chain.py: 2 юнита (src=data + src=prev) с n_batch. Итог: **ЧЕЙНИНГ-БАТЧ КОРРЕКТЕН на железе** - H err=0, O err=5.9e-8 при B=1, 2, 32 (веса фиксированные). Ранний «нет строк» = баг чтения в отладке (читал H*8 вместо B*H*8).
+- Следовательно переполнение TFloat в train_dprog_batch_mlp — host-баг математики/декода, НЕ железа: с неизменными весами батч-чёт везде сходится.
+- Скрипты: scripts/train_dprog_batch_mlp.py (WIP, числовой баг), scripts/debug_dprog_chain.py (доказано).
