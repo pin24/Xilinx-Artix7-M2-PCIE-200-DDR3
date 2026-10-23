@@ -810,6 +810,14 @@ logic        irq_pending_q;      // поднято при опустошении
     localparam int DP_WDOG_MAX = (1 << 22);   // ~4.2M тактов без прогресса = аварийный сброс
     logic [22:0] dp_wdog_cnt;             // FIX BUG-083: 1<<22 требует бит 22 (23 бита)
     localparam logic [15:0] DP_STALL_ABORT = 16'hAB01;  // код abort (отличный от watchdog A5A5)
+    localparam logic [15:0] DP_STALL_BADADDR = 16'hBAD0; // задача с адресом вне окон (2026-10-23)
+
+    // защита от переполнения DDR3: адреса задачи обязаны попадать в окно
+    // DDR3 0x8000_0000..0x8FFF_FFFF или diag_bram 0x1000_0000..0x1000_1FFF.
+    function automatic bit in_win(input [31:0] a);
+        in_win = ((a >= 32'h1000_0000) && (a < 32'h1000_2000)) ||
+                 ((a >= 32'h8000_0000) && (a <= 32'h8FFF_FFFF));
+    endfunction
     wire         dp_progress = dp_desc_task_valid || dp_mailbox_wr_start || dp_done ||
                                (cstate == CS_DP_MBOX1) || (cstate == CS_DP_MBOX2);
 
@@ -1051,7 +1059,9 @@ logic        irq_pending_q;      // поднято при опустошении
                     end
                 end
                 CS_SCHED_KICK: begin
-                    // entry действия задачи планировщика
+                    // entry действия задачи планировщика; страж окна: невалидный
+                    // адрес -> ретир без AXI (не вызывать недоступную память).
+                    if (!(in_win(job_data_addr_q) && in_win(job_weights_addr_q) && in_win(job_result_addr_q))) begin
                     busy_q <= 1; done_q <= 0;
                     acc_valid_q <= 0;
                     use_sched_q <= 1'b1;
@@ -1070,6 +1080,14 @@ cstate <= CS_RD_DATA;
                     ctrl_rd_total <= (n_total_sched > NUM_MAC) ? NUM_MAC
                                                               : n_total_sched;
                     ctrl_rd_start <= 1;
+                    end else begin
+                        // невалидный адрес: ретир задачи, не трогая AXI
+                        busy_q <= 0; done_q <= 1;
+                        sched_rptr_q <= sched_rptr_q + 10'd1;
+                        done_cnt_q   <= done_cnt_q + 16'd1;
+                        dp_stall_code_q <= DP_STALL_BADADDR;
+                        cstate <= CS_IDLE;
+                    end
                 end
                 CS_RD_DATA: begin
                     if (align_q) begin
@@ -1268,9 +1286,8 @@ cstate <= CS_RD_DATA;
                     end
                 end
                 CS_DP_KICK: begin
-                    // постановка задачи из FIFO device_prog в ядро (общий путь
-                    // исполнения: те же cur_*/n_left_q, что и CS_SCHED_KICK)
-                    if (DEVPROG_EN) begin
+                    // постановка задачи из FIFO device_prog в ядро; страж окна.
+                    if (DEVPROG_EN && !(in_win(dp_z_a) && in_win(dp_z_w) && in_win(dp_z_r))) begin
                         busy_q <= 1; done_q <= 0;
                         acc_valid_q <= 0;
                         use_dp_q      <= 1'b1;
@@ -1291,6 +1308,12 @@ cstate <= CS_RD_DATA;
                         ctrl_rd_total <= ({16'h0, dp_z_n} > NUM_MAC) ? NUM_MAC
                                                                      : {16'h0, dp_z_n};
                         ctrl_rd_start <= 1;
+                    end else if (DEVPROG_EN) begin
+                        // невалидный адрес от device_prog: снять задачу из FIFO и
+                        // продолжить программу (без AXI) - иначе нельзя зависать.
+                        dp_rdptr        <= dp_rdptr + 1;
+                        dp_stall_code_q <= DP_STALL_BADADDR;
+                        cstate          <= CS_DP_KICK;
                     end else begin
                         cstate <= CS_IDLE;
                     end

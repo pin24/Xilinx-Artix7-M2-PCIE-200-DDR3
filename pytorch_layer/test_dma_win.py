@@ -23,6 +23,8 @@ import struct
 import time
 from ctypes import wintypes
 
+DDR_SIZE = 0x1000_0000       # окно DDR3 (256 МБ); защита от переполнения (2026-10-23)
+
 # ---------------------------------------------------------------------------
 # Import the upstream base classes when possible (no side-effect-free fallback).
 # ---------------------------------------------------------------------------
@@ -242,6 +244,14 @@ class XdmaWinDma(XdmaDevice):
         return result
 
     # ---------------- DMA (h2c/c2h) ----------------------------------------
+    def _chk_ddr(self, ddr_off, length):
+        """Guard: чистый DDR3-офсет обязан помещаться в окно 256 МБ (0x10000000)."""
+        if ddr_off is None or ddr_off < 0 or length <= 0:
+            raise ValueError(f"DMA: bad offset/len {ddr_off}+{length}")
+        if ddr_off + length > DDR_SIZE:
+            raise ValueError(f"DMA: {ddr_off}+{length} выходит за окно DDR3 "
+                             f"{DDR_SIZE} (0x8000_0000..0x8FFF_FFFF)")
+
     def write_dma(self, ddr_off, data):
         """Write data into DDR3 at raw offset ddr_off via h2c_0.
 
@@ -249,11 +259,13 @@ class XdmaWinDma(XdmaDevice):
         XdmaLinux.write_dma. The DRIVER adds the AXI base centrally
         (dma_engine.c EngineProgramDma, XDMA_DDR3_AXI_BASE).
         """
+        self._chk_ddr(ddr_off, len(data))
         for off in range(0, len(data), self.DMA_CHUNK):
             chunk = data[off:off + self.DMA_CHUNK]
             self._xfer(self._h2c, True, ddr_off + off, chunk, len(chunk))
 
     def read_dma(self, ddr_off, length):
+        self._chk_ddr(ddr_off, length)
         out = bytearray()
         off = 0
         while off < length:
@@ -353,6 +365,7 @@ class XdmaWinDma(XdmaDevice):
             pass
 
     def write_dma_pipe(self, ddr_off, data, timeout_ms=10000):
+        self._chk_ddr(ddr_off, len(data))
         """Concurrent double-buffered h2c write (OPT-IN; default write_dma
         remains sequential). Pipelines DMA_CHUNK blocks through two slots;
         per-channel ordering is preserved because the card serializes one
@@ -385,6 +398,7 @@ class XdmaWinDma(XdmaDevice):
                 self._pipe_close(slot)
 
     def read_dma_pipe(self, ddr_off, length, timeout_ms=10000):
+        self._chk_ddr(ddr_off, length)
         """Concurrent double-buffered c2h read (OPT-IN; default read_dma
         remains sequential). Pipelines DMA_CHUNK blocks through two slots and
         reassembles them in chunk order. Raises XdmaError on timeout / error."""

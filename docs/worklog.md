@@ -1033,3 +1033,9 @@ Stage Summary:
 - **CPU** (`nn_audio_train_cpu.py`, итеративный SGD, 100 эпох): **0.1 с**, loss **0.139**.
 - Вывод: на features=2 (микро dot n=2) per-dot оверхед планировщика доминирует → FPGA в ~240 раз медленнее CPU; сила FPGA — большие n (512-elem dot), не мелкие. Для ускорения аудио-задачи нужен батчевый GEMM (в текущей ISA device_prog невыразим — RTL-доработка).
 - Скрипт per-sample device_prog: scripts/train_dprog_per_sample.py (механика работает на железе, ~62 мс/сэмпл/эпоху; числовая сходимость требует декода неканонического TFloat — открытый пункт).
+
+## 2026-10-23 — Защита от переполнения DDR3 (256 МБ) + аудит + регресс
+- host (test_dma_win.py + xdma_driver.XdmaWinUpstream): _chk_ddr в write/read_dma и *_pipe — ошибка при ddr_off+len>0x10000000.
+- RTL tdot_axi4: функция in_win (окна diag 0x1000_0000..0x1000_1FFF, DDR 0x8000_0000..0x8FFF_FFFF) + стражи в CS_SCHED_KICK и CS_DP_KICK (невалидный адрес -> ретир без AXI, dp_stall_code=BADADDR).
+- Аудит (агент): confirmed in_win==BD-окно; найдено: CS_DP_KICK bad-ветка не попало FIFO и не уходила в цикл (риск зависания/нет mailbox) — ИСПРАВЛЕНО: dp_rdptr+1 + cstate<=CS_DP_KICK; осталось (задокументировано): легаси GO/fetch/table-read/completion/mailbox база не охраняются, спан base+n*8 не проверяется, _chk_ddr только в тест-классе и XdmaWinUpstream (другие бэкенды не покрыты).
+- verify_tdot_axi4 32: 4/4 несовпадений 0; xvlog tdot_axi4+device_prog OK; host py_compile OK.

@@ -48,6 +48,7 @@ import os, subprocess, struct, time, threading
 # Полные AXI-адреса используются только для AXI-Lite (регистры).
 AXI_LITE_BASE = 0x4000_0000   # начало AXI-Lite окна (BAR0)
 DDR3_BASE     = 0x8000_0000   # база DDR3 (от неё отсчитываются смещения DMA)
+DDR3_SIZE     = 0x1000_0000   # окно DDR3 = 256 МБ; защита от переполнения (2026-10-23)
 
 # адресная база AXI-Lite регистров ядра. [FLAT] BD содержит ТОЛЬКО:
 #   M00 GPIO 0x40020000, M03 TDOT 0x40023000, M05 XADC 0x46000000,
@@ -585,10 +586,19 @@ class XdmaWinUpstream(XdmaDevice):
         h = self._usr if self._usr is not None else self._ctl
         self._xfer(h, True, addr - self.AXI_LITE_BASE, data, len(data))
 
+    def _chk_ddr(self, ddr_off, length):
+        """Guard от переполнения DDR3: смещение+длина обязаны быть в окне 256 МБ."""
+        if ddr_off is None or ddr_off < 0 or length <= 0:
+            raise ValueError(f"DMA: bad offset/len {ddr_off}+{length}")
+        if ddr_off + length > DDR3_SIZE:
+            raise ValueError(f"DMA: {ddr_off}+{length} выходит за окно DDR3 "
+                             f"{DDR3_SIZE}")
+
     def write_dma(self, ddr_off, data):
         # HOST contract: clean raw DDR3 offset (from 0x80000000), like
         # XdmaLinux.write_dma and ADDRESS_MAP §6. The DRIVER adds the AXI base
         # centrally (dma_engine.c EngineProgramDma, XDMA_DDR3_AXI_BASE).
+        self._chk_ddr(ddr_off, len(data))
         off = 0
         while off < len(data):
             chunk = data[off:off + self.DMA_CHUNK]
@@ -596,6 +606,7 @@ class XdmaWinUpstream(XdmaDevice):
             off += len(chunk)
 
     def read_dma(self, ddr_off, length):
+        self._chk_ddr(ddr_off, length)
         out = bytearray()
         off = 0
         while off < length:
