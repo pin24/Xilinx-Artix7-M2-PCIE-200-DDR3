@@ -137,14 +137,18 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
     localparam int NUM_LEVELS = $clog2(NUM_MAC);
     // раундов на самый широкий уровень (ceil((NUM_MAC/2)/ADDERS))
     localparam int RMAX = (NUM_MAC/2 + ADDERS - 1) / ADDERS;
+    // Ширина счётчиков редукции: 8 бит хватает до NUM_MAC<256 (в т.ч. 64 — сохраняем
+    // проходной тайминг базы), 16 бит — для NUM_MAC>=256 (та же ширина, что и в софтвере).
+    // Узкий счётчик на 64 убирает -0.4ns нарушение setup на пути u_mul/valid_q -> rnd_issue/CE.
+    localparam int CNT_WIDTH = (NUM_MAC >= 256) ? 16 : 8;
 
     logic [1:0]  phase;
-    logic [15:0] mul_done;               // счётчик завершённых умножений (до NUM_MAC=512 > 8 бит)
-    logic [15:0] t_lvl, t_cnt;             // t_cnt расширен до 16 бит: NUM_MAC/2 для 512 = 256 (>8 бит)
-    logic [15:0] rnd_issue;                // следующий раунд выдачи внутри уровня
-    logic [15:0] collected;                // собрано результатов на уровне
-    logic [ADDERS-1:0] ad_busy_q;         // аддер занят (от выдачи до valid_out)
-    logic [15:0] r_q [0:ADDERS-1];       // раунд операции, сидящей в аддере
+    logic [CNT_WIDTH-1:0] mul_done;
+    logic [CNT_WIDTH-1:0] t_lvl, t_cnt;
+    logic [CNT_WIDTH-1:0] rnd_issue;
+    logic [CNT_WIDTH-1:0] collected;
+    logic [ADDERS-1:0] ad_busy_q;
+    logic [CNT_WIDTH-1:0] r_q [0:ADDERS-1];
     logic        tree_can_issue;
     logic [47:0] dot_res, result_out_reg;
     logic        valid_q;
@@ -197,7 +201,7 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
                         end
                     end
                     begin
-                        logic [15:0] done_cnt;   // 16 бит: на NUM_MAC=512 счёт > 8 бит
+                        logic [CNT_WIDTH-1:0] done_cnt;
                         done_cnt = 0;
                         for (int x = 0; x < NUM_MAC; x++)
                             if (m_valid_out[x]) done_cnt = done_cnt + 1;
@@ -213,8 +217,8 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
                     end
                 end
                 PH_TREE: begin
-                    logic [15:0] cdone;
-                    logic [15:0] r_iss;
+                    logic [CNT_WIDTH-1:0] cdone;
+                    logic [CNT_WIDTH-1:0] r_iss;
                     logic [47:0] va, vb;
                     // --- 1) сбор результатов (запись в слот n = k + r*ADDERS) ---
                     cdone = 8'd0;
