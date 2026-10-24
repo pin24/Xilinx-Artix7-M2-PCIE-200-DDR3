@@ -1070,3 +1070,9 @@ Stage Summary:
 - Вася: классический Head-of-Line deadlock НА АСИНХРОННОЙ ГРАНИЦЕ: axi_clock_converter не справляется с перемежающимися ID read(AR/R) и write(AW/W/B) от SmartConnect в разных доменах; при застревании read в MIG конвертер не пускает write и наоборот -> круговая зависимость -> RVALID/BVALID не возвращаются -> весь data-порт мёртв (AXI-Live жив, это другой порт).
 - Ранжированный фикс: (1) AXI4 Register Slice перед конвертером (outstanding=1) - развязать реorder SmartConnect от async-моста; (2) NUM_READ/WRITE_OUTSTANDING=1 на MI к конвертеру в SmartConnect; (3) разделить c2h/h2c в отдельные SI-линии; (4) host-серй (fence) - триггер, не корень.
 - Web+/Vasya совпадают: причина не математика/декод/батч (сходятся на железе на короткой серии), а HoL на async-мосте под чередующимся read+write.
+
+## 2026-10-24 — Прошивка: HoL-фикс (axi_register_slice перед конвертером)
+- Корень (веб PG247/Single-Slave-per-ID + Вася): HoL-deadlock на async-границе при перемежающемся read+write на общем MIG-пути.
+- Правка scripts/xdma_ddr3_bd.tcl: вставлен axi_register_slice:2.1 между xdma_axi_smc/M00_AXI и axi_clock_converter (развязка реorder SmartConnect от async-моста). NUM_READ/WRITE_OUTSTANDING SmartConnect - read-only (не перебивается), поэтому не трогаем.
+- Валидация BD через temp-flow SKIP_SYNTH: exit=0, без ERROR/Cannot-set. Требует полной пересборки+прошивки для проверки на железе.
+- Тактирование: clk_out1 (125МГц) -> неявный BUFG -> глобальный клок-нет на все fabric-слоты (одна глобальная линия, норма для A7).

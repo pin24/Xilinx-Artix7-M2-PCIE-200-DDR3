@@ -497,6 +497,12 @@ proc create_root_design { parentCell } {
     CONFIG.NUM_MI {2} \
   ] $xdma_axi_smc
 
+  # FIX-HoL (BUG data-path, 2026-10-24): клиn при перемежающемся read+write на общем
+  # async-пути к MIG. Приём: register-slice между SMC.M00 и конвертером - развязать
+  # реorder SmartConnect от async-моста (NUM_READ/WRITE_OUTSTANDING SmartConnect read-only,
+  # не перезадаётся; контролируется самим слawом).
+  set axi_regslice_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 axi_regslice_0 ]
+
   # FIX-1bis (BUG-089, 2026-10-22): CDC 125->100 вынесен из SmartConnect наружу
   # в выделенный axi_clock_converter (AR# 66780, комьюнити-фикс «потерянного
   # write-response»). XDMA остаётся на 125 МГц.
@@ -608,7 +614,10 @@ proc create_root_design { parentCell } {
   connect_bd_intf_net -intf_net axi_datamover_1_M_AXI_S2MM [get_bd_intf_pins axi_datamover_1/M_AXI_S2MM] [get_bd_intf_pins xdma_axi_smc/S02_AXI]
   connect_bd_intf_net -intf_net tdot_m_port_S02 [get_bd_intf_pins xdma_axi_smc/S03_AXI] $tdot_m_port
 
-  connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
+  connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins axi_regslice_0/S_AXI]
+  connect_bd_intf_net -intf_net xdma_regslice_mig [get_bd_intf_pins axi_regslice_0/M_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
+  connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins axi_regslice_0/aclk]
+  connect_bd_net -net rst_core_125M_peripheral_aresetn [get_bd_pins axi_regslice_0/aresetn]
   connect_bd_intf_net -intf_net xdma_axi_smc_M00_conv [get_bd_intf_pins axi_clock_converter_0/M_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
   connect_bd_intf_net -intf_net xdma_axi_smc_M01_AXI [get_bd_intf_pins xdma_axi_smc/M01_AXI] [get_bd_intf_pins diag_bram_ctrl/S_AXI]
 
