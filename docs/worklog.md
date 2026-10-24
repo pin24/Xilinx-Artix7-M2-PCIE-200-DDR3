@@ -1185,3 +1185,11 @@ Stage Summary:
 - => дефекта редактирования нет: engine+device_prog на 64 КОРРЕКТНЫ. Поправил комментарий в device_prog.sv (header врал про [15:0]).
 - c2h-wedge на плате (read_dma DDR виснет) - это ОТДЕЛЬНАЯ аппаратная/дата-пат неисправность, НЕ движок. Для её диагностики нужен разведведход по data-пути на живом железе (снять ведж power-cycle, затем трассировка XDMA-C2H->SMC->regslice->conv->MIG).
 - Прошивка 64/2 (8-бит) на плате - поведение движка корректно; ведж c2h лечится power-cycle.
+
+## 2026-10-24 — C2H/H2C data-path DEADLOCK, переживает power-cycle. Диагноз на уровне BD.
+- Изоляция на живой плате (io_isolation): reg(AXI-Lite)=работает (MAGIC 544f4454), h2c_wr(DDR write)=HANG, c2h_rd(DDR read)=ERR timeout. => ВЕСЬ XDMA M_AXI->DDR путь мёртв И на чтение, И на запись, НЕ зависит от движка (голая host-запись вешается).
+- AXI-Lite жив (xdma_axi_lite_smc, отдельный, НЕ идёт через M00/конвертер). MIG судя по GPIO2 (0x03000000, mmcm_locked+init_calib_complete) калибруется.
+- Топология верна: SMC xdma_axi_smc (все домены 125: aclk0=XDMA axi_aclk 125, aclk1/2=125), regslice 128-бит (DATA_WIDTH=128, AXI4, ADDR28), converter async 125->100 (s=clk125/m=mig ui_clk, ACLK_ASYNC=1), MIG.S_AXI=100.
+- СИМПТОМ: постоянный deadlock сегмента M00->regslice->async-converter->MIG, переживает power-cycle, блокирует и чтение и запись.
+- Кандидат-причина: async-конвертер с ДВУМЯ независимыми сбросами (S-side rst_core_125M отпускается при lock clk125; M-side rst_mig_100M только после калибровки MIG). Если host-write попал в S-сторону конвертера пока M-side в reset - async-мост может застрять навсегда; AXI-Lite не через конвертер - жив.
+- ФИКС-ГОТ УТОЧНЕНИЮ: сделать reset data-пути (SMC/regslice/converter-S) зависимым от готовности ОБОИХ тактов (держать 125M-домен в reset до init_calib_complete MIG); либо добавить regslice на M-side конвертера между converter.M_AXI и MIG.S_AXI (буфериз. FIFO-интерфейс); либо проверить повтор/пересинхронизацию конвертера после калибровки.
