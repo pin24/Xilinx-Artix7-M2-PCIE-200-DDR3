@@ -139,12 +139,12 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
     localparam int RMAX = (NUM_MAC/2 + ADDERS - 1) / ADDERS;
 
     logic [1:0]  phase;
-    logic [7:0]  mul_done;
-    logic [7:0]  t_lvl, t_cnt;
-    logic [7:0]  rnd_issue;               // следующий раунд выдачи внутри уровня
-    logic [7:0]  collected;               // собрано результатов на уровне
+    logic [15:0] mul_done;               // счётчик завершённых умножений (до NUM_MAC=512 > 8 бит)
+    logic [15:0] t_lvl, t_cnt;             // t_cnt расширен до 16 бит: NUM_MAC/2 для 512 = 256 (>8 бит)
+    logic [15:0] rnd_issue;                // следующий раунд выдачи внутри уровня
+    logic [15:0] collected;                // собрано результатов на уровне
     logic [ADDERS-1:0] ad_busy_q;         // аддер занят (от выдачи до valid_out)
-    logic [7:0]  r_q [0:ADDERS-1];        // раунд операции, сидящей в аддере
+    logic [15:0] r_q [0:ADDERS-1];       // раунд операции, сидящей в аддере
     logic        tree_can_issue;
     logic [47:0] dot_res, result_out_reg;
     logic        valid_q;
@@ -197,7 +197,7 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
                         end
                     end
                     begin
-                        logic [7:0] done_cnt;
+                        logic [15:0] done_cnt;   // 16 бит: на NUM_MAC=512 счёт > 8 бит
                         done_cnt = 0;
                         for (int x = 0; x < NUM_MAC; x++)
                             if (m_valid_out[x]) done_cnt = done_cnt + 1;
@@ -213,8 +213,8 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
                     end
                 end
                 PH_TREE: begin
-                    logic [7:0] cdone;
-                    logic [7:0] r_iss;
+                    logic [15:0] cdone;
+                    logic [15:0] r_iss;
                     logic [47:0] va, vb;
                     // --- 1) сбор результатов (запись в слот n = k + r*ADDERS) ---
                     cdone = 8'd0;
@@ -267,9 +267,21 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
                     end
                     // --- 3) завершение уровня (после выдачи: перекрытие приоритетов) ---
                     if (collected + cdone >= t_cnt) begin
+                        `ifdef DEBUG
+                        $display("DBG end L%d t_cnt=%d collected=%d cdone=%d ad_res0=%x ad_res1=%x prod0=%x prod1=%x prod2=%x prod3=%x",
+                                 t_lvl, t_cnt, collected, cdone, ad_res[0], ad_res[1],
+                                 m_prod[0], m_prod[1], m_prod[2], m_prod[3]);
+                        `endif
                         if (t_lvl == NUM_LEVELS-1) begin
+                            `ifdef DEBUG
+                            $display("DBG end L%d t_cnt=%d dot_res=%012x", t_lvl, t_cnt, dot_res);
+                            `endif
                             phase <= PH_DONE;
                         end else begin
+                            `ifdef DEBUG
+                            $display("DBG end L%d t_cnt=%d -> tbuf[%d][0..3]=%x/%x/%x/%x", t_lvl, t_cnt, t_dst,
+                                     tbuf[t_dst][0], tbuf[t_dst][1], tbuf[t_dst][2], tbuf[t_dst][3]);
+                            `endif
                             t_lvl    <= t_lvl + 8'd1;
                             t_dst    <= ~t_dst;
                             t_cnt    <= t_cnt >> 1;
