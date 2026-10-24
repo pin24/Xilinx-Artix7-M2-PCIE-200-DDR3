@@ -1155,3 +1155,8 @@ Stage Summary:
 - Вывод: контроллер+загрузчик(wr_mask_n zero-fill)+datapath+reduction на NUM_MAC=64 ИСПРАВНЫ. 0.3125 на плате для той же 4-dot НЕ объясняется движком.
 - Три остаточных кандидата на 0.3125: (а) устаревшая прошивка на плате (битстрим 0x0140 может быть от старого RTL до фикса загрузчика); (б) device_prog-режим (не покрыт xsim: плата гоняет через device_prog, а я через legacy GO; но device_prog->тот же core, bit-exact на 32/4); (в) баг тест-скрипта.
 - Действие: пересобрать прошивку по ТЕКУЩЕМУ RTL (NUM_MAC=64 ADDERS=2 для запаса по таймингу, DEVPROG_EN=1) -> прошить -> повторный device_prog/tdot hardware-тест. Это объективно делит кандидаты: свежий битстрим + известный-корректный движок.
+
+## 2026-10-24 — СВЕЖАЯ прошивка NUM_MAC=64 ADDERS=2 собрана, TIMING PASS
+- build_flat.tcl NUM_MAC=64 ADDERS=2 DEVPROG_EN=1 JOBS=8 -> артефакты build/artifacts_flat/xdma_ddr3_core_top.{bit,bin,mcs}.
+- TIMING GATE PASSED: WNS=0.017 ns, WHS=0.033 ns, WPWS=N/A (закрылось, запас мал но положительный).
+- Следующий шаг (аппаратный, пользователь): прошить .mcs через scripts/flash_program.tcl (JTAG->QSPI W25Q128JVQ). ВАЖНО (HW NOTE скрипта): пока активен SPI-over-PCIe битстрим, флеш-пины заняты fabric IO -> Labtools 27-3347; нужна разгрузка/пауза конфигурации перед программированием. После прошивки + power-cycle: пересуставить test_dprog_single_dot.py (4-dot, ожид. 3.5) на свежем 64/2.
