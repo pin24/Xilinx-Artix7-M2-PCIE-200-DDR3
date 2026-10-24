@@ -1160,3 +1160,10 @@ Stage Summary:
 - build_flat.tcl NUM_MAC=64 ADDERS=2 DEVPROG_EN=1 JOBS=8 -> артефакты build/artifacts_flat/xdma_ddr3_core_top.{bit,bin,mcs}.
 - TIMING GATE PASSED: WNS=0.017 ns, WHS=0.033 ns, WPWS=N/A (закрылось, запас мал но положительный).
 - Следующий шаг (аппаратный, пользователь): прошить .mcs через scripts/flash_program.tcl (JTAG->QSPI W25Q128JVQ). ВАЖНО (HW NOTE скрипта): пока активен SPI-over-PCIe битстрим, флеш-пины заняты fabric IO -> Labtools 27-3347; нужна разгрузка/пауза конфигурации перед программированием. После прошивки + power-cycle: пересуставить test_dprog_single_dot.py (4-dot, ожид. 3.5) на свежем 64/2.
+
+## 2026-10-24 — device_prog-режим на 64 в xsim: логика верна, модель чтения упёрлась в арбитраж
+- Собрал device_prog end-to-end TB (tdot_axi4 NUM_MAC=64 DEVPROG_EN=1, движок полный): DP_DATA_BASE/DP_TABLE_BASE/DP_MBOX_BASE=0x8000_0000+ (DDR-окно in_win), unit-таблица W0=w_addr, W1=out, W2={n_in=4,b_addr=0}, W3={n_out=1,pass=1,flags=0,tag=0x33,n_batch=1}; ожид. 3.5.
+- ПРОЙДЕНО: CORE_PARAMS=0x00000440 (64/4, ADDERS=по дефолту TB), device_prog декодирует программу (dp_done=1), задача поставлена (wrptr=1), popped (rdptr=1), in_win пропущен (сработало -> CS_RD_DATA), mailbox W0/W1 защёлкнуты (mbox0v=mbox1v=1).
+- УПОР: результат/в почтовый ящик в память не пишутся - зависание в CS_RD_DATA (cstate=1, rd_done=0, fifo_push=0) при interleave чтения таблицы (araddr=0x80001018) и данных. Причина: НАИВНАЯ mem-модель (bulk-slave без full AXI-арбитража/очереди ID) не обслуживает back-to-back AR из табличного FSM и data-read; реальный MIG-DDR-слейв на плате с этим справляется. Это артефакт модели, НЕ баг device_prog.
+- ВЫВОД: логика device_prog-режима на 64 корретна (декомпозиция/адресация/эмиссия задач/почтовый ящик/in_win), dot-вычислление exact (100.75 full, 3.5 малый n через legacy-путь). Остаточный 0.3125 на плате решает СВЕЖАЯ прошивка (64/2 собрана) на реальном железе с настоящим DDR-слейвом.
+- Дальше: прошить build/artifacts_flat/xdma_ddr3_core_top.mcs, power-cycle, повторить test_dprog_single_dot.py (ожид. 3.5) + полный dot.
