@@ -132,13 +132,23 @@ def main():
             tot += float(np.mean(err**2))
         print(f"  ep {ep}: MSE={tot/n_batches:.6f}", flush=True)
     dt = time.monotonic() - t0
-    # инференс через тот же батчевый прогон (eval)
-    dev.write_dma(DATA_OFF, pack(X.ravel()))
-    runner._reg_w(runner.DP_DATA_BASE, (DDR3_BASE+DATA_OFF)&0xFFFFFFFF)
-    runner._reg_w(runner.DP_CTRL, (2 << 16) | 1)
-    mb = CompletionMailbox(dev, base_addr=MBOX_OFF); lsw = mb.read_status(timeout_ms=5000, expected=0)
-    oraw = dev.read_dma(OUT_OFF, len(X)*O*8)
-    pred_all = np.array([dec48(struct.unpack("<Q", oraw[j*8:j*8+8])[0] & 0xFFFFFFFFFFFF) for j in range(len(X))], np.float32)
+    # инференс через тот же батчевый прогон (eval) - по батчам, как в обучении
+    pred_all = np.zeros(len(X), np.float32)
+    for i in range(n_batches):
+        xs = X[i*B:(i+1)*B]; curB = xs.shape[0]
+        dev.write_dma(DATA_OFF, pack(xs.ravel()))
+        if curB < B:
+            dev.write_dma(DATA_OFF + curB*F*8, pack(np.zeros((B-curB, F), np.float32).ravel()))
+        runner._reg_w(runner.DP_DATA_BASE, (DDR3_BASE+DATA_OFF)&0xFFFFFFFF)
+        runner._reg_w(runner.DP_CTRL, (2 << 16) | 1)
+        for _ in range(500):
+            if not runner.state()["active"]: break
+            time.sleep(0.001)
+        try: dev.read_dma((DATA_OFF + 0x10) & 0xFFFFFFFF, 8)
+        except Exception: pass
+        mb = CompletionMailbox(dev, base_addr=MBOX_OFF); lsw = mb.read_status(timeout_ms=5000, expected=0)
+        oraw = dev.read_dma(OUT_OFF, B*O*8)[:curB*O*8]
+        pred_all[i*B:i*B+curB] = [dec48(struct.unpack("<Q", oraw[o*8:o*8+8])[0] & 0xFFFFFFFFFFFF) for o in range(curB*O)]
     rmse = float(np.sqrt(np.mean((pred_all - y.ravel())**2)))
     print(f"train {a.epochs} ep, {len(X)} samples, {dt:.1f} s ({dt/len(X)*1e3:.2f} ms/sample/epoch); infer RMSE={rmse:.5f}")
     dev.close(); return 0
