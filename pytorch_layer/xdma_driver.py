@@ -1037,9 +1037,9 @@ class TdotScheduler:
             n = len(data_bits)
             if n == 0 or len(weights_bits) != n:
                 raise ValueError(f"job {idx}: пусто/размеры не совпадают")
-            if n > 16 * self.num_mac:
+            if n > 32 * self.num_mac:
                 raise ValueError(f"job {idx}: n={n} > MAX_N_TOTAL="
-                                 f"{16 * self.num_mac} (сатурация в RTL)")
+                                 f"{32 * self.num_mac} (сатурация в RTL; MAX_PASSES=32)")
             data_blob += _pack_tf48(data_bits)
             w_blob += _pack_tf48(weights_bits)
             meta.append((n, tag & 0xFFFF, result_off))

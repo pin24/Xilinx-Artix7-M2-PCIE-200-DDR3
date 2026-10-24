@@ -134,10 +134,9 @@ class FpgaBackend:
 
     def _run_fpga(self, a, b, batch, a_bits=None, b_bits=None):
         # Каждая строка батча = одна задача планировщика (ring). Длина n до
-        # 16*NUM_MAC покрывается long-dot в RTL сама. a_bits/b_bits — уже
-        # сконвертированные (для run_dot_bits), иначе конвертируем здесь.
-        if self.n > 16 * self.num_mac:
-            raise ValueError(f"n={self.n} > MAX_N_TOTAL={16 * self.num_mac}")
+        # 32*NUM_MAC покрывается long-dot в RTL сама (MAX_PASSES=32, логический 64-MAC).
+        if self.n > 32 * self.num_mac:
+            raise ValueError(f"n={self.n} > MAX_N_TOTAL={32 * self.num_mac} (MAX_PASSES=32, логич. 64-MAC)")
         from xdma_driver import TdotScheduler
         dev = self._ensure_device()
         if self._sched is None or getattr(self._sched, "dev", None) is not dev:

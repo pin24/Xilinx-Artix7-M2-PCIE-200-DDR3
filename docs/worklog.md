@@ -1076,3 +1076,9 @@ Stage Summary:
 - Правка scripts/xdma_ddr3_bd.tcl: вставлен axi_register_slice:2.1 между xdma_axi_smc/M00_AXI и axi_clock_converter (развязка реorder SmartConnect от async-моста). NUM_READ/WRITE_OUTSTANDING SmartConnect - read-only (не перебивается), поэтому не трогаем.
 - Валидация BD через temp-flow SKIP_SYNTH: exit=0, без ERROR/Cannot-set. Требует полной пересборки+прошивки для проверки на железе.
 - Тактирование: clk_out1 (125МГц) -> неявный BUFG -> глобальный клок-нет на все fabric-слоты (одна глобальная линия, норма для A7).
+
+## 2026-10-24 — Черновик «логический 64-MAC» (втиснуть в чип без роста LUT)
+- Факт: полная установка 32/4 = LUT 98170/133800 (73.4%), FF 47.3%, BRAM 11.9%, DSP 0.4%.
+- Физический NUM_MAC=64 (+~40-50k LUT) НЕ влезет (~>134k).
+- MAX_N_TOTAL = MAX_PASSES x NUM_MAC = max длина dot. MAX_PASSES - бюджет последовательных проходов (матрица переиспользуется; >NUM_MAC -> несколько проходов с накоплением), не привязан к NUM_MAC.
+- Черновик: RTL MAX_PASSES 16->32 (tdot_axi4.sv), host 16*NUM_MAC -> 32*NUM_MAC (xdma_driver.py, fpga_backend.py). Даёт max dot 32x32=1024 = тот же предел, что у физ. 64-MAC с 16 проходами, без роста LUT. Проверено: xvlog tdot_axi4 OK, py_compile host OK.

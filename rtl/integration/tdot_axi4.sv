@@ -166,7 +166,7 @@ module tdot_axi4 #(
     // для будущих расширений (например, динамический BURST_RD_LEN).
 
     // Long-dot: максимум проходов по NUM_MAC пар (сатурация n_total).
-    localparam int MAX_PASSES  = 16;
+    localparam int MAX_PASSES  = 32;   // 32 = «логический 64-MAC» (1024 эл.): та же NUM_MAC-матрица, до 32 проходов (2026-10-24)
     localparam int MAX_N_TOTAL = MAX_PASSES * NUM_MAC;
 
     logic clk, rst_n;
