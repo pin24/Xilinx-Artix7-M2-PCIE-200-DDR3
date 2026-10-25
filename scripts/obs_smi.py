@@ -77,18 +77,22 @@ def main(argv=None):
 
     dev = Backend(base=base)
     core = TdotCore(dev, num_mac=args.num_mac or 32, ddr_base=args.ddr_base)
-    # Авто-детект NUM_MAC из CAPS (OBS 0x74): если --num-mac не задан — берём
-    # из железа; если задан явно — предупреждаем при расхождении с CAPS.
+    # Авто-детект NUM_MAC/ADDERS: читаем CORE_PARAMS (0x64, надёжный регистр).
+    # Пробуем OBS-CAPS (0x74) только как доп. источник (он может быть недоступен на
+    # прошивке без OBS-счётчиков -> timeout из-за отсутствия OBS_CTRL).
+    core_params = None
     try:
-        caps_nm = int(core.read_caps().get("num_mac") or 0)
+        p = core._reg_r(0x64)
+        core_params = {"num_mac": p & 0xFF, "adders": (p >> 8) & 0xFF}
     except Exception as e:
-        caps_nm = 0
-        print(f"  WARN: CAPS недоступны ({e}); NUM_MAC=16 (fallback)")
+        print(f"  WARN: CORE_PARAMS недоступны ({e})")
+    caps_nm = core_params["num_mac"] if core_params else None
     if args.num_mac is None:
         args.num_mac = caps_nm or 16
-        print(f"  NUM_MAC авто-детект из CAPS: {args.num_mac}")
+        print(f"  NUM_MAC авто-детект: {args.num_mac}"
+              + (f" (ADDERS={core_params['adders']})" if core_params else ""))
     elif caps_nm and caps_nm != args.num_mac:
-        print(f"  WARN: --num-mac={args.num_mac} != CAPS NUM_MAC={caps_nm}; "
+        print(f"  WARN: --num-mac={args.num_mac} != CORE_PARAMS NUM_MAC={caps_nm}; "
               f"использую {caps_nm}")
         args.num_mac = caps_nm
     # (Реальная скорость линка GT/s из user-mode недоступна; показываем только
@@ -309,36 +313,36 @@ def main(argv=None):
                  f"    CYCLES    {cur['cycles']:>14,d}   (Δt кадра {dt_real*1000:.0f} мс)\n"
                  f"  --------------------------------------------\n"
                  f"  [ КОЛЬЦО / ПЛАНИРОВЩИК ]\n"
-                 f"    RPTR={_n(rptr)}  WPTR={_n(wptr)}  occupy={occ_s}  "
-                 f"done_cnt={_n(done_cnt)}\n"
+                 f"    RPTR={_n(rptr)}  WPTR={_n(wptr)}  occupy={occ_s}\n  "
+                 f"    done_cnt={_n(done_cnt)}\n"
                  f"    sched_busy={yn(sched_busy)}  irq_pend={yn(irq_pend)}\n"
                  f"  --------------------------------------------\n"
                  f"  [ DDR3 / AXI ]         Δ за кадр\n"
-                 f"    AR=+{dar:,d}   BEAT=+{dbeat:,d}   WR=+{dwr:,d}   fifo_full=+{dfifo:,d}\n"
+                 f"    AR=+{dar:,d}  BEAT=+{dbeat:,d}  WR=+{dwr:,d}\n    fifo_full=+{dfifo:,d}\n"
                  f"    AR_STALL={ars_p:.3f} %   R_WAIT={rwait_p:.3f} %\n"
                  f"    readback={'OK' if ddr_rd else ('MISMATCH' if ddr_rd is False else 'n/a')}    "
-                 f"AXI timeout: {to_s}\n"
+                 f"    AXI timeout: {to_s}\n"
                  f"  --------------------------------------------\n"
-                 f"  [ ПАМЯТЬ DDR3 ]      окно 256 МБ (защита от переполнения)\n"
-                 f"    лимит={ddr_limit/1024/1024:.0f} МБ   резерв ядра(по базам)={ddr_used/1024/1024:.1f} МБ\n"
+                 f"  [ ПАМЯТЬ DDR3 ]\n\n    окно 256 МБ (защита от переполнения)\n"
+                 f"    лимит={ddr_limit/1024/1024:.0f} МБ\n\n   Резерв ядра(по базам)={ddr_used/1024/1024:.1f} МБ\n"
                  f"    свободно из бюджета={ddr_free/1024/1024:.1f} МБ ({100.0*ddr_free/ddr_limit:.0f} %)\n"
                  f"  --------------------------------------------\n"
                  f"  [ DEVICE_PROG ]\n"
                  f"    active={yn(dp_active)}  n_units={_n(dp_units)}\n"
                  f"  --------------------------------------------\n"
-                 f"  [ XADC / СВЯЗЬ ]\n"
-                 f"    XADC: {xadc_s}\n"
-                 f"    backend={type(dev).__name__}   reg-ping={reg_us:.1f} мкс   "
-                 f"REGMAP_v={_n(regmap_v)}\n"
-                 f"  --------------------------------------------\n"
-                 f"  [ АКТИВНОСТЬ ]         Δ за кадр\n"
-                 f"    AR=+{dar:,d}  BEAT=+{dbeat:,d}  WR=+{dwr:,d}  JOB=+{dj:,d}  "
+                 #f"  [ XADC / СВЯЗЬ ]\n"
+                 #f"    XADC: {xadc_s}\n"
+                 #f"    backend={type(dev).__name__}   reg-ping={reg_us:.1f} мкс   "
+                 #f"REGMAP_v={_n(regmap_v)}\n"
+                 #f"  --------------------------------------------\n"
+                 f"  [ АКТИВНОСТЬ ]         Δ за кадр\n\n"
+                 f"    AR=+{dar:,d}  BEAT=+{dbeat:,d}  WR=+{dwr:,d}\n   JOB=+{dj:,d}  "
                  f"FIFO_FULL=+{dfifo:,d}\n"
                  f"    {bw_label} = {dmamb:8.1f} MB/s\n"
                  f"  --------------------------------------------\n"
-                 f"  [ КУМУЛЯТИВНО ]        полные счётчики (сброс: --clear)\n"
-                 f"    AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  WR={cur['wr']:,d}  "
-                 f"JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"
+                 f"  [ КУМУЛЯТИВНО ]\n        \n        полные счётчики (сброс: --clear)\n"
+                 f"    AR={cur['ar']:,d}  BEAT={cur['beat']:,d}  WR={cur['wr']:,d}  \n"
+                 f"    JOB={cur['job']:,d}  FIFO_FULL={cur['fifo_full']:,d}\n"
                  f"  ============================================\n")
             sys.stdout.write(s)
             sys.stdout.flush()
