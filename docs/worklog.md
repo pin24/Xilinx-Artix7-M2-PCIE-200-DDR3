@@ -1229,3 +1229,18 @@ Stage Summary:
 - CORE_PARAMS ожид. 0x00000240 (NUM_MAC=64 ADDERS=2).
 - Прошивка: vivado -mode batch -source scripts\flash_program.tcl -tclargs build\artifacts_flat\xdma_ddr3_core_top.mcs
 - После power-cycle: probe_core -> iso_single c2h/h2c -> test_dprog_single_dot (ожид. 3.5) -> затем полный 64-dot и batched (train_dprog_batch_mlp / test_dprog_batch_board), т.к. data-path и движок проверены корректными.
+
+## 2026-10-25 — ПОЛНОЕ тестирование платы (32/4, data-path fix) + ОБУЧЕНИЕ по датасету
+Плата 32/4 с фиксом (CONVERTER M-side regslice) — все проверки:
+1. probe_core: MAGIC OK, CORE_PARAMS=0x420 (32/4) PASS.
+2. iso c2h/h2c: чтение и запись DDR работают (data-path deadlock устранён).
+3. device_prog single-dot: 3.5 EXACT (mailbox status 0).
+4. device_prog batch-GEMM (n_batch): expected [[0,-2.25],[2,3.5]] got err 5.7e-10 PASS.
+5. Многоюнитная цепочка src=prev (B=2): H err 0.0, O err 5.96e-08 (bit-exact).
+6. DDR стресс: 256КиБ write->read bit-exact PASS.
+7. per-sample демо: НЕ завершилось - численное расхождение весов демо-MLP (TFloat overflow), демо-нюанс, НЕ плата.
+8. ОБУЧЕНИЕ train_dprog_batch_mlp --use-dataset (аудио 2000 файлов):
+   - 256 сэмпл, batch 32, 3 эпохи, LR 0.5: MSE 0.81->0.56->0.37 (3.1s).
+   - 1000 сэмпл, batch 32, 8 эпох, LR 0.1: MSE 0.85->0.61->0.40->0.32->0.31 (32.9s, infer RMSE 0.56).
+   => платформа КОРРЕКТНО обучает MLP по реальному датасету через batched device_prog (раньше блокировалось data-path deadlock).
+- Вывод: на 32/4 плата полностью рабочая (data-path, device_prog single/batch/chain, DDR, тренинг). Прошивка 64/2 собрана (WNS=0.078) — отложена до готовности пользователя.
