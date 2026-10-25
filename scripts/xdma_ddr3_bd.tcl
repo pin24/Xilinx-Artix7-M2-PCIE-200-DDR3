@@ -519,11 +519,8 @@ proc create_root_design { parentCell } {
   # (100MHz/rst_mig домен). Диагноз: h2c-запись виснет навсегда = потеря write-response
   # (BRESP) в async-конвертере -> блокирует S00->M00 и чтения. Регистровый срез на 100-стороне
   # буферизует/регистрирует handshake на границе с MIG, не давая конвертеру потерять BRESP.
-  set axi_regslice_0_m [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 axi_regslice_0_m ]
-  # МИГ имеет USER_WIDTH=0; у дефолтного regslice авто-USER_WIDTH=4 => рассогласование,
-  # провоцировавшее driverless-сети (s_axi_aruser[12]) в SmartConnect и краш opt_design
-  # (EXCEPTION_ACCESS_VIOLATION) на 64. Явно обнуляем USER ширину на regslice_M.
-  set_property -dict [list CONFIG.USER_WIDTH {0}] $axi_regslice_0_m
+set axi_regslice_0_m [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 axi_regslice_0_m ]
+  set axi_regslice_0_s [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 axi_regslice_0_s ]
 
   # AXI-Lite crossbar: host M_AXI_LITE -> GPIO / mm2s ctrl / s2mm ctrl / tdot / xadc
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
@@ -629,8 +626,11 @@ proc create_root_design { parentCell } {
   connect_bd_intf_net -intf_net tdot_m_port_S02 [get_bd_intf_pins xdma_axi_smc/S03_AXI] $tdot_m_port
 
   connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins axi_regslice_0/S_AXI]
-  connect_bd_intf_net -intf_net xdma_regslice_mig [get_bd_intf_pins axi_regslice_0/M_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
+  connect_bd_intf_net -intf_net r0_rs [get_bd_intf_pins axi_regslice_0/M_AXI] [get_bd_intf_pins axi_regslice_0_s/S_AXI]
+  connect_bd_intf_net -intf_net rs_conv [get_bd_intf_pins axi_regslice_0_s/M_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
   connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins axi_regslice_0/aclk]
+  connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins axi_regslice_0_s/aclk]
+  connect_bd_net -net rst_core_125M_peripheral_aresetn [get_bd_pins axi_regslice_0_s/aresetn]
   # конвертер -> [M-side regslice] -> MIG
   connect_bd_intf_net -intf_net conv_mregslice [get_bd_intf_pins axi_clock_converter_0/M_AXI] [get_bd_intf_pins axi_regslice_0_m/S_AXI]
   connect_bd_intf_net -intf_net mregslice_mig [get_bd_intf_pins axi_regslice_0_m/M_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
