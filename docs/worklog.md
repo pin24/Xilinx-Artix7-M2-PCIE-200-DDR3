@@ -1193,3 +1193,9 @@ Stage Summary:
 - СИМПТОМ: постоянный deadlock сегмента M00->regslice->async-converter->MIG, переживает power-cycle, блокирует и чтение и запись.
 - Кандидат-причина: async-конвертер с ДВУМЯ независимыми сбросами (S-side rst_core_125M отпускается при lock clk125; M-side rst_mig_100M только после калибровки MIG). Если host-write попал в S-сторону конвертера пока M-side в reset - async-мост может застрять навсегда; AXI-Lite не через конвертер - жив.
 - ФИКС-ГОТ УТОЧНЕНИЮ: сделать reset data-пути (SMC/regslice/converter-S) зависимым от готовности ОБОИХ тактов (держать 125M-домен в reset до init_calib_complete MIG); либо добавить regslice на M-side конвертера между converter.M_AXI и MIG.S_AXI (буфериз. FIFO-интерфейс); либо проверить повтор/пересинхронизацию конвертера после калибровки.
+
+## 2026-10-24 — Правки для c2h-wedge и 64-тайминга; собрана 32/4 для валидации
+- BD-фикс: rst_data_125M (proc_sys_reset на clk125) + inv_mig_ready (NOT util_vector_logic) - сброс 125M data-пути (regslice aresetn + converter s_axi_aresetn) гейтится по !mig_init_calib_complete (aux_reset_in). Убраны старые связи rst_core_125M->regslice/converter-S. BD validate PASS (SKIP_SYNTH=1).
+- RTL: CNT_WIDTH=(NUM_MAC>=256)?16:8 - узкий счётчик на 64 вернул проходной тайминг (WNS был -0.395 от безусловного 16-бит при 64; теперь 32/4 даёт WNS=0.058, WHS=0.013 PASS).
+- Собрана 32/4 (NUM_MAC=32 ADDERS=4 DEVPROG_EN=1) с данным фиксом - артефакты build/artifacts_flat (WNS=0.058). Это know-good конфиг для валидации data-path reset-фикса на плате.
+- След. шаг: прошить 32/4 (.mcs), power-cycle, прогнать probe_core + io_isolation (h2c/c2h) - если deadlock ушёл, фикс data-path верен; затем вернуться к 64 (тайминг: CNT_WIDTH=8 на 64 должен восстановить проход WNS~0.017 как в базовой 64/2).

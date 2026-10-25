@@ -425,15 +425,10 @@ proc create_root_design { parentCell } {
   set rst_mig_7series_0_100M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_mig_7series_0_100M ]
   set rst_core_125M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_core_125M ]
 
-  # FIX data-path deadlock (2026-10-24): 125-домен ДАННЫХ (regslice + converter S-side)
-  # держится в reset, пока MIG не откалиброван (aux_reset_in = !init_calib_complete).
-  # Это не даёт ни одной транзакции XDMA/движка войти в async-конвертер, пока его
-  # M-сторона (100MHz/MIG) ещё в reset — устраняет постоянный deadlock M00->MIG,
-  # который переживал power-cycle (h2c И c2h висли, AXI-Lite был жив). Сброс остаётся
-  # синхронизирован по 125 (proc_sys_reset на clk125), т.е. без метастабильности на regslice.
-  set rst_data_125M [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_data_125M ]
-  set inv_mig_ready [ create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic:2.0 inv_mig_ready ]
-  set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] $inv_mig_ready
+  # ---- Откат спекулятивного fix reset-гейта (2026-10-24) ----
+  # rst_data_125M/inv_mig_ready не дал эффекта на data-path deadlock и мог сам
+  # держать путь в reset (если aux_reset_in не отпускал). Возвращаем regslice и
+  # converter.S-side на штатный rst_core_125M. (Удалены на бисекционном билде.)
 
   set util_ds_buf [ create_bd_cell -type ip -vlnv xilinx.com:ip:util_ds_buf:2.2 util_ds_buf ]
   set_property CONFIG.C_BUF_TYPE {IBUFDSGTE} $util_ds_buf
@@ -520,6 +515,11 @@ proc create_root_design { parentCell } {
   # FIX-1bis (BUG-089): async-режим у 2.1 уже по умолчанию (ACLK_ASYNC=1,
   # SYNCHRONIZATION_STAGES=3); фиксируем явно как страховку от auto-sync.
   set_property -dict [list CONFIG.ACLK_ASYNC {1}] $axi_clock_converter_0
+  # FIX/БИСЕКЦИЯ (2026-10-24): M-side axi_register_slice между converter.M_AXI и MIG.S_AXI
+  # (100MHz/rst_mig домен). Диагноз: h2c-запись виснет навсегда = потеря write-response
+  # (BRESP) в async-конвертере -> блокирует S00->M00 и чтения. Регистровый срез на 100-стороне
+  # буферизует/регистрирует handshake на границе с MIG, не давая конвертеру потерять BRESP.
+  set axi_regslice_0_m [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 axi_regslice_0_m ]
 
   # AXI-Lite crossbar: host M_AXI_LITE -> GPIO / mm2s ctrl / s2mm ctrl / tdot / xadc
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]
@@ -627,12 +627,12 @@ proc create_root_design { parentCell } {
   connect_bd_intf_net -intf_net xdma_axi_smc_M00_AXI [get_bd_intf_pins xdma_axi_smc/M00_AXI] [get_bd_intf_pins axi_regslice_0/S_AXI]
   connect_bd_intf_net -intf_net xdma_regslice_mig [get_bd_intf_pins axi_regslice_0/M_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
   connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins axi_regslice_0/aclk]
-  # FIX data-path deadlock: regslice + converter.S-сброс от rst_data_125M (гейт MIG-ready),
-  # НЕ от rst_core_125M (иначе транзакция могла войти в S-сторону конвертера пока M-side в reset).
-  connect_bd_net -net rst_data_125M_peripheral_aresetn [get_bd_pins rst_data_125M/peripheral_aresetn] \
-  [get_bd_pins axi_regslice_0/aresetn] \
-  [get_bd_pins axi_clock_converter_0/s_axi_aresetn]
-  connect_bd_intf_net -intf_net xdma_axi_smc_M00_conv [get_bd_intf_pins axi_clock_converter_0/M_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
+  # конвертер -> [M-side regslice] -> MIG
+  connect_bd_intf_net -intf_net conv_mregslice [get_bd_intf_pins axi_clock_converter_0/M_AXI] [get_bd_intf_pins axi_regslice_0_m/S_AXI]
+  connect_bd_intf_net -intf_net mregslice_mig [get_bd_intf_pins axi_regslice_0_m/M_AXI] [get_bd_intf_pins mig_7series_0/S_AXI]
+  # regslice_M на 100MHz MIG-домене
+  connect_bd_net -net mig_7series_0_ui_clk [get_bd_pins axi_regslice_0_m/aclk]
+  connect_bd_net -net rst_mig_7series_0_100M_peripheral_aresetn [get_bd_pins axi_regslice_0_m/aresetn]
   connect_bd_intf_net -intf_net xdma_axi_smc_M01_AXI [get_bd_intf_pins xdma_axi_smc/M01_AXI] [get_bd_intf_pins diag_bram_ctrl/S_AXI]
 
   # AXI-Lite masters
@@ -695,18 +695,11 @@ proc create_root_design { parentCell } {
   connect_bd_net -net mig_7series_0_ui_clk [get_bd_pins mig_7series_0/ui_clk] \
   [get_bd_pins rst_mig_7series_0_100M/slowest_sync_clk]
 
-  # FIX-1bis: клоки/сбросы axi_clock_converter (SCLK=125 fabric, MCLK=100 MIG)
+  # FIX-1bis: клоки/сбросы axi_clock_converter (SCLK=125 fabric, MCLK=100 MIG); S-side -> rst_core_125M
   connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins axi_clock_converter_0/s_axi_aclk]
   connect_bd_net -net mig_7series_0_ui_clk [get_bd_pins axi_clock_converter_0/m_axi_aclk]
+  connect_bd_net -net rst_core_125M_peripheral_aresetn [get_bd_pins axi_clock_converter_0/s_axi_aresetn]
   connect_bd_net -net rst_mig_7series_0_100M_peripheral_aresetn [get_bd_pins axi_clock_converter_0/m_axi_aresetn]
-  # S-side сброс конвертера идёт от rst_data_125M (см. блок с regslice): гейт MIG-ready,
-  # синхронизирован по 125.
-  # --- rst_data_125M: такт, замок, внешний сброс, aux (гейт MIG-ready) ---
-  connect_bd_net -net clk125_core_wiz_clk_out1 [get_bd_pins rst_data_125M/slowest_sync_clk]
-  connect_bd_net -net clk125_core_wiz_locked [get_bd_pins rst_data_125M/dcm_locked]
-  connect_bd_net -net rst_core_125M_peripheral_aresetn [get_bd_pins rst_data_125M/ext_reset_in]
-  connect_bd_net -net mig_7series_0_init_calib_complete [get_bd_pins inv_mig_ready/Op1]
-  connect_bd_net -net mig_7series_0_init_calib_complete_inv [get_bd_pins inv_mig_ready/Res] [get_bd_pins rst_data_125M/aux_reset_in]
 
   connect_bd_net -net mig_7series_0_ui_clk_sync_rst [get_bd_pins mig_7series_0/ui_clk_sync_rst] \
   [get_bd_pins rst_mig_7series_0_100M/ext_reset_in]
