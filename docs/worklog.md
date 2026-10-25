@@ -1199,3 +1199,10 @@ Stage Summary:
 - RTL: CNT_WIDTH=(NUM_MAC>=256)?16:8 - узкий счётчик на 64 вернул проходной тайминг (WNS был -0.395 от безусловного 16-бит при 64; теперь 32/4 даёт WNS=0.058, WHS=0.013 PASS).
 - Собрана 32/4 (NUM_MAC=32 ADDERS=4 DEVPROG_EN=1) с данным фиксом - артефакты build/artifacts_flat (WNS=0.058). Это know-good конфиг для валидации data-path reset-фикса на плате.
 - След. шаг: прошить 32/4 (.mcs), power-cycle, прогнать probe_core + io_isolation (h2c/c2h) - если deadlock ушёл, фикс data-path верен; затем вернуться к 64 (тайминг: CNT_WIDTH=8 на 64 должен восстановить проход WNS~0.017 как в базовой 64/2).
+
+## 2026-10-25 — 32/4 с M-side regslice собрана (WNS=0.250); готово к прошивке
+- build_flat.tcl NUM_MAC=32 ADDERS=4 DEVPROG_EN=1: TIMING PASSED WNS=0.250 WHS=0.029.
+- Конфигурация бисек-фикса: SMC.M00 -> regslice(125) -> conv(async 125->100) -> axi_regslice_0_m(100) -> MIG.S_AXI(100). Спекулятивный rst_data_125M ОТКАЧЕН (снят - не влиял, мог сам держать reset). util_ds_buf дубль в tcl убран.
+- Цель: проверить гипотезу потерянного write-response (BRESP) в async-конвертере: M-side regslice буферизует handshake на 100-стороне перед MIG. Если h2c/c2h оживут -> конвертер и есть источник data-path deadlock.
+- Команда прошивки: C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat -mode batch -source scripts\flash_program.tcl -tclargs build\artifacts_flat\xdma_ddr3_core_top.mcs
+- Тест после прошивки+power-cycle: probe_core (ожид CORE_PARAMS=0x420) + iso_single c2h/h2c -> если OK, затем test_dprog_single_dot (ожид 3.5).
