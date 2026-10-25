@@ -192,7 +192,7 @@ def wide_dot_fpga(N, off):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument("--mem", type=str, default="1M", help="рабочая область DDR для MLP (байт или 128K/1M/64M); потолок 85% DDR")
+    a.add_argument("--mem", type=str, default="2M", help="рабочая область DDR для MLP (байт или 128K/1M/2M/64M); потолок 85% DDR")
     a.add_argument("--hidden", type=int, default=16)
     a.add_argument("--epochs", type=int, default=3)
     a.add_argument("--batch", type=int, default=32)
