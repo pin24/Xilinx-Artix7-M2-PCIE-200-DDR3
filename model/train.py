@@ -9,6 +9,7 @@
 import os, sys, json, time, argparse
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from data import TTSPair, collate
 from vits import Vits, vits_loss
@@ -34,7 +35,8 @@ def main():
     step = 0
     for ep in range(1, a.epochs + 1):
         t0 = time.monotonic(); tot = 0; nb = 0
-        for b in dl:
+        pbar = tqdm(dl, desc=f"ep {ep}/{a.epochs}", unit="batch", dynamic_ncols=True)
+        for b in pbar:
             ids = b["ids"].to(a.device); txt_len = b["txt_len"].to(a.device)
             mel = b["mel"].to(a.device); mel_len = b["mel_len"].to(a.device)
             out = model(ids, txt_len, mel=mel, mel_len=mel_len)
@@ -43,12 +45,15 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             tot += loss.item(); nb += 1; step += 1
+            pbar.set_postfix(loss=f"{loss.item():.4f}", step=step, refresh=False)
             if a.steps and step >= a.steps:
-                break
+                pbar.set_postfix(loss=f"{loss.item():.4f}", step=step)
+                pbar.close(); break
             if step % a.save_every == 0:
                 torch.save({"model": model.state_dict(), "vocab": ds.vocab_size, "d": a.d,
                             "vits_config": {"vocab": ds.vocab_size, "d": a.d, "n_mels": 80}},
                            a.ckpt)
+        pbar.close()
         print(f"ep {ep}: loss {tot/max(nb,1):.4f} ({time.monotonic()-t0:.1f}s)")
         torch.save({"model": model.state_dict(), "vocab": ds.vocab_size, "d": a.d,
                     "vits_config": {"vocab": ds.vocab_size, "d": a.d, "n_mels": 80}}, a.ckpt)
