@@ -520,6 +520,10 @@ proc create_root_design { parentCell } {
   # (BRESP) в async-конвертере -> блокирует S00->M00 и чтения. Регистровый срез на 100-стороне
   # буферизует/регистрирует handshake на границе с MIG, не давая конвертеру потерять BRESP.
   set axi_regslice_0_m [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 axi_regslice_0_m ]
+  # МИГ имеет USER_WIDTH=0; у дефолтного regslice авто-USER_WIDTH=4 => рассогласование,
+  # провоцировавшее driverless-сети (s_axi_aruser[12]) в SmartConnect и краш opt_design
+  # (EXCEPTION_ACCESS_VIOLATION) на 64. Явно обнуляем USER ширину на regslice_M.
+  set_property -dict [list CONFIG.USER_WIDTH {0}] $axi_regslice_0_m
 
   # AXI-Lite crossbar: host M_AXI_LITE -> GPIO / mm2s ctrl / s2mm ctrl / tdot / xadc
   set xdma_axi_lite_smc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 xdma_axi_lite_smc ]

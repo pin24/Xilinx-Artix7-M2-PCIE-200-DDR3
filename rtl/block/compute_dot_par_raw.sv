@@ -53,8 +53,13 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
 );
 
     // --- NUM_MAC параллельных умножителей (без норм) ---
-    logic [NUM_MAC-1:0]  m_valid_in;
-    logic [NUM_MAC-1:0]  m_valid_out;
+logic [NUM_MAC-1:0]  m_valid_in;
+  logic [NUM_MAC-1:0]  m_valid_out;
+  // 2026-10-24 FIX timing (64): конвейер копии m_valid_out для popcount (done_cnt),
+  // разрывает критический путь valid_q -> 64-way popcount -> mul_done -> rnd_issue/CE
+  // (11 LUT-уровней, WNS было -0.108ns). Сдвиг на такт безвреден: PH_MUL накапливает
+  // счётчик завершённых умножений до NUM_MAC, завершение просто на такт позже.
+  logic [NUM_MAC-1:0]  m_valid_out_q;
     logic [79:0]         m_prod [0:NUM_MAC-1];
     logic [7:0]          m_e    [0:NUM_MAC-1];
     logic                m_neg  [0:NUM_MAC-1];
@@ -182,7 +187,9 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
         end else begin
             valid_q <= 0;
             for (int k = 0; k < ADDERS; k++) ad_valid_in[k] <= 0;
-            for (int x = 0; x < NUM_MAC; x++) m_valid_in[x] <= 0;
+for (int x = 0; x < NUM_MAC; x++)
+                m_valid_in[x] <= 0;
+            for (int x = 0; x < NUM_MAC; x++) m_valid_out_q[x] <= 0;
             case (phase)
                 PH_IDLE: begin
                     if (valid_in) begin
@@ -193,6 +200,7 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
                     end
                 end
                 PH_MUL: begin
+                    m_valid_out_q <= m_valid_out;   // конвейер для popcount (timing 64)
                     for (int x = 0; x < NUM_MAC; x++) begin
                         if (m_valid_out[x]) begin
                             prod[x] <= m_prod[x];
@@ -204,7 +212,7 @@ parameter int ADDERS  = 4     // barrel-аддеров в дереве (1 = по
                         logic [CNT_WIDTH-1:0] done_cnt;
                         done_cnt = 0;
                         for (int x = 0; x < NUM_MAC; x++)
-                            if (m_valid_out[x]) done_cnt = done_cnt + 1;
+                            if (m_valid_out_q[x]) done_cnt = done_cnt + 1;
                         if (done_cnt != 0)
                             mul_done <= mul_done + done_cnt;
                         if (mul_done + done_cnt >= NUM_MAC) begin
