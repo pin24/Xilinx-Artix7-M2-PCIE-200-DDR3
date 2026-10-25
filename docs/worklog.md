@@ -1206,3 +1206,12 @@ Stage Summary:
 - Цель: проверить гипотезу потерянного write-response (BRESP) в async-конвертере: M-side regslice буферизует handshake на 100-стороне перед MIG. Если h2c/c2h оживут -> конвертер и есть источник data-path deadlock.
 - Команда прошивки: C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat -mode batch -source scripts\flash_program.tcl -tclargs build\artifacts_flat\xdma_ddr3_core_top.mcs
 - Тест после прошивки+power-cycle: probe_core (ожид CORE_PARAMS=0x420) + iso_single c2h/h2c -> если OK, затем test_dprog_single_dot (ожид 3.5).
+
+## 2026-10-25 — ФИКС ПОДТВЕРЖДЁН НА ЖЕЛЕЗЕ (32/4): data-path deadlock УСТРАНЁН
+- 32/4 с axi_regslice_0_m (SMC.M00->regslice->conv->regslice_m(100)->MIG):
+  * iso_single c2h -> c2h_ok (чтение DDR вернуло данные)
+  * iso_single h2c -> h2c_ok (запись DDR прошла)
+  => Источник data-path deadlock = async-конвертер ТЕРЯЛ write-response (BRESP), блокируя S00->M00 (и чтение, и запись). M-side register slice на 100-стороне исправил. 
+- device_prog single-dot на 32/4 (data-path жив): mailbox status=0, result=3.5 EXACT -> PASS.
+- Возвращаюсь к 64/2 с тем же фиксом (CNT_WIDTH=8 на 64 для тайминга). Сборка: build_flat.tcl NUM_MAC=64 ADDERS=2 DEVPROG_EN=1.
+- ПРИМЕЧАНИЕ: прежний спекулятивный rst_data_125M ОТКАЧЕН (не был причиной; мог держать reset). Исправление реального дефекта = M-side regslice у конвертера.
