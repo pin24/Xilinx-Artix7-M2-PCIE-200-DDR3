@@ -1215,3 +1215,17 @@ Stage Summary:
 - device_prog single-dot на 32/4 (data-path жив): mailbox status=0, result=3.5 EXACT -> PASS.
 - Возвращаюсь к 64/2 с тем же фиксом (CNT_WIDTH=8 на 64 для тайминга). Сборка: build_flat.tcl NUM_MAC=64 ADDERS=2 DEVPROG_EN=1.
 - ПРИМЕЧАНИЕ: прежний спекулятивный rst_data_125M ОТКАЧЕН (не был причиной; мог держать reset). Исправление реального дефекта = M-side regslice у конвертера.
+
+## 2026-10-25 — 64/2 timing fix: pipeline m_valid_out->m_valid_out_q for popcount (WNS -0.108 -> pass)
+- Причина WNS=-0.108 на 64: 64-way popcount m_valid_out -> mul_done -> rnd_issue/CE (11 LUT-уровней, nets fo=94k; путь valid_q(mac49)). Не связано с data-path-фиксом; BD-фикс (regslice_m) поднял util и сдвинул и без того узкий тайминг ядра (база была WNS=0.017).
+- Фикс: m_valid_out_q = m_valid_out (pipeline), done_cnt/popcount снимается с m_valid_out_q. Сдвигает завершение PH_MUL на такт (безвредно: накопительный счётчик mul_done до NUM_MAC). Разрывает критический valid_q->popcount.
+- Регресс в xsim: 64 full 100.75 (0x051669999998), n=4 3.5 (0x0111) БЕЗ изменения; 512=318.327667 (0x1a1491028a61) без изменения.
+- USER_WIDTH=0 на axi_regslice_0_m (МIG имеет 0) - убрал driverless aruser и краш opt_design EXCEPTION_ACCESS_VIOLATION на 64.
+- Пересборка 64/2 с этими тремя правками (BD data-path + USER_WIDTH + popcount retime).
+
+## 2026-10-25 — 64/2 ПОЛНОСТЬЮ собрана (WNS=0.078 PASS) со всеми тремя фиксами
+- build_flat.tcl NUM_MAC=64 ADDERS=2 DEVPROG_EN=1: TIMING PASSED WNS=0.078 WHS=0.025. Артефакты build/artifacts_flat (bit 19:47:24).
+- Фиксы: (1) data-path deadlock = M-side regslice (converter.M_AXI->regslice_m(100)->MIG) - УСТРОИН (проверен на 32/4: c2h/h2c OK, device_prog 3.5); (2) USER_WIDTH=0 на regslice_m против краша opt_design; (3) popcount retime m_valid_out->m_valid_out_q (64 timing).
+- CORE_PARAMS ожид. 0x00000240 (NUM_MAC=64 ADDERS=2).
+- Прошивка: vivado -mode batch -source scripts\flash_program.tcl -tclargs build\artifacts_flat\xdma_ddr3_core_top.mcs
+- После power-cycle: probe_core -> iso_single c2h/h2c -> test_dprog_single_dot (ожид. 3.5) -> затем полный 64-dot и batched (train_dprog_batch_mlp / test_dprog_batch_board), т.к. data-path и движок проверены корректными.
