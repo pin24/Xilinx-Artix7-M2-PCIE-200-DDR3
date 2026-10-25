@@ -1244,3 +1244,10 @@ Stage Summary:
    - 1000 сэмпл, batch 32, 8 эпох, LR 0.1: MSE 0.85->0.61->0.40->0.32->0.31 (32.9s, infer RMSE 0.56).
    => платформа КОРРЕКТНО обучает MLP по реальному датасету через batched device_prog (раньше блокировалось data-path deadlock).
 - Вывод: на 32/4 плата полностью рабочая (data-path, device_prog single/batch/chain, DDR, тренинг). Прошивка 64/2 собрана (WNS=0.078) — отложена до готовности пользователя.
+
+## 2026-10-25 — БЕНЧ FPGA vs CPU (честный замер): CPU быстрее для малых сетей
+- scripts/bench_fpga_vs_cpu.py: 1) end-to-end MLP train (CPU vs batched device_prog), 2) wide-dot throughput CPU vs FPGA.
+- Результат (256s/3ep, 2->16->1): CPU 0.13-0.31 ms/ep; FPGA ~1815 ms/ep (per-batch host overhead). ratio CPU/FPGA=0.0001x.
+- Wide dot N_IN=1024: CPU 0.87 us (2354 MFLOPs); FPGA 30.9 ms (0.07 MFLOPs) - это НАКЛАДНЫЕ одного device_prog GO (host<->плата round-trip ~30-75ms), не счёт.
+- ВЫВОД: в host-интеграции tdot выигрыш устройства НЕ в скорости на малых GEMM (CPU быстрее на порядки из-за per-invocation overhead 30-75ms против us-вычислления CPU). Ценность = offload/детерминизм/освобождение CPU-циклов. Выигрыш FPGA возможен только при большом батче/ширине, амортизирующих overhead. НЕ для малых сетей.
+- Обратите внимание на 'бego else' влияние: большой (2000s) LR=fixed без норм/clip расходится (MSE взрыв ep7-8) - дивергенция GD, не плата.

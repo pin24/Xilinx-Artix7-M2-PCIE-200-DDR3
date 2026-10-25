@@ -74,6 +74,15 @@ def run_cpu(X, y, W1, W2, B, epochs, lr):
     return ep_ms, mse, sum(ep_ms) * 1e-3
 
 def run_fpga(F, H, O, X, y, W1, W2, B, epochs, lr):
+    # ГУАРД: буфер скрытых результатов B*H*8 должен влезать в регион H_OFF..OUT_OFF (64КБ),
+    # иначе результаты портят OUT/DATA (молчаливая порча памяти -> расходящиеся веса).
+    _hid = B*H*8
+    _maxB = (tdm.OUT_OFF - tdm.H_OFF) // (H*8)
+    if _hid > (tdm.OUT_OFF - tdm.H_OFF):
+        raise RuntimeError(
+            f"H={H} batch={B}: буфер скрытого слоя B*H*8={_hid} Б > региона "
+            f"{tdm.OUT_OFF-tdm.H_OFF} (H_OFF..OUT_OFF). Требуется batch<={_maxB}. "
+            f"Правило H<={8*1024//B if B else 0} при batch={B}.")
     dev = XdmaWinDma(base=r"\\.\XDMA0dma")
     runner = DeviceProgRunner(dev, num_mac=32, reg_base=REG_BASE)
     dev.write_dma(tdm.TABLE_OFF, build_table(F, H, O, B))
