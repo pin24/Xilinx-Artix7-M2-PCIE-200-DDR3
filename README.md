@@ -8,6 +8,29 @@
 > [`XDMA_DDR3_TMUL`](https://github.com/pin24/Xilinx-Artix7-M2-PCIE-200-DDR3/tree/XDMA_DDR3_TMUL)
 > — см. исторический раздел ниже и `xdma_ddr3_dfx_README.md`.
 
+## ✅ Актуальное состояние (2026-10-26) — читай это, а не историю ниже
+
+Полное, поддерживаемое руководство: **[`docs/guide/README.md`](docs/guide/README.md)** (оглавление + разделы).
+Старый текст ниже — история; цифры там **устарели**.
+
+- **Рабочая прошивка на железе: `NUM_MAC=32, ADDERS=8, DEVPROG_EN=1`**
+  (`CORE_PARAMS=0x820`). НЕ 16/4 и НЕ 32/16.
+- **Data-путь синхронный, без async-конвертера**: `SMC.M00(100МГц)→regslice→MIG(100МГц)`.
+  Убран `axi_clock_converter` (он давал deadlock под крупными DMA-бурстами). `ui_clk=100` (не 200).
+- **Работает:** device_prog (single/batch/chain), DDR-стресс 256КиБ бит-в-бит, обучение MLP
+  по датасету (MSE 0.85→0.31), DMA ~70 MB/s.
+- **Порог dot:** `MAX_N_TOTAL = MAX_PASSES(32) × NUM_MAC(32) = 1024` (H ≤ 1024).
+- **Заметки:** 64-MAC на этом Artix-7 @125МГц на пределе тайминга (нужен перепилинг ядра) —
+  рабочий конфиг 32/8. `obs_smi` авто-детектит NUM_MAC из `CORE_PARAMS` (0x64).
+- **Сборка рабочей прошивки:** `NUM_MAC=32 ADDERS=8 DEVPROG_EN=1` (см. `docs/guide/08-build-flash.md`).
+
+Проверка:
+```cmd
+python scripts/probe_core.py
+python scripts/obs_smi.py --once --interval 0.5
+python scripts/test_dprog_single_dot.py        % device_prog 3.5
+```
+
 ## Формат TFloat48
 - 48 бит = 6 байт, блоки по 4 трита (1 байт).
 - Мантисса M = 20 тритов (нормализована [3^18, 3^19)), экспонента E = 4 трита (bias 40).
@@ -21,10 +44,9 @@ host (Python/Windows, XDMA_DMA.sys v1.2.7)
   └ PCIe Gen2 x4, BAR0 128 МБ @0x40000000
      ├ AXI-Lite (32b @125): GPIO 0x40020000 · DataMover 0x40010000/0x40018000 ·
      │                      TDOT 0x40023000 · XADC 0x46000000
-     └ M_AXI (128b) → SmartConnect → MIG DDR3 0x80000000 (256 МБ, ui_clk 200)
-                                     └ diag-BRAM 0x10000000 (8 КБ)
+└ M_AXI (128b) → SmartConnect → MIG DDR3 0x80000000 (256 МБ, ui_clk 100)
 
-xdma_ddr3_core_top (FLAT: NUM_MAC=16, ADDERS=4 в прошивках; DIAG-сниффер включён)
+xdma_ddr3_core_top (ИСТОРИЧЕСКОЕ описание было NUM_MAC=16, ADDERS=4; АКТУАЛЬНО — 32/8, см. блок выше)
   └ u_tdot = tdot_axi4: FSM 14 состояний + аппаратный планировщик (ring 256×32Б,
      doorbell WPTR/RPTR, IRQ usr_irq_req), BURST_RD_LEN=32, 4KB-кламп read-burst
      (AXI4 A4.3.1), OBS-наблюдаемость 0x6C..0xE0 (SNAP-тени, BUILD_ID/CAPS)
@@ -37,11 +59,10 @@ xdma_ddr3_core_top (FLAT: NUM_MAC=16, ADDERS=4 в прошивках; DIAG-сн�
 - **Не входит во FLAT**: ICAP/SPI/hot-flash, DFX Socket, partial-битстримы
   (удалены из BD 2026-10-05; `spi_over_pcie.sv` = non-blocking заглушка).
 - **Наблюдаемость**: см. `docs/OBSERVABILITY.md`; быстрый старт:
-  ```cmd
-  python scripts/obs_smi.py --num-mac 16 --dot 100 --clear --interval 0.3
-  python scripts/monitor_obs.py --once --num-mac 16
-  ```
-  Эталонные числа (legacy-GO, n=NUM_MAC=16): на 1 задачу AR=2, BEAT=32, WR=1, JOB=1.
+```cmd
+   python scripts/obs_smi.py --num-mac 32 --dot 100 --clear --interval 0.3
+   ```
+   (АКТУАЛЬНО: NUM_MAC=32; исторические эталонные числа были для NUM_MAC=16.)
 
 ## Состав репозитория
 | Каталог | Содержимое |
@@ -104,8 +125,9 @@ selftest 0x1000000. Данные — TFloat48 в младших 48 битах 64
   против CPU 0.1 мкс (PCIe-оверхед на каждый dot) — CPU быстрее ~80000×.
 
 ## Ресурсы (XC7A200T, Vivado 2025.2)
-- FLAT 16/4 (прошивка): MET, WNS +0.27…+0.55 по сборкам; 32/16: MET, WNS +0.06.
-- Ядро NUM_MAC=32: ~55k LUT (45%); полный дизайн ~85k LUT (63.8%) при 32/16. 0 DSP.
+- АКТУАЛЬНО: рабочий конфиг 32/8 (WNS≈0.09). Ядро NUM_MAC=32 ~55k LUT (45%),
+  полный дизайн ~85k LUT (63.8%). 0 DSP.
+- (Историч.: 16/4 WNS +0.27..+0.55; 32/16 WNS +0.06.)
 
 ## Верификация
 ```bash
@@ -120,15 +142,11 @@ python pytorch_layer/stress_platform.py --mock  # стенд без железа
 ## Сборка (FLAT)
 
 ```cmd
-REM Быстрый старт: 16 MAC / 4 ADDERS (прошивочная конфигурация):
-_flat16.bat
-
-REM или напрямую (Vivado 2025.2):
+REM АКТУАЛЬНО: рабочая прошивка — 32 MAC / 8 ADDERS — прошивочная конфигурация:
 "C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat" -mode batch ^
-  -source scripts\build_flat.tcl -tclargs NUM_MAC=16 ADDERS=4
+  -source scripts\build_flat.tcl -tclargs NUM_MAC=32 ADDERS=8 DEVPROG_EN=1
 
-REM 32 MAC / 16 ADDERS:
-_flat32.bat
+REM (историч. примеры: 16/4 и 32/16 — см. docs/guide/08-build-flash.md)
 ```
 
 `build_flat.tcl` выполняет: зачистка+создание проекта (`C:\build_flat` или `build/flat_proj`,
@@ -145,7 +163,7 @@ LATE) → synth/impl → **FATAL timing gate** (нарушение = exit 1 до
 
 ```cmd
 "C:\AMDDesignTools\2025.2\Vivado\bin\vivado.bat" -mode batch ^
-  -source scripts\flash_program.tcl -tclargs build\artifacts_flat\xdma_ddr3_core_top.bin
+  -source scripts\flash_program.tcl -tclargs build\artifacts_flat\xdma_ddr3_core_top.mcs
 ```
 
 ## R-01: пересборка и прошивка платы (BAR0 = 128 МБ)
