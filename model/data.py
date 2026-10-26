@@ -22,6 +22,13 @@ def load_tokenizer(tok_path):
     return stoi, len(syms)
 
 class TTSPair(Dataset):
+    """Ленивый датасет: хранит только манифест, аудио/мел читает с диска на лету.
+
+    Никаких массивов в памяти не держим (lazy); каждое обращение к __getitem__
+    грузит мел и (опционально) wav с диска. Соответствие кадров mel->wav делается
+    в loss/вокодере через коэффициент кадров (см. vits.py), поэтому здесь длина
+    wav не меняется — отдаём как есть.
+    """
     def __init__(self, manifest_path, split="train", tokenizer=None, load_wav=False):
         self.m = json.load(open(manifest_path, encoding="utf-8"))
         self.items = self.m[split]
@@ -40,8 +47,9 @@ class TTSPair(Dataset):
         if self.load_wav:
             import soundfile as sf
             x, sr = sf.read(it["wav"], dtype="float32")
-            out["wav"] = torch.from_numpy(x).unsqueeze(0)    # (1, T_audio)
-            out["wav_sr"] = sr
+            x = torch.from_numpy(x).unsqueeze(0)             # (1, T_audio)
+            out["wav"] = x
+            out["wav_len"] = torch.tensor(x.shape[1], dtype=torch.long)
         return out
 
 def load_tokenizer_from(tok):
@@ -61,7 +69,14 @@ def collate(batch):
     for i, x in enumerate(batch):
         m = torch.from_numpy(x["mel"]); mel[i, :, :m.shape[1]] = m; mel_len[i] = m.shape[1]
         t = torch.as_tensor(x["ids"]); ids[i, :t.shape[0]] = t; txt_len[i] = t.shape[0]
-    return {"ids": ids, "txt_len": txt_len, "mel": mel, "mel_len": mel_len}
+    out = {"ids": ids, "txt_len": txt_len, "mel": mel, "mel_len": mel_len}
+    if "wav" in batch[0]:
+        max_w = max(x["wav"].shape[1] for x in batch)
+        wav = torch.zeros(b, max_w); wav_len = torch.zeros(b, dtype=torch.long)
+        for i, x in enumerate(batch):
+            wav[i, :x["wav"].shape[1]] = x["wav"][0]; wav_len[i] = x["wav"].shape[1]
+        out["wav"] = wav; out["wav_len"] = wav_len
+    return out
 
 def make_loaders(manifest="model/data/manifest.json", batch=8, split="train", shuffle=True, load_wav=False):
     d = TTSPair(manifest, split=split, load_wav=load_wav)

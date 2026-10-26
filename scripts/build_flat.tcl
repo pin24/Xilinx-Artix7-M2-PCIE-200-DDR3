@@ -262,8 +262,8 @@ add_files -norecurse \
     ${ROOT}/rtl/integration/xadc_prim.sv \
     ${ROOT}/rtl/integration/xdma_ddr3_core_top.sv \
     ${ROOT}/rtl/diag/diag_axi_sniffer.sv
-# NOTE: icap_ctrl.sv / spi_over_pcie.sv are intentionally NOT added РІР‚вЂќ the flat
-# top RTL does not instantiate them. The files remain in the tree, unused.
+# NOTE: spi_over_pcie.sv is intentionally NOT added — the flat top RTL does not
+# instantiate it. The file remains in the tree, unused.
 
 # Generic NUM_MAC/ADDERS/BUILD_ID применяем ПОЗЖЕ — ПОСЛЕ set_property top
 # (см. "5. Regenerate wrapper"): применяемые к fileset ДО назначения top-модуля

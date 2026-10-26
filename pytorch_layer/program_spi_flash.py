@@ -40,7 +40,7 @@ import struct
 import sys
 import time
 
-# ICAP registers (for IPROG trigger) - from icap_load.py
+# ICAP registers (for IPROG trigger via the ICAPE2 controller)
 ICAP_BASE = 0x4002_4000
 ICAP_CTRL = ICAP_BASE + 0x00
 ICAP_STATUS = ICAP_BASE + 0x04

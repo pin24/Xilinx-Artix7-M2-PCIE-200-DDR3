@@ -1083,6 +1083,9 @@ logic        irq_pending_q;      // поднято при опустошении
                         cstate <= CS_RD_DATA;
                     end else begin
                         // невалидный адрес: ретир задачи без AXI
+                        // FIX (HANG): ВАЖНО снять busy_q, иначе sched_pull=!busy_q
+                        // навсегда закрыт и кольцо замирает на rptr после этой задачи
+                        busy_q <= 1'b0;
                         ctrl_rd_start <= 0;
                         sched_rptr_q <= sched_rptr_q + 10'd1;
                         done_cnt_q   <= done_cnt_q + 16'd1;

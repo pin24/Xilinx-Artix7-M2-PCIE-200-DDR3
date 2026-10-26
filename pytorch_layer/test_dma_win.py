@@ -210,16 +210,15 @@ class XdmaWinDma(XdmaDevice):
     # ---------------- firmware self-detect (MAGIC / CORE_PARAMS) -----------
     BLOCK_MAGICS = {
         "TDOT": 0x54444F54,
-        "ICAP": 0x49434150,
         "XADC": 0x58414443,
     }
     # base AXI addresses; MAGIC at per-block offset, CORE_PARAMS at TDOT+0x64
-    A = {"TDOT": 0x40023000, "ICAP": 0x40024000, "XADC": 0x46000000}
+    A = {"TDOT": 0x40023000, "XADC": 0x46000000}
 
     def read_magic(self, block):
         """Read the magic id register of a block (raises if misaligned)."""
         base = self.A[block]
-        # TDOT has MAGIC at 0x68; ICAP/XADC at 0x0C
+        # TDOT has MAGIC at 0x68; XADC at 0x0C
         moff = 0x68 if block == "TDOT" else 0x0C
         v = self.read32(base + moff)
         return v

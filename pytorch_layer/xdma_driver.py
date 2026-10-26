@@ -38,7 +38,7 @@ from __future__ import annotations
 import os, subprocess, struct, time, threading
 
 # Границы AXI-окна (согласовано с driver/driver.c FIX-1 и FIX-11):
-#   AXI-Lite [0x4000_0000 .. 0x7FFF_FFFF] — GPIO/TDOT/ICAP/XADC регистры (BAR0)
+#   AXI-Lite [0x4000_0000 .. 0x7FFF_FFFF] — GPIO/TDOT/XADC регистры (BAR0)
 #   DDR3     [0x8000_0000 ..]            — окно DDR3
 # ВАЖНО (docs/ADDRESS_MAP.md 1.2): в DFX-сборке ВТОРОГО BAR-моста к DDR3 НЕТ —
 # BAR2 занят таблицей MSI-X, и драйвер (FIX-11) намеренно НЕ маппит его как
@@ -54,11 +54,9 @@ DDR3_SIZE     = 0x1000_0000   # окно DDR3 = 256 МБ; защита от пе
 #   M00 GPIO 0x40020000, M03 TDOT 0x40023000, M05 XADC 0x46000000,
 #   DataMover MM2S 0x40010000 / S2MM 0x40018000, DDR3 0x80000000.
 # [DFX]-ONLY (в FLAT BD НЕ существуют, обращение вернёт ошибку BAR):
-#   DFX sock 0x40022000, ICAP 0x40024000, SPI 0x40025000.
+#   DFX sock 0x40022000, SPI 0x40025000.
 REG_BASE  = 0x4002_3000      # tdot_axi4 регистры (FLAT + DFX)
-ICAP_BASE = 0x4002_4000      # [DFX-only] ICAP-контроллер (в FLAT BD нет)
 GPIO_BASE = 0x4002_0000      # axi_gpio
-HWICAP_BASE = 0x4000_1000    # [DFX-only legacy] axi_hwicap
 DFX_SOCK_BASE = 0x4002_2000  # [DFX-only] dfx_socket/decouple_shutdown_ctrl
 SPI_BASE = 0x4002_5000       # [DFX-only] SPI-over-PCIe (hot-flash без JTAG)
 # legacy alias (модульно совместим со старым именем)

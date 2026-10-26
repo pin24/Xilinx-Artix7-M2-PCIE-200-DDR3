@@ -59,7 +59,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 16, parameter int ADDERS = 4
   // (rst_core_125M), экспортирует их через clk_core_out/core_resetn_out.
   // НЕ объявляем core_clk/core_resetn входными портами топа — иначе на сети
   // будет 2 драйвера (выход clk_wiz внутри BD + IBUF от input-порта) -> DRC
-  // MDRV-1. (FLAT: без icap/u_icap — icap_clk группы больше нет.)
+  // MDRV-1. (FLAT: icap-блока нет — icap_clk группы больше нет.)
   logic core_clk;
   logic core_resetn;
 
@@ -197,8 +197,7 @@ module xdma_ddr3_core_top #(parameter int NUM_MAC = 16, parameter int ADDERS = 4
   // ======================== BD (FLAT, no-DFX variant) ========================
   // BD wrapper: xdma_ddr3_dfx (from xdma_ddr3_dfx.bd, FLAT)
   // Включает XDMA, MIG, inlined DataMover MM2S/S2MM + ctrl, GPIO, clk wizards.
-  // БЕЗ icap_ctrl (S_AXI_ICAP_REGS убран) и БЕЗ SPI-over-PCIe (S_AXI_SPI_REGS
-  // убран). icap_ctrl.sv остаётся в дереве как неиспользуемый файл.
+  // БЕЗ SPI-over-PCIe (S_AXI_SPI_REGS убран).
   xdma_ddr3_dfx xdma_ddr3_dfx_i (
       .DDR3_0_addr(DDR3_0_addr),
       .DDR3_0_ba(DDR3_0_ba),

@@ -1,7 +1,7 @@
 /* ========================================================================== */
-/*  test_dma.c — user-mode DMA test for the NEW XDMA DMA driver (W1).          */
+/*  test_dma.c  user-mode DMA test for the NEW XDMA DMA driver (W1).          */
 /*                                                                            */
-/*  Device nodes (only, NEVER \\.\XDMA0 — that is the legacy MMIO driver):    */
+/*  Device nodes (only, NEVER \\.\XDMA0  that is the legacy MMIO driver):    */
 /*    \\.\XDMA0dma\control  -> AXI-Lite registers (BAR0)                      */
 /*    \\.\XDMA0dma\h2c_0    -> H2C DMA channel  (host -> DDR3)                */
 /*    \\.\XDMA0dma\c2h_0    -> C2H DMA channel  (DDR3 -> host)                */
@@ -25,9 +25,9 @@
 #include <winioctl.h>
 
 /* ========================================================================== */
-/*  Device paths — the NEW DMA driver only                                      */
+/*  Device paths  the NEW DMA driver only                                      */
 /* ========================================================================== */
-/* AXI-Lite peripherals (GPIO/DFX/TDOT/ICAP 0x4002xxxx) live in BAR0, exposed
+/* AXI-Lite peripherals (GPIO/DFX/TDOT 0x4002xxxx) live in BAR0, exposed
  * via \\.\XDMA0dma\user (large AXI-Lite BAR, 128MB). The \control node maps to
  * the 64KB XDMA config/register BAR and does NOT reach the AXI-Lite window
  * (TDOT offset 0x23000 > 64KB). So all register/PIO access MUST go through
@@ -36,13 +36,13 @@
 #define DEV_CONTROL L"\\\\.\\XDMA0dma\\user"
 #define DEV_H2C     L"\\\\.\\XDMA0dma\\h2c_0"
 #define DEV_C2H     L"\\\\.\\XDMA0dma\\c2h_0"
-/* DIAG 2026-10-03 (BRAM bypass): узлы БЕЗ трансляции базы 0x80000000 — хост
-   передаёт полный картовый адрес: 0x0..0x1FFF = локальный BRAM, 0x80000000+ = DDR3. */
+/* DIAG 2026-10-03 (BRAM bypass): ��  �� ��� 0x80000000  
+   ��� � � ��: 0x0..0x1FFF = ��� BRAM, 0x80000000+ = DDR3. */
 #define DEV_H2C_BRAM L"\\\\.\\XDMA0dma\\h2c_bram_0"
 #define DEV_C2H_BRAM L"\\\\.\\XDMA0dma\\c2h_bram_0"
-/* DIAG 2026-10-04 (multi-packet): config-BAR node \\.\XDMA0dma\control просвечивает
-   configBarIdx, где лежат реестры SGDMA-движков (H2C ch0 block @ 0x0, C2H @ 0x1000).
-   Смещения внутри XDMA_ENGINE_REGS: status=0x40, statusRC=0x44, completedDescCount=0x48. */
+/* DIAG 2026-10-04 (multi-packet): config-BAR node \\.\XDMA0dma\control ���
+   configBarIdx, � ���� �� SGDMA-� (H2C ch0 block @ 0x0, C2H @ 0x1000).
+   ��  XDMA_ENGINE_REGS: status=0x40, statusRC=0x44, completedDescCount=0x48. */
 #define DEV_CONFIG_CONTROL L"\\\\.\\XDMA0dma\\control"
 #define H2C0_STATUS_OFF     0x40UL
 #define H2C0_STATUSRC_OFF   0x44UL
@@ -50,7 +50,7 @@
 #define C2H0_COMPLETED_OFF  0x1048UL
 
 /* ========================================================================== */
-/*  Address map — AXI-Lite (BAR0), full AXI addresses                          */
+/*  Address map  AXI-Lite (BAR0), full AXI addresses                          */
 /*  (host subtracts 0x40000000 before writing to the control node)             */
 /* ========================================================================== */
 #define AXI_LITE_BASE   0x40000000UL
@@ -58,7 +58,7 @@
 /* DDR3 lives in the XDMA M_AXI space at 0x80000000. The DRIVER now adds this
  * base centrally (dma_engine.c EngineProgramDma, XDMA_DDR3_AXI_BASE) so the
  * HOST contract is a CLEAN raw offset from 0x80000000 (like XdmaLinux and
- * ADDRESS_MAP §6). Therefore test_dma passes ddr_off WITHOUT adding the base.
+ * ADDRESS_MAP �6). Therefore test_dma passes ddr_off WITHOUT adding the base.
  * The define is kept here only for reference/clarity. */
 #define DDR3_BASE       0x80000000ULL
 
@@ -81,7 +81,6 @@
 #define TDOT_RESULT_ADDR_LO  (TDOT_BASE + 0x24)
 #define TDOT_RESULT_ADDR_HI  (TDOT_BASE + 0x28)
 
-#define ICAP_BASE       0x40024000UL
 #define SPI_BASE        0x40025000UL
 #define XADC_BASE       0x46000000UL
 
@@ -114,16 +113,16 @@ typedef struct {
 #define POLL_TIMEOUT_MS      5000
 
 /* ========================================================================== */
-/*  OVERLAPPED helper — one reusable event per handle, CancelIo-safe           */
+/*  OVERLAPPED helper  one reusable event per handle, CancelIo-safe           */
 /* ========================================================================== */
 static HANDLE g_ov_control = NULL;
 static HANDLE g_ov_h2c     = NULL;
 static HANDLE g_ov_c2h     = NULL;
-static HANDLE g_ov_cfg     = NULL;  /* DIAG 2026-10-04: event для config-BAR (\control) */
+static HANDLE g_ov_cfg     = NULL;  /* DIAG 2026-10-04: event � config-BAR (\control) */
 
-/* ROF-диагностика 2026-10-05: ограничение интенсивности c2h-чтения (пауза/чанк).
-   0 => по умолчанию (DMA_CHUNK, без паузы). Уменьшение чанка и/или пауза после
-   каждого чанка снижают нагрузку на Root Port (против WHEA 0x124 ROF). */
+/* ROF-�� 2026-10-05: ��� � c2h-� (���/�).
+   0 =>  �� (DMA_CHUNK, ��� ��). ��� �� /� ��� ��
+   �� �� �� �� � Root Port ( WHEA 0x124 ROF). */
 static size_t g_c2hChunk   = 0;
 static DWORD  g_c2hPauseMs = 0;
 
@@ -225,7 +224,7 @@ static BOOL DmaRead(HANDLE hDev, UINT64 ddr_off, void* data, size_t len)
             return FALSE;
         done += n;
         if (g_c2hPauseMs) {
-            Sleep(g_c2hPauseMs);   /* ROF: даём Root Port время освободить приёмный буфер */
+            Sleep(g_c2hPauseMs);   /* ROF: � Root Port � �  �� */
         }
     }
     return TRUE;
@@ -245,7 +244,7 @@ static void FillLcg(BYTE* buf, size_t len, unsigned seed)
 }
 
 /* ========================================================================== */
-/*  Mode: regs — readback known control registers                              */
+/*  Mode: regs  readback known control registers                              */
 /* ========================================================================== */
 static int ModeRegs(HANDLE ctl)
 {
@@ -267,7 +266,7 @@ static int ModeRegs(HANDLE ctl)
 }
 
 /* ========================================================================== */
-/*  Mode: firmware — read CORE_PARAMS + MAGIC id registers (self-detect)       */
+/*  Mode: firmware  read CORE_PARAMS + MAGIC id registers (self-detect)       */
 /* ========================================================================== */
 static int ModeFirmware(HANDLE ctl)
 {
@@ -275,14 +274,11 @@ static int ModeFirmware(HANDLE ctl)
     /* MAGIC offsets: TDOT[0x68]='TDOT'.
      * XADC[0x0C] is NOT read here: its BAR-offset (~0x06000000) is beyond the
      * actually-mapped BAR0 on low-bar0 bitstreams -> reading it BSODs 0x50.
-     * ICAP[0x0C] is NOT read here either: this is the FLAT (no-DFX) build, the
-     * icap_ctrl is removed and 0x40024000 is an unmapped hole in the AXI-Lite
-     * map (SmartConnect would not answer -> possible host timeout/hang).
-     * FIX-FLAT-AUDIT-2 (2026-10-01): skip both XADC and ICAP in self-detect. */
+     * FIX-FLAT-AUDIT-2 (2026-10-01): skip XADC in self-detect. */
     const ULONG TDOT_MAGIC = TDOT_BASE + 0x68;
     const ULONG CORE_PARAMS = TDOT_BASE + 0x64; /* [7:0]NUM_MAC,[15:8]ADDERS */
 
-    printf("--- firmware self-detect (CORE_PARAMS/MAGIC, XADC+ICAP skipped) ---\n");
+    printf("--- firmware self-detect (CORE_PARAMS/MAGIC, XADC skipped) ---\n");
     if (CtlRead32(ctl, TDOT_MAGIC, &v)) {
         printf("  TDOT[0x68] MAGIC  = 0x%08lX (%s)\n",
                v, v == 0x54444F54UL ? "TDOT OK" : "MISMATCH");
@@ -291,12 +287,12 @@ static int ModeFirmware(HANDLE ctl)
         printf("  TDOT[0x64] CORE_PARAMS = 0x%08lX -> NUM_MAC=%lu ADDERS=%lu\n",
                v, v & 0xFF, (v >> 8) & 0xFF);
     }
-    printf("  firmware check done (XADC+ICAP not probed; BAR0 size unknown)\n");
+    printf("  firmware check done (XADC not probed; BAR0 size unknown)\n");
     return 0;
 }
 
 /* ========================================================================== */
-/*  Mode: loopback <bytes> [offset] [seed] — LCG write via h2c, read, compare.
+/*  Mode: loopback <bytes> [offset] [seed]  LCG write via h2c, read, compare.
 /*  offset: raw DDR3 offset (default LOOPBACK_OFF), seed: LCG seed per thread
 /*  (default = bytes). Allows multi-thread tests with distinct buffers/patterns. */
 /* ========================================================================== */
@@ -355,7 +351,7 @@ if (r) _aligned_free(r);
 }
 
 /* ========================================================================== */
-/*  Mode: ioctl — PERF start/get/stop + ADDRMODE_GET on c2h_0                  */
+/*  Mode: ioctl  PERF start/get/stop + ADDRMODE_GET on c2h_0                  */
 /* ========================================================================== */
 /*  BUG-012 / PERF-01 note: the perf counters count DMA *descriptor* cycles.   */
 /*  dataCycleCount reflects activity driven by data movement through the       */
@@ -413,7 +409,7 @@ static int ModeIoctl(HANDLE c2h, HANDLE h2c)
 }
 
 /* ========================================================================== */
-/*  Mode: align — deliberately misaligned size/offset should fail cleanly      */
+/*  Mode: align  deliberately misaligned size/offset should fail cleanly      */
 /* ========================================================================== */
 static int ModeAlign(HANDLE h2c, HANDLE c2h, HANDLE ctl)
 {
@@ -424,12 +420,12 @@ static int ModeAlign(HANDLE h2c, HANDLE c2h, HANDLE ctl)
 
     /* case 1: 3-byte write/read (not multiple of 4) */
     if (DmaWrite(h2c, LOOPBACK_OFF, pat, 3)) {
-        printf("  NOTE: 3-byte h2c write ACCEPTED (driver tolerates) — not a failure\n");
+        printf("  NOTE: 3-byte h2c write ACCEPTED (driver tolerates)  not a failure\n");
     } else {
         printf("  3-byte h2c write rejected as expected\n");
     }
     if (DmaRead(c2h, LOOPBACK_OFF, rd, 3)) {
-        printf("  NOTE: 3-byte c2h read ACCEPTED (driver tolerates) — reading 8 raw bytes\n");
+        printf("  NOTE: 3-byte c2h read ACCEPTED (driver tolerates)  reading 8 raw bytes\n");
         DmaRead(c2h, LOOPBACK_OFF, rd, 8);
     }
 
@@ -446,7 +442,7 @@ static int ModeAlign(HANDLE h2c, HANDLE c2h, HANDLE ctl)
 }
 
 /* ========================================================================== */
-/*  Mode: dot — canonical TDOT path via DMA + control registers                */
+/*  Mode: dot  canonical TDOT path via DMA + control registers                */
 /* ========================================================================== */
 /*  N pairs of 1.0 (TFloat48) -> core accumulates to N.                        */
 /*  TF48_ONE = bits48 of 1.0, verified with ternary_sw/block/tfloat48.py:      */
@@ -454,7 +450,7 @@ static int ModeAlign(HANDLE h2c, HANDLE c2h, HANDLE ctl)
 /* ========================================================================== */
 #define TF48_ONE 0x001000000000ULL
 
-/* Offsets used by the canonical dot path (ADDRESS_MAP §6) */
+/* Offsets used by the canonical dot path (ADDRESS_MAP �6) */
 #define DATA_OFF    0x0000
 #define WEIGHTS_OFF 0x1000
 #define RESULT_OFF  0x2000
@@ -516,28 +512,28 @@ static int ModeDot(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
 }
 
 /* ========================================================================== */
-/*  Mode: dot_bram — BRAM-обход TDOT без DDR3 (DIAG 2026-10-03).              */
+/*  Mode: dot_bram  BRAM-� TDOT ��� DDR3 (DIAG 2026-10-03).              */
 /* ========================================================================== */
-/*  Использует узлы \\.\XDMA0dma\h2c_bram_0 / c2h_bram_0 (translateAxiBase=   */
-/*  FALSE): хост передаёт ПОЛНЫЙ картовый адрес. Локальный BRAM (8 КБ) лежит   */
-/*  по 0x10000000..0x10001FFF и подключён к xdma_axi_smc.M01 (обход MIG/DDR3). */
-/*  Карта BRAM для этого теста:                                               */
-/*    DATA    0x10000000 (data[0..n-1], 8 Б/элемент)                          */
+/*  ���� �� \\.\XDMA0dma\h2c_bram_0 / c2h_bram_0 (translateAxiBase=   */
+/*  FALSE):  ��� � � ��. �� BRAM (8 ) ���   */
+/*   0x10000000..0x10001FFF  �  xdma_axi_smc.M01 (� MIG/DDR3). */
+/*  �� BRAM �  ��:                                               */
+/*    DATA    0x10000000 (data[0..n-1], 8 /���)                          */
 /*    WEIGHTS 0x10000800 (weights[0..n-1])                                    */
-/*    RESULT  0x10001000 (результат TDOT, 8 Б)                                */
+/*    RESULT  0x10001000 (���� TDOT, 8 )                                */
 /* ========================================================================== */
 static int ModeDotBram(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
 {
     UINT64 buf[32];
     UINT64 result = 0;
     int i;
-    /* BRAM base в DFX-прошивке = 0x10000000 (8 KB, см. xdma_ddr3_dfx_bd.tcl).
-       BRAM-узлы h2c_bram_0/c2h_bram_0 передают ПОЛНЫЙ картовый адрес. */
+    /* BRAM base  DFX-� = 0x10000000 (8 KB, . xdma_ddr3_dfx_bd.tcl).
+       BRAM-�� h2c_bram_0/c2h_bram_0 ��� � � ��. */
     const UINT64 DIAG_BRAM_BASE = 0x10000000ULL;
     const UINT64 DATA_OFF_B     = DIAG_BRAM_BASE + 0x0000ULL;
     const UINT64 WEIGHTS_OFF_B  = DIAG_BRAM_BASE + 0x0800ULL;
     const UINT64 RESULT_OFF_B   = DIAG_BRAM_BASE + 0x1000ULL;
-    UINT64 full_data = DATA_OFF_B;            /* полный адрес, без +0x80000000 */
+    UINT64 full_data = DATA_OFF_B;            /* � ��, ��� +0x80000000 */
     UINT64 full_wgt  = WEIGHTS_OFF_B;
     UINT64 full_res  = RESULT_OFF_B;
 
@@ -547,11 +543,11 @@ static int ModeDotBram(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
     for (i = 0; i < n; i++)
         buf[i] = TF48_ONE;
 
-    /* запись в BRAM через BRAM-узлы (без трансляции базы) */
+    /* ��  BRAM ��� BRAM-�� (��� �� ���) */
     if (!DmaWrite(h2c, DATA_OFF_B,    buf, (size_t)n * 8)) return 1;
     if (!DmaWrite(h2c, WEIGHTS_OFF_B, buf, (size_t)n * 8)) return 1;
 
-    /* программируем TDOT: полные адреса БЕЗ 0x80000000 (BRAM) */
+    /* �� TDOT: �� ���  0x80000000 (BRAM) */
     if (!CtlWrite32(ctl, TDOT_N_IN, (ULONG)n)) return 1;
     if (!CtlWrite32(ctl, TDOT_DATA_ADDR_LO,    (ULONG)(full_data & 0xFFFFFFFF))) return 1;
     if (!CtlWrite32(ctl, TDOT_DATA_ADDR_HI,    (ULONG)(full_data >> 32)))        return 1;
@@ -589,15 +585,15 @@ static int ModeDotBram(HANDLE h2c, HANDLE c2h, HANDLE ctl, int n)
 }
 
 /* ========================================================================== */
-/*  Mode: diag_pkt [bytes] — диагностика multi-packet (лимит 512).            */
+/*  Mode: diag_pkt [bytes]  �� multi-packet (� 512).            */
 /* ========================================================================== */
-/*  DIAG 2026-10-04 (MULTIPACKET): снимаем состояние движка H2C0 вокруг       */
-/*  записи >512 Б. Гипотеза: WDF режет запрос на пакеты ≤512 Б; первый пакет   */
-/*  драйвер поллит синхронно (XDMA_EngineWaitCompletion), а последующие пакеты *)
-/*  достраиваются ТОЛЬКО через прерывание (реентерабельный EvtProgramDma из    */
-/*  WdfDmaTransactionDmaCompleted при FALSE). Прерывание на плате не доходит — */
-/*  хост-IRP для пакета 2 не завершается.                                     */
-/*  ТУТ: запись bytes (по умолчанию 1024) заведомо зависает, затем читаем      */
+/*  DIAG 2026-10-04 (MULTIPACKET): �� � �� H2C0        */
+/*  �� >512 . ���: WDF ��� �� � �� �512 ; � ��   */
+/*  �� ��  (XDMA_EngineWaitCompletion), � ��� �� *)
+/*  �� � ��� ��� (������� EvtProgramDma �    */
+/*  WdfDmaTransactionDmaCompleted  FALSE). ��� � ��� �   */
+/*  -IRP � ��� 2 � �����.                                     */
+/*  : �� bytes ( �� 1024) ��� ����, ��� ��      */
 /*  config-BAR: completedDescCount (0x48), status (0x40), statusRC (0x44).      */
 /* ========================================================================== */
 static int ModeDiagPkt(HANDLE h2c, int bytes)
@@ -620,7 +616,7 @@ static int ModeDiagPkt(HANDLE h2c, int bytes)
 
     printf("--- diag_pkt: %d-byte H2C write (cap 512 => expect multi-packet) ---\n", bytes);
 
-    /* baseline ДО записи: не трогаем statusRC, чтобы не сбрасывать BUSY */
+    /* baseline  ��: � �� statusRC, � � ��� BUSY */
     if (!RawXfer(cfg, g_ov_cfg, FALSE, H2C0_COMPLETED_OFF, &v0, sizeof(v0), POLL_TIMEOUT_MS))
         goto out;
     if (!RawXfer(cfg, g_ov_cfg, FALSE, H2C0_STATUS_OFF, &v1, sizeof(v1), POLL_TIMEOUT_MS))
@@ -628,7 +624,7 @@ static int ModeDiagPkt(HANDLE h2c, int bytes)
     printf("  BEFORE: H2C0 completedDescCount=0x%08lX (%lu)  status=0x%08lX (BUSY=%lu)\n",
            v0, v0, v1, (v1 >> 0) & 1);
 
-    /* сама зависающая запись: RawXfer таймаутится через POLL_TIMEOUT_MS и CancelIo */
+    /* �� ���� ��: RawXfer �� ��� POLL_TIMEOUT_MS  CancelIo */
     buf = (BYTE*)_aligned_malloc((size_t)bytes, 256);
     if (!buf) { printf("  ERROR: malloc\n"); goto out; }
     FillLcg(buf, (size_t)bytes, (unsigned)bytes);
@@ -639,7 +635,7 @@ static int ModeDiagPkt(HANDLE h2c, int bytes)
     }
     Sleep(50);
 
-    /* состояние ПОСЛЕ: completed (RO), status (RO), statusRC (read-clear) — последним */
+    /* � : completed (RO), status (RO), statusRC (read-clear)  �� */
     v0 = v1 = v2 = 0;
     if (!RawXfer(cfg, g_ov_cfg, FALSE, H2C0_COMPLETED_OFF, &v0, sizeof(v0), POLL_TIMEOUT_MS))
         goto out;
@@ -657,12 +653,12 @@ static int ModeDiagPkt(HANDLE h2c, int bytes)
             printf("  C2H0  completedDescCount=0x%08lX (%lu)\n", c2h, c2h);
     }
 
-    /* Интерпретация:
-       - completedDescCount >= Count(пакет1) и BUSTY=0 -> пакет1 завершён, пакет2 не поллится (ISR-гипотеза)
-       - completedDescCount < Count(пакет1)        -> движок не стартует/не завершает цепочку вообще
-       Значение Count(пакет1) надо знать заранее: для 1024B=2 пакета, в 1-м пакете 1..N SG-фрагментов.
-       Если буфер странично-непрерывен и выровнен — пакет1 = 1 дескриптор => порог для проверки = 1.  */
-    printf("  diag_pkt: КЛЮЧЕВОЕ: стоит ли completedDescCount на 1 (пакет1 завершён) или >=2 (движок ушёл дальше)\n");
+    /* ����:
+       - completedDescCount >= Count(��1)  BUSTY=0 -> ��1 ���, ��2 � �� (ISR-���)
+       - completedDescCount < Count(��1)        -> � � ��/� ����� � ��
+       ��� Count(��1) � �� �����: � 1024B=2 ���,  1- ��� 1..N SG-��.
+       � �� �-���  �  ��1 = 1 � =>  � � = 1.  */
+    printf("  diag_pkt: ��:  � completedDescCount � 1 (��1 ���) � >=2 (� � ���)\n");
     rc = 0;
 out:
     if (buf) _aligned_free(buf);
@@ -729,9 +725,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    /* DIAG 2026-10-03 (BRAM bypass): узлы без трансляции базы (полный адрес).
-       Открываем лениво ТОЛЬКО для режима dot_bram, чтобы не плодить открытия
-       в обычных тестах. */
+    /* DIAG 2026-10-03 (BRAM bypass): �� ��� �� ��� (� ��).
+       �� �� � � ��� dot_bram, � � � 
+        � ��. */
     HANDLE h2c_bram = INVALID_HANDLE_VALUE;
     HANDLE c2h_bram = INVALID_HANDLE_VALUE;
     if (_stricmp(mode, "dot_bram") == 0) {
@@ -800,4 +796,4 @@ int main(int argc, char** argv)
     if (h2c_bram != INVALID_HANDLE_VALUE) CloseHandle(h2c_bram);
     if (c2h_bram != INVALID_HANDLE_VALUE) CloseHandle(c2h_bram);
     return rc;
-}
+}

@@ -1,1 +1,1 @@
-{"backend": "cpu", "epochs": 400, "hidden": 16}
+{"backend": "cpu", "epochs": 100, "hidden": 16}
