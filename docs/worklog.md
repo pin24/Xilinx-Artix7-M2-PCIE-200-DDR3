@@ -1275,3 +1275,9 @@ Stage Summary:
 - Баг: obs_smi на прошивке без/недоступных OBS-счётчиков читал CAPS(0x74) с timeout -> fallback NUM_MAC=16, хотя плата 64/2.
 - Фикс: NUM_MAC/ADDERS из CORE_PARAMS(0x64). Проверено: 'NUM_MAC авто-детект: 64 (ADDERS=2)', build 64 MAC. Плата фактически 64/2 (не 64/3).
 - Остаётся открытым: data-path c2h на 64/2 виснет (AXI-Lite жив), хотя на 32/4 с M-side regslice работал - выясняется отдельно.
+
+## 2026-10-26 — 32/8 собрана (WNS=0.090 PASS) с фиксом async-границы
+- 64/2 (S-side regslice) и 64/1: тайминг падает (WNS -0.288/-0.228) — 64-MAC @125МГц на пределе ёмкости, любая BD-правка вскрывает крит. путь ядра (t_dst->ad_eb / m_valid_out_q->rnd_issue). NUM_MAC=64 на этом Artix-7 надо перепиливать ядро (pipeline), отдельная задача.
+- 32/8 (NUM_MAC=32, ADDERS=8) с полным фиксом data-path (regslice_0 -> regslice_s -> conv -> regslice_m -> MIG): TIMING PASSED WNS=0.090 WHS=0.023. Сохраняет NUM_MAC=32 (где data-path-фикс проверен) + 8 аддеров (быстрее 32/4). Артефакты build/artifacts_flat (00:55:44).
+- План: прошить 32/8, прогнать probe_core (ожид CORE_PARAMS=0x08420 -> NUM_MAC=32 ADDERS=8) + iso c2h/h2c (data-path должен жить) + device_prog single 3.5 + batch + обучение.
+- Команда прошивки: vivado -mode batch -source scripts\flash_program.tcl -tclargs build\artifacts_flat\xdma_ddr3_core_top.mcs
