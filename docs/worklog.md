@@ -1281,3 +1281,18 @@ Stage Summary:
 - 32/8 (NUM_MAC=32, ADDERS=8) с полным фиксом data-path (regslice_0 -> regslice_s -> conv -> regslice_m -> MIG): TIMING PASSED WNS=0.090 WHS=0.023. Сохраняет NUM_MAC=32 (где data-path-фикс проверен) + 8 аддеров (быстрее 32/4). Артефакты build/artifacts_flat (00:55:44).
 - План: прошить 32/8, прогнать probe_core (ожид CORE_PARAMS=0x08420 -> NUM_MAC=32 ADDERS=8) + iso c2h/h2c (data-path должен жить) + device_prog single 3.5 + batch + обучение.
 - Команда прошивки: vivado -mode batch -source scripts\flash_program.tcl -tclargs build\artifacts_flat\xdma_ddr3_core_top.mcs
+
+## 2026-10-26 — СИНХРОННЫЙ data-путь без async-конвертера (детерминированный фикс deadlock)
+- Причина c2h/h2c deadlock под крупными DMA-бурстами (256КиБ) - НЕ ширина/USER, а сам async-конвертер 125<->100 (виснет под нагрузкой; regslice_s+m лишь сдвигали порог). MIG был виснет в обе стороны, AXI-Lite жил, потом при 256КиБ и AXI-Lite падал.
+- РЕШЕНИЕ: убран axi_clock_converter и оба вспомогательных regslice_s/m. Data-путь теперь СИНХРОННЫЙ: xdma_axi_smc.M00(100MHz via aclk3=ui_clk) -> axi_regslice_0(100) -> MIG(100). S00 остался 125 (XDMA), SMC делает 125->100 внутри (синхронно, без async-моста). FREQ_HZ/CLK_DOMAIN валидны.
+- Собрана 32/8: TIMING PASSED WNS=0.095 WHS=0.027 (артефакты build/artifacts_flat 13:15:14). Ожидается: data-path больше НЕ виснет под нагрузкой (нет async-CDC). Прошитый CONVERTER-фикс прежней 32/8 (с converter) был неполон.
+- Тест после прошивки+power-cycle: probe_core (0x8420) -> iso c2h/h2c -> DDR STRESS 256КиБ (бывший deadlock-триггер) -> device_prog single 3.5 -> batch -> обучение.
+
+## 2026-10-26 — ПОДТВЕРЖДЕНО: 32/8 sync ПОЛНОСТЬЮ рабочая, data-path deadlock УСТРАНЁН
+- На 32/8 с синхронным путём (SMC.M00(100)->regslice->MIG(100), без async-converter):
+  * c2h/h2c OK; DDR STRESS 256КиБ round-trip BIT-EXACT PASS (бывший триггер deadlock - теперь проходит).
+  * device_prog single 3.5 EXACT; batch-GEMM err 5.7e-10 PASS.
+  * train 256с/3эп MSE 0.95->0.78; train 1000с/5эп MSE 0.85->0.31 - СТАБИЛЬНО под нагрузкой (раньше старый конфиг клинил посреди прогона).
+- КОРЕНЬ deadlock окончательно: async-конвертер 125<->100 (не ширина/USER). Решение - СИНХРОННЫЙ путь без него. regslice_s+m вокруг converter лишь сдвигали порог, не убирали.
+- Финальный рабочий конфиг: NUM_MAC=32 ADDERS=8, DEVPROG_EN=1, WNS=0.095. Артефакты build/artifacts_flat (13:15:14, sync). BUILD настроен.
+- 64-MAC на этом Artix-7 @125МГц - на пределе тайминга (нужен перепилинг ядра), отдельная задача.
