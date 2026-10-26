@@ -1,22 +1,20 @@
 # ============================================================================
-# Makefile — обёртки над Vivado/TCL-скриптами DFX-сборки
+# Makefile — обёртки над Vivado/TCL-скриптами FLAT-сборки (актуальная линия)
 # ============================================================================
-# Основной поток сборки — TCL-скрипты (build_dfx.tcl и др.), этот Makefile
-# лишь даёт короткие цели. Vivado должен быть в PATH либо задан через
-# VIVADO=/path/to/vivado.bat (Windows) / VIVADO=vivado (Linux).
+# Рабочая прошивка — FLAT (scripts/build_flat.tcl, конфиг NUM_MAC=32 ADDERS=8).
+# DFX-сборка (build_dfx.tcl) — историческая, только явно: `make DFX ... build`.
+# Vivado должен быть в PATH либо задан через VIVADO=/path/to/vivado.bat.
 #
 # Примеры:
-#   make build            # полная DFX-сборка (synth+impl+bitstream+partials)
+#   make build            # полная FLAT-сборка (BD+synth+impl+bitstream)
 #   make proj             # только создать проект (SKIP_SYNTH=1)
-#   make num_mac=16 build # собрать с NUM_MAC=16 (и NUM_MAC=16 — эквивалент)
-#   make adders=4 build   # собрать с ADDERS=4 (и ADDERS=4 — эквивалент;
-#                         #   нижний регистр разрешён через алиасы ниже)
+#   make num_mac=32 adders=8 build   # собрать с нужными пар-ми (default 32/8)
 #   make artifacts        # .bin/.mcs из готового impl_1 (без пересинтеза)
 #   make clean            # удалить каталог проекта и артефакты
 # ============================================================================
 
 NUM_MAC ?= 32
-ADDERS  ?= 16
+ADDERS  ?= 8
 JOBS    ?= 7
 
 # Lowercase-алиасы (2026-10-01): позволяют писать `make num_mac=32 adders=8`
@@ -56,21 +54,21 @@ ifeq ($(OS),Windows_NT)
 endif
 
 BUILD_DFX      := scripts/build_dfx.tcl
-GEN_BITSTREAM  := scripts/build_dfx.tcl   # full refresh (BD+synth+impl+bitstream) = master build
+GEN_BITSTREAM  := scripts/build_flat.tcl   # master build = FLAT (актуально 2026-10-26)
 GEN_BIN_MCS    := scripts/gen_bin_mcs.tcl
 
-# Flat-сборка: `make FLAT num_mac=32 adders=16 build` (или `make FLAT build`).
-# FLAT фигурирует в целях командной строки => выбираем build_flat.tcl.
-ifneq ($(filter FLAT,$(MAKECMDGOALS)),)
-  BUILD_SCRIPT := scripts/build_flat.tcl
-else
+# Рабочая линия — **ТОЛЬКО FLAT** (build_flat.tcl, обычная прошивка 32/8).
+# DFX-сборка (build_dfx.tcl) — историческая; включается только явно: `make DFX ... build`.
+ifneq ($(filter DFX,$(MAKECMDGOALS)),)
   BUILD_SCRIPT := $(BUILD_DFX)
+else
+  BUILD_SCRIPT := scripts/build_flat.tcl
 endif
 
-.PHONY: build proj artifacts bitstream clean help FLAT
+.PHONY: build proj artifacts bitstream clean help FLAT DFX
 
-# no-op цель-флаг: позволяет писать `make FLAT ... build` (см. $(filter FLAT,...))
-FLAT:
+# no-op цель-флаг: DFX — явный запрос исторической DFX-сборки
+DFX:
 
 help:
 	@echo "Targets: build | proj | artifacts | bitstream | clean (prefix FLAT for flat: make FLAT build)"
